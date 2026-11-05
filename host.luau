@@ -264,7 +264,9 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		end
 		-- 状态栏胶囊要数字，写进 result 键给窗口半边读。
 		tern.kv.set(RESULT_KEY, {
-			frontier = #tracker.computeFrontier(state.tickets),
+			-- 与任务板「可领」同口径：都要排除顶层 spec，
+			-- 否则面板写 4 张、状态栏写 5 张，用户以为哪里算错了。
+			frontier = #tracker.classify(state.tickets).claimable,
 			version = state.skillVersion or "—",
 		})
 		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
@@ -634,14 +636,19 @@ local function boardView(state: State, cx: BlockCx): Node
 		list.p.max = { lines = math.max(3, math.floor((cx.rows - 16) / 3)) }
 		local props: { [string]: any } = {
 			icon = g.icon,
-			meta = ui.span(string.format("%d 张", #g.items), if g.tone then g.tone else "muted"),
 			collapsible = true,
 		}
+		-- card 的 head 只吃单个 span：传 ui.text({...}) 整行标题不渲染。
+		-- 组合样式（"strong accent"）和 props.meta 的 tone 也都不生效，
+		-- 所以颜色只能整行给一种。
+		local head = ui.span(
+			g.title .. string.format("  %d 张", #g.items),
+			if g.tone then g.tone else "strong"
+		)
 		-- 空组和已关闭组默认收起，别把界面撑满；有活的组展开。
 		if #g.items == 0 or g.title == "已关闭" then
 			props.collapsed = true
 		end
-		local head = ui.span(g.title, if g.tone then "strong " .. g.tone else "strong")
 		table.insert(main, ui.card(head, { list }, props))
 	end
 
