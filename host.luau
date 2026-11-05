@@ -488,12 +488,27 @@ local function boardView(state: State, cx: BlockCx): Node
 				else "  来自当前目录的 git remote", "muted"),
 		}))
 	end
-	-- 仓库是空的要说清下一步做什么，只写「没有 issue」等于把问题丢回给用户。
-	if #state.tickets == 0 then
-		table.insert(main, ui.text(ui.span("这个仓库还没有 issue", "warning")))
-		table.insert(main, ui.text(ui.span(
-			"跑 /wayfinder 建路线图（会生成一张地图 issue），再用 /to-spec、/to-tickets 往下拆。", "muted"
-		)))
+	-- 空仓库给两条路，别只甩一条。
+	-- 只写「跑 /wayfinder」会误导需求已经明确的人：他不需要画地图，
+	-- 直接 grill 需求再 to-spec / to-tickets 更快。
+	if #state.tickets == 0 and state.repo then
+		table.insert(main, ui.text(ui.span("这个仓库还没有 issue —— 先选一条路", "strong")))
+		local entries: { Node } = {}
+		for _, e in ipairs(templates.ENTRIES) do
+			table.insert(entries, ui.button(e.title, {
+				icon = if e.id == "explore" then "map" else "message",
+				size = "sm",
+				variant = "primary",
+				actions = { click = "new:" .. e.id },
+			}))
+		end
+		table.insert(main, ui.row(entries))
+		for _, e in ipairs(templates.ENTRIES) do
+			table.insert(main, ui.text({
+				ui.span("· " .. e.title .. "：", "muted"),
+				ui.span(e.hint, "muted"),
+			}))
+		end
 	end
 
 	-- 地图
@@ -576,12 +591,16 @@ local function boardView(state: State, cx: BlockCx): Node
 	-- 票：按「现在能不能干」分四组。只显示前沿会把已认领 / 被阻塞 / 已关闭的票
 	-- 全藏起来，用户看到的任务板就成了空板。
 	local buckets = tracker.classify(state.tickets)
+	-- 每组给不同的图标与色调：四张卡长得一样，扫一眼分不出哪组能干活。
 	local groups = {
-		{ title = "可领", items = buckets.claimable, key = TICKET_LIST .. "_claimable", hint = "没有可领的票" },
-		{ title = "已认领", items = buckets.assigned, key = TICKET_LIST .. "_assigned", hint = "没有人认领", }
-			,
-		{ title = "被阻塞", items = buckets.blocked, key = TICKET_LIST .. "_blocked", hint = "没有阻塞的票" },
-		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed", hint = "没有关闭的票" },
+		{ title = "可领", items = buckets.claimable, key = TICKET_LIST .. "_claimable",
+			hint = "没有可领的票", icon = "check", tone = "accent" },
+		{ title = "已认领", items = buckets.assigned, key = TICKET_LIST .. "_assigned",
+			hint = "没有人认领", icon = "pr", tone = nil },
+		{ title = "被阻塞", items = buckets.blocked, key = TICKET_LIST .. "_blocked",
+			hint = "没有阻塞的票", icon = "help", tone = "warning" },
+		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed",
+			hint = "没有关闭的票", icon = "file", tone = "muted" },
 	}
 	for _, g in ipairs(groups) do
 		-- 空组也要画：卡片标题上的「0 张」本身就是信息，
@@ -614,15 +633,16 @@ local function boardView(state: State, cx: BlockCx): Node
 		local list = makeList(items, g.items, g.key, state.ticketSel, g.hint)
 		list.p.max = { lines = math.max(3, math.floor((cx.rows - 16) / 3)) }
 		local props: { [string]: any } = {
-			icon = "ticket",
-			meta = ui.span(string.format("%d 张", #g.items), "muted"),
+			icon = g.icon,
+			meta = ui.span(string.format("%d 张", #g.items), if g.tone then g.tone else "muted"),
 			collapsible = true,
 		}
 		-- 空组和已关闭组默认收起，别把界面撑满；有活的组展开。
 		if #g.items == 0 or g.title == "已关闭" then
 			props.collapsed = true
 		end
-		table.insert(main, ui.card(ui.span(g.title, "strong"), { list }, props))
+		local head = ui.span(g.title, if g.tone then "strong " .. g.tone else "strong")
+		table.insert(main, ui.card(head, { list }, props))
 	end
 
 	return ui.col(main)
@@ -1242,6 +1262,13 @@ tern.block.define(BLOCK_ID, {
 		if act == "view-board" then
 			state.view = "board"
 			state.message = nil
+			return
+		end
+		if string.sub(act, 1, 4) == "new:" then
+			local e = templates.entryById(string.sub(act, 5))
+			if e then
+				inject(state, cx, templates.renderEntry(e, state.repo or ""), e.title)
+			end
 			return
 		end
 		if act == "toggle-sort" then

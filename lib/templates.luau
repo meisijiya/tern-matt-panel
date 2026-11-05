@@ -36,6 +36,42 @@ local TEMPLATES: { Template } = {
 }
 M.TEMPLATES = TEMPLATES
 
+--- 仓库空的时候给两条路，对应参考实现的「探索地图 / 实施地图」二选一：
+--- 需求还没摸清走 wayfinder 画地图；需求已经明确直接 grill 收敛成 spec。
+--- 只甩一条 /wayfinder 会误导 —— 需求清楚的人不需要画地图。
+export type Entry = { id: string, title: string, hint: string, body: string }
+
+local ENTRIES: { Entry } = {
+	{
+		id = "explore",
+		title = "还没想清楚：建路线图",
+		hint = "跑 /wayfinder 画一张地图，把未知与范围拆成决策票",
+		body = "请使用 /wayfinder 技能，为这个仓库建立一张路线图（地图 issue）。\n仓库：{repo}",
+	},
+	{
+		id = "implement",
+		title = "需求已明确：直接对齐",
+		hint = "跑 /grill-with-docs 把需求问清，再 /to-spec → /to-tickets 拆成可做的票",
+		body = "请使用 /grill-with-docs 技能，把下面这件事问清楚，收敛成可执行的 spec。\n仓库：{repo}\n\n需求：",
+	},
+}
+M.ENTRIES = ENTRIES
+
+--- 按 id 取入口；找不到返回 nil。
+function M.entryById(id: string): Entry?
+	for _, e in ipairs(M.ENTRIES) do
+		if e.id == id then
+			return e
+		end
+	end
+	return nil
+end
+
+--- 替换入口模板里的占位符。
+function M.renderEntry(e: Entry, repo: string): string
+	return (e.body:gsub("{repo}", repo))
+end
+
 --- 按 id 取模板；找不到返回 nil。
 function M.byId(id: string): Template?
 	for _, t in ipairs(M.TEMPLATES) do
