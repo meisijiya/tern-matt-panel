@@ -1305,7 +1305,14 @@ tern.block.define(BLOCK_ID, {
 				item = last
 			end
 			if state.view == "skills" then
-				openSkill(state, item)
+				if ev.ev == "activate" then
+					-- 双击 = 把 /技能名 放进剪贴板，不直接投给 agent。
+					-- 注入是替用户做决定，双击只是「准备好」，发不发由人定。
+					sendAction(state, cx, "compose", "/" .. item, item)
+					state.message = "已复制 /" .. item .. "，粘到输入框"
+				else
+					openSkill(state, item)
+				end
 			elseif state.view == "map" then
 				-- 地图详情里的子票：点开看票详情
 				local n = tonumber(item)

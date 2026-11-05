@@ -215,6 +215,15 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
+	-- compose：把内容放进剪贴板，不提交。技能面板双击走这条 ——
+	-- tern 没有「只填输入框不发送」的接口（agents:ask 一定提交），
+	-- 复制到剪贴板是唯一不替用户做决定的做法。
+	if action.kind == "compose" then
+		cx:copy(action.body)
+		cx:toast("info", "已复制：" .. tostring(action.name or ""), "粘到输入框再决定发不发。")
+		return
+	end
+
 	if action.kind ~= "inject" then
 		return
 	end
