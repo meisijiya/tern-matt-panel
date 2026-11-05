@@ -381,6 +381,17 @@ case_run "地图详情视图" "$TMP/map.sc" \
 	"click-until:.sf-item:1:子票:20000" \
 	"has:返回任务板"
 
+# 6b. 票行单击直接进详情：原来要双击才能打开，和地图行的单击手感不一致，
+# 用户会以为「点不开」。这里点第 2 个 .sf-item（Spec 行或第一张票行），
+# 票详情独有的「打开链接」出现即算通过。
+cat > "$TMP/ticket_row.sc" <<EOF
+wait 100
+EOF
+case_run "票行单击进详情" "$TMP/ticket_row.sc" \
+	"click-btn-until:任务板:点行选中:20000" \
+	"skip-if:没有 wayfinder:map 地图" \
+	"click-until:.sf-item:2:打开链接:20000"
+
 # 7. 技能视图有注入按钮（鼠标入口）
 # 用例之间共享同一个面板，所以先切回技能视图。
 cat > "$TMP/back_skills.sc" <<EOF

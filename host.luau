@@ -355,6 +355,15 @@ local TICKET_LIST = "tickets"
 local SPEC_LIST = "specs"
 
 --- 把一组票做成可点列表：每行给 key（= 票号），选中态跟着 ticketSel 走。
+--- 票类型 → 图标。tern 的图标集里没有 `ticket`，只能用现有名字；
+--- wayfinder 的四类票各给一个形近的图标，好让行首能一眼分出类型。
+local TYPE_ICON: { [string]: string } = {
+	grilling = "message",
+	prototype = "wrench",
+	research = "search",
+	task = "check",
+}
+
 local function makeList(items: { any }, tickets: { tracker.Ticket }, key: string, selected: number?, hint: string): Node
 	local list = ui.list(items)
 	local kids = list.c or {}
@@ -503,7 +512,12 @@ local function boardView(state: State, cx: BlockCx): Node
 				tone = if entry.spec.number == state.ticketSel then "accent" else nil,
 			})
 		end
-		local specList = makeList(specItems, specs, SPEC_LIST, state.ticketSel, "没有 spec")
+		-- specs 是 {spec, tickets} 组；列表只认 Ticket，传错会得到 key "nil" 的哑行。
+		local specTickets: { tracker.Ticket } = {}
+		for _, entry in ipairs(specs) do
+			table.insert(specTickets, entry.spec)
+		end
+		local specList = makeList(specItems, specTickets, SPEC_LIST, state.ticketSel, "没有 spec")
 		specList.p.max = { lines = math.max(3, math.floor((cx.rows - 16) / 3)) }
 		table.insert(main, ui.card(ui.span("Spec", "strong"), { specList }, {
 			icon = "file",
@@ -534,11 +548,18 @@ local function boardView(state: State, cx: BlockCx): Node
 			if who then
 				table.insert(parts, who)
 			end
+			-- 类型用行首图标表达，和标题分开；已关闭的票整行压暗。
+			local tone = if t.number == state.ticketSel then
+				"accent"
+			elseif g.title == "已关闭" then
+				"muted"
+			else
+				nil
 			table.insert(items, {
 				label = t.title,
 				detail = table.concat(parts, " · "),
-				icon = "ticket",
-				tone = if t.number == state.ticketSel then "accent" else nil,
+				icon = TYPE_ICON[t.type] or "check",
+				tone = tone,
 			})
 		end
 		local list = makeList(items, g.items, g.key, state.ticketSel, g.hint)
@@ -654,10 +675,12 @@ local function ticketView(state: State): Node
 		return ui.text(ui.span("从任务板点一张票", "muted"))
 	end
 	local main: { Node } = {}
-	table.insert(main, ui.text({
-		ui.span(t.title, "strong"),
-		ui.span("  " .. tostring(t.type or "无类型"), "muted"),
-	}))
+	-- 没打 wayfinder:* 标签的票（比如 spec）没有类型，别硬写「无类型」占位。
+	local head: { any } = { ui.span(t.title, "strong") }
+	if t.type then
+		table.insert(head, ui.span("  " .. t.type, "muted"))
+	end
+	table.insert(main, ui.text(head))
 	table.insert(main, ui.text(ui.link(t.url, t.url, "muted")))
 
 	local buttons: { Node } = {}
@@ -1130,14 +1153,14 @@ tern.block.define(BLOCK_ID, {
 					end
 					-- 票行：四组（可领 / 已认领 / 被阻塞 / 已关闭）与 Spec 都按票号找，
 					-- 不再只认前沿 —— 已认领和已关闭的票也得点得开。
+					-- 单击就进详情：地图行本来就是单击进入，票行原来要双击，
+					-- 同一块面板里两种手感，用户会以为"点不开"。
 					for _, t in ipairs(state.tickets) do
 						if t.number == n then
 							state.ticketSel = n
-							if ev.ev == "activate" then
-								state.ticket = t
-								state.ticketBody = t.body
-								state.view = "ticket"
-							end
+							state.ticket = t
+							state.ticketBody = t.body
+							state.view = "ticket"
 							break
 						end
 					end
