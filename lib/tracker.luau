@@ -100,19 +100,51 @@ local function readBlockedBy(v: any): { number }
 end
 
 --- 从标签推断票类型：唯一取第一个命中的 wayfinder:<type>，其余 wayfinder:* 忽略。
+--- 取 `<前缀>:<种类>` 里的种类。
+--- 裸标签返回 nil：只有带前缀的才算流程标签，免得仓库里一个随便的 `task`
+--- 标签就把普通 issue 认成 wayfinder 的票。
+local function labelKind(l: string): string?
+	return string.match(l, "^[%w_%-%.]+:(.+)$")
+end
+
+--- wayfinder 的四类票。前缀不限：`wayfinder:research` 和 `myflow:research`
+--- 一样认，用户换自己的标签命名空间不必改面板。
+local TICKET_KINDS: { [string]: boolean } = {
+	grilling = true,
+	prototype = true,
+	research = true,
+	task = true,
+}
+
 local function readType(labels: { string }): string?
 	for _, l in ipairs(labels) do
-		if l == "wayfinder:grilling" then
-			return "grilling"
-		elseif l == "wayfinder:prototype" then
-			return "prototype"
-		elseif l == "wayfinder:research" then
-			return "research"
-		elseif l == "wayfinder:task" then
-			return "task"
+		local kind = labelKind(l)
+		if kind and TICKET_KINDS[kind] then
+			return kind
 		end
 	end
 	return nil
+end
+
+--- 地图标签：任意前缀的 `:map`。
+local function isMapLabel(labels: { string }): boolean
+	for _, l in ipairs(labels) do
+		if labelKind(l) == "map" then
+			return true
+		end
+	end
+	return false
+end
+
+--- spec 标签：to-spec 的原始约定是裸 `ready-for-agent`；
+--- 用户把它收进自己的命名空间（`myflow:ready-for-agent`）也认。
+local function isSpecLabel(labels: { string }): boolean
+	for _, l in ipairs(labels) do
+		if l == "ready-for-agent" or labelKind(l) == "ready-for-agent" then
+			return true
+		end
+	end
+	return false
 end
 
 --- 解析一张票（或地图子票）。number 缺失视为无效，返回 nil。
@@ -139,7 +171,7 @@ function M.parseIssue(json: any): Ticket?
 		blockedBy = readBlockedBy(json.blockedBy),
 		type = readType(labels),
 		parent = parentNum,
-		isSpec = util.contains(labels, "ready-for-agent"),
+		isSpec = isSpecLabel(labels),
 		createdAt = type(json.createdAt) == "string" and json.createdAt or nil,
 	}
 end
@@ -315,7 +347,7 @@ function M.parseIssues(issues: { any }): { Ticket }
 	local out: { Ticket } = {}
 	for _, issue in ipairs(issues) do
 		local labels = readLabels(issue.labels)
-		if not util.contains(labels, "wayfinder:map") then
+		if not isMapLabel(labels) then
 			local t = M.parseIssue(issue)
 			if t then
 				table.insert(out, t)
@@ -325,7 +357,7 @@ function M.parseIssues(issues: { any }): { Ticket }
 	return out
 end
 
---- 把一组 issue（地图 + 子票）按地图归组：地图带 wayfinder:map 标签，子票通过 parent 字段挂到地图。
+--- 把一组 issue（地图 + 子票）按地图归组：地图带 `:map` 形式的标签，子票通过 parent 字段挂到地图。
 --- 输入为 gh 解码后的原始对象数组（需包含 parent.number 才能挂接）；返回每个地图及其子票。
 function M.groupByMap(issues: { any }): { Map }
 	local maps: { Map } = {}
@@ -333,7 +365,7 @@ function M.groupByMap(issues: { any }): { Map }
 	local childrenOf: { [number]: { any } } = {}
 	for _, issue in ipairs(issues) do
 		local labels = readLabels(issue.labels)
-		local isMap = util.contains(labels, "wayfinder:map")
+		local isMap = isMapLabel(labels)
 		if isMap then
 			local m = M.parseMap(issue)
 			if m then

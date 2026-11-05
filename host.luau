@@ -500,11 +500,16 @@ local function boardView(state: State, cx: BlockCx): Node
 	mapLp.empty = { ui.span("没有 wayfinder:map 地图", "muted") }
 	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
 	mapList.p = mapLp
-	table.insert(main, ui.text({
+	-- 和 Spec、四组票一样做成可折叠卡片：一张地图占一块地方，
+	-- 项目里有好几张地图时纯列表会把下面的票挤出屏幕。
+	table.insert(main, ui.card(ui.text({
 		ui.span("地图", "strong"),
 		ui.span("  wayfinder:map · 子票挂在它名下", "muted"),
+	}), { mapList }, {
+		icon = "map",
+		meta = ui.span(string.format("%d 张", #state.maps), "muted"),
+		collapsible = true,
 	}))
-	table.insert(main, mapList)
 
 	-- Spec：to-spec 的产物是打了 ready-for-agent 标签的 issue，工单是它的子 issue。
 	local specs = tracker.groupBySpec(state.tickets)

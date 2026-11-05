@@ -444,6 +444,32 @@ test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	end
 end)
 
+test("tracker 认任意前缀的流程标签", function()
+	local mk = function(labels)
+		return {
+			number = 1, title = "t", body = "", state = "OPEN", url = "",
+			labels = labels, assignees = {}, blockedBy = {}, parent = nil,
+		}
+	end
+	-- 默认命名空间
+	eq(tracker.parseIssue(mk({ "wayfinder:research" })).type, "research", "wayfinder:research")
+	-- 用户自定义命名空间
+	eq(tracker.parseIssue(mk({ "myflow:prototype" })).type, "prototype", "myflow:prototype")
+	eq(tracker.parseIssue(mk({ "acme:grilling" })).type, "grilling", "acme:grilling")
+	eq(tracker.parseIssue(mk({ "acme:task" })).type, "task", "acme:task")
+	-- 裸标签不算：仓库里随便一个 task 标签不该把普通 issue 认成流程票
+	eq(tracker.parseIssue(mk({ "task" })).type, nil, "bare task ignored")
+	eq(tracker.parseIssue(mk({ "research" })).type, nil, "bare research ignored")
+
+	-- 地图与 spec 同样放宽前缀
+	local map = mk({ "myflow:map" })
+	local grouped = tracker.groupByMap({ map })
+	eq(#grouped, 1, "myflow:map counts as a map")
+
+	ok(tracker.parseIssue(mk({ "ready-for-agent" })).isSpec, "bare ready-for-agent")
+	ok(tracker.parseIssue(mk({ "myflow:ready-for-agent" })).isSpec, "namespaced ready-for-agent")
+end)
+
 test("tracker.sortByCreated 默认最新在上，缺时间的排最后", function()
 	local mk = function(n, at)
 		return {
