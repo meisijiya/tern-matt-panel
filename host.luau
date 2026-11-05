@@ -1,0 +1,894 @@
+--!strict
+-- 宿主半边：面板的画面（tern.ui 节点树）与数据获取。
+--
+-- 数据获取放在这一侧：`gh` 子进程与文件读取在宿主半边都能做（实测见
+-- docs/research/host-half-runtime.md）。异步回调里改 state 再 cx:render() 即可重画，
+-- 不必绕 kv（见 docs/research/host-async-render.md）。
+--
+-- 需要窗口半边才能做的只有一件：把提示词注入邻近 agent（cx.agents:ask 是 window-only）。
+-- 那一段走 tern.kv 传令：这里写 action 键，窗口半边轮询并执行。
+
+local ui = tern.ui
+local commands = require("./lib/commands")
+local lanes = require("./lib/lanes")
+local paths = require("./lib/paths")
+local skills = require("./lib/skills")
+local templates = require("./lib/templates")
+local tracker = require("./lib/tracker")
+
+local ACTION_KEY = "action"
+local RESULT_KEY = "result"
+local REPO_KEY = "repo"
+local SEQ_KEY = "seq"
+local BLOCK_ID = "matt"
+
+type View = "skills" | "board" | "ticket"
+
+type State = {
+	view: View,
+	-- 技能面板
+	skills: { skills.Skill },
+	lanes: { lanes.Lane },
+	-- 选中的技能名（列表用名字做行 id，鼠标点选与键盘移动共用）
+	skillSel: string?,
+	skillBody: string?,
+	showHidden: boolean,
+	-- 任务板
+	maps: { tracker.Map },
+	tickets: { tracker.Ticket },
+	-- 选中的地图号与票号
+	mapSel: number?,
+	ticketSel: number?,
+	-- 票详情
+	ticket: tracker.Ticket?,
+	ticketBody: string?,
+	-- 通用
+	message: string?,
+	loading: boolean,
+	repo: string?,
+	skillVersion: string?,
+	hasSkills: boolean,
+}
+
+--- 空状态。init 与 save 恢复共用。
+local function blank(): State
+	return {
+		view = "skills",
+		skills = {},
+		lanes = {},
+		skillSel = nil,
+		skillBody = nil,
+		showHidden = false,
+		maps = {},
+		tickets = {},
+		mapSel = nil,
+		ticketSel = nil,
+		ticket = nil,
+		ticketBody = nil,
+		message = nil,
+		loading = false,
+		repo = nil,
+		skillVersion = nil,
+		hasSkills = false,
+	}
+end
+
+--- 按泳道顺序排平的技能表，上下移动与选中都用它。
+local function flatSkills(state: State): { skills.Skill }
+	local byName: { [string]: skills.Skill } = {}
+	for _, s in ipairs(state.skills) do
+		byName[s.name] = s
+	end
+	local out: { skills.Skill } = {}
+	for _, lane in ipairs(state.lanes) do
+		for _, name in ipairs(lane.skills) do
+			local s = byName[name]
+			if s then
+				table.insert(out, s)
+			end
+		end
+	end
+	return out
+end
+
+--- 装填技能面板：探测技能包，读清单，按泳道分组。
+local function loadSkills(state: State)
+	local root = paths.skillPackageRoot()
+	if not root then
+		state.hasSkills = false
+		state.skills = {}
+		state.lanes = {}
+		state.skillVersion = nil
+		return
+	end
+	local pkg = skills.readPackage(root)
+	if not pkg then
+		state.hasSkills = false
+		state.skills = {}
+		state.lanes = {}
+		return
+	end
+	state.hasSkills = true
+	state.skillVersion = pkg.version
+	local visible: { skills.Skill } = {}
+	for _, s in ipairs(pkg.skills) do
+		if state.showHidden or not skills.isHidden(s) then
+			table.insert(visible, s)
+		end
+	end
+	state.skills = visible
+	state.lanes = lanes.groupSkills(visible)
+end
+
+--- 真正拉 issue 的那一步。
+local fetchIssues: (State, BlockCx, string) -> ()
+
+--- 从 git remote 推断 owner/repo。
+local function inferRepo(cx: BlockCx, cb: (string?) -> ())
+	local cwd = cx.cwd
+	if not cwd then
+		cb(nil)
+		return
+	end
+	tern.process.run({ "git", "-C", cwd, "remote", "get-url", "origin" }):next(function(result: any, _err: any, _cx: any)
+		if result == nil or result.status ~= 0 then
+			cb(nil)
+			return
+		end
+		local url = tostring(result.stdout or "")
+		local owner, repo = string.match(url, "[:/]([^/:]+)/([^/%.]+)%.git")
+		if owner and repo then
+			cb(owner .. "/" .. repo)
+		else
+			cb(nil)
+		end
+	end)
+end
+
+--- 把 gh 的 JSON 输出解码成表。解码失败返回 nil。
+local function decodeIssues(text: string): { any }?
+	local ok, value = pcall(tern.json.decode, text)
+	if not ok or type(value) ~= "table" then
+		return nil
+	end
+	return value
+end
+
+--- 拉任务板：地图、票、依赖。用 gh 的 JSON 输出。
+local function loadBoard(state: State, cx: BlockCx)
+	if state.loading then
+		return
+	end
+	state.loading = true
+	-- 用户手动指定的仓库优先（写在 kv 里，跨窗口共享）。
+	local ok, value = pcall(tern.kv.get, REPO_KEY)
+	local chosen: string? = nil
+	if ok and type(value) == "table" and type(value.repo) == "string" and value.repo ~= "" then
+		chosen = value.repo
+	end
+	local repo = chosen or state.repo
+	if not repo then
+		inferRepo(cx, function(found: string?)
+			if not found then
+				state.loading = false
+				state.message = "找不到仓库：当前目录不是 git 仓库，按 R 手动指定"
+				cx:render()
+				return
+			end
+			state.repo = found
+			fetchIssues(state, cx, found)
+		end)
+		return
+	end
+	state.repo = repo
+	fetchIssues(state, cx, repo)
+end
+
+--- 真正拉 issue 的那一步。
+fetchIssues = function(state: State, cx: BlockCx, repo: string)
+	local fields = "number,title,body,state,url,labels,assignees,parent,blockedBy"
+	tern.process.run({
+		"gh",
+		"issue",
+		"list",
+		"--repo",
+		repo,
+		"--state",
+		"all",
+		"--limit",
+		"200",
+		"--json",
+		fields,
+	}):next(function(result: any, _err: any, _cx: any)
+		if result == nil or result.status ~= 0 then
+			state.loading = false
+			state.message = "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出")
+			cx:render()
+			return
+		end
+		local issues = decodeIssues(tostring(result.stdout or ""))
+		if not issues then
+			state.loading = false
+			state.message = "gh 输出解析失败"
+			cx:render()
+			return
+		end
+		state.tickets = tracker.parseIssues(issues)
+		state.maps = tracker.groupByMap(issues)
+		state.loading = false
+		if #state.tickets == 0 then
+			state.message = "这个仓库还没有 issue"
+		end
+		-- 状态栏胶囊要数字，写进 result 键给窗口半边读。
+		tern.kv.set(RESULT_KEY, {
+			frontier = #tracker.computeFrontier(state.tickets),
+			version = state.skillVersion or "—",
+		})
+		cx:render()
+	end)
+end
+
+--- 写一条给窗口半边的指令。
+---
+--- seq 必须全局单调递增并持久化：窗口半边启动时会把 kv 里已有的 action.seq 当作"已处理"，
+--- 若新请求的 seq 不比它大，请求会被静默丢弃。所以序号要同时越过
+--- 计数器与现存 action 的 seq（两者可能不同步——计数器是新的，action 是旧的）。
+local function nextSeq(): number
+	local last = 0
+	local ok, value = pcall(tern.kv.get, SEQ_KEY)
+	if ok and type(value) == "table" and type(value.n) == "number" then
+		last = value.n
+	end
+	local okAction, action = pcall(tern.kv.get, ACTION_KEY)
+	if okAction and type(action) == "table" and type(action.seq) == "number" and action.seq > last then
+		last = action.seq
+	end
+	local seq = last + 1
+	tern.kv.set(SEQ_KEY, { n = seq })
+	return seq
+end
+
+local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string)
+	tern.kv.set(ACTION_KEY, {
+		seq = nextSeq(),
+		kind = kind,
+		pane = cx.pane,
+		body = body,
+		name = name,
+	})
+end
+
+--- 让窗口半边弹输入框问仓库名。当前目录不是 git 仓库、或用户想换仓库时用。
+local function pickRepo(state: State, cx: BlockCx)
+	tern.kv.set(ACTION_KEY, {
+		seq = nextSeq(),
+		kind = "pick-repo",
+		pane = cx.pane,
+		body = state.repo or "",
+		name = "仓库",
+	})
+end
+
+--- 注入一段文本到邻近 agent（真正执行在窗口半边）。
+local function inject(state: State, cx: BlockCx, body: string, name: string)
+	sendAction(state, cx, "inject", body, name)
+	state.message = "已提交：" .. name
+end
+
+--- 票的动作按钮：按票类型给出。
+local function actionsFor(t: tracker.Ticket): { { kind: string, tpl: string, label: string, icon: string } }
+	local out = {}
+	if not t.type then
+		return out
+	end
+	for _, tpl in ipairs(templates.TEMPLATES) do
+		if tpl.id == t.type then
+			table.insert(out, { kind = t.type, tpl = tpl.id, label = tpl.title, icon = "sparkle" })
+		end
+	end
+	return out
+end
+
+---------------------------------------------------------------- 渲染
+
+-- 列表的行 id 前缀：区域.列表key.行id。鼠标点选与键盘移动共用同一份选中状态。
+local SKILL_LIST = "skills"
+local MAP_LIST = "maps"
+local TICKET_LIST = "tickets"
+
+--- 技能区：按泳道分组，全部走一个可点列表。
+--- 泳道用 detail 列显示在行尾，鼠标点行即选中。
+local function skillsView(state: State, cx: BlockCx): Node
+	local main: { Node } = {}
+
+	if not state.hasSkills then
+		table.insert(main, ui.text(ui.span("没找到中文技能包", "warning")))
+		table.insert(main, ui.text(ui.link(
+			"安装：https://github.com/devcxl/mattpocock-skills-zh",
+			"https://github.com/devcxl/mattpocock-skills-zh"
+		)))
+		table.insert(main, ui.text(ui.span(
+			"面板不自带技能，也不代装。装好后点「刷新」。",
+			"muted"
+		)))
+		return ui.col(main)
+	end
+
+	local flat = flatSkills(state)
+	local items: { any } = {}
+	for _, s in ipairs(flat) do
+		local lane = ""
+		for _, l in ipairs(state.lanes) do
+			if table.find(l.skills, s.name) then
+				lane = l.title
+				break
+			end
+		end
+		table.insert(items, {
+			label = s.name,
+			detail = lane,
+			value = "/" .. s.name,
+			icon = "sparkle",
+			tone = if s.name == state.skillSel then "accent" else nil,
+		})
+	end
+
+	local list = ui.list(items)
+	local kids = list.c or {}
+	for i, s in ipairs(flat) do
+		local p: { [string]: any } = kids[i].p or {}
+		p.key = s.name
+		kids[i].p = p
+	end
+	local lp: { [string]: any } = list.p or {}
+	lp.key = SKILL_LIST
+	lp.selected = state.skillSel
+	lp.empty = { ui.span("没有技能", "muted") }
+	lp.max = { lines = math.max(6, cx.rows - 8) }
+	list.p = lp
+
+	table.insert(main, ui.text({
+		ui.span("技能", "strong"),
+		ui.span(string.format("  %s · %d 个", state.skillVersion or "未知版本", #flat), "muted"),
+	}))
+	table.insert(main, list)
+
+	if state.skillBody then
+		table.insert(main, ui.rule(ui.span(state.skillSel or "")))
+		table.insert(main, ui.md(state.skillBody))
+	end
+
+	return ui.col(main)
+end
+
+--- 任务板区：地图列表与前沿票列表，都是可点的。
+local function boardView(state: State, cx: BlockCx): Node
+	local main: { Node } = {}
+
+	if state.loading then
+		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
+		return ui.col(main)
+	end
+	if state.repo then
+		table.insert(main, ui.text({
+			ui.span(state.repo, "muted"),
+			ui.span("  点行选中，点「刷新」重取", "muted"),
+		}))
+	end
+
+	-- 地图
+	local mapItems: { any } = {}
+	for _, m in ipairs(state.maps) do
+		table.insert(mapItems, {
+			label = m.title,
+			detail = string.format("%d 票", #m.tickets),
+			icon = "map",
+			tone = if m.number == state.mapSel then "accent" else nil,
+		})
+	end
+	local mapList = ui.list(mapItems)
+	local mapKids = mapList.c or {}
+	for i, m in ipairs(state.maps) do
+		local p: { [string]: any } = mapKids[i].p or {}
+		p.key = tostring(m.number)
+		mapKids[i].p = p
+	end
+	local mapLp: { [string]: any } = mapList.p or {}
+	mapLp.key = MAP_LIST
+	mapLp.selected = if state.mapSel then tostring(state.mapSel) else nil
+	mapLp.empty = { ui.span("没有 wayfinder:map 地图", "muted") }
+	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
+	mapList.p = mapLp
+	table.insert(main, ui.text(ui.span("地图", "strong")))
+	table.insert(main, mapList)
+
+	-- 前沿票
+	local frontier = tracker.computeFrontier(state.tickets)
+	local ticketItems: { any } = {}
+	for _, t in ipairs(frontier) do
+		table.insert(ticketItems, {
+			label = t.title,
+			detail = t.type,
+			icon = "ticket",
+			tone = if t.number == state.ticketSel then "accent" else nil,
+		})
+	end
+	local ticketList = ui.list(ticketItems)
+	local ticketKids = ticketList.c or {}
+	for i, t in ipairs(frontier) do
+		local p: { [string]: any } = ticketKids[i].p or {}
+		p.key = tostring(t.number)
+		ticketKids[i].p = p
+	end
+	local ticketLp: { [string]: any } = ticketList.p or {}
+	ticketLp.key = TICKET_LIST
+	ticketLp.selected = if state.ticketSel then tostring(state.ticketSel) else nil
+	ticketLp.empty = { ui.span("没有可领的票", "muted") }
+	ticketLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
+	ticketList.p = ticketLp
+	table.insert(main, ui.text(ui.span(string.format("前沿（%d）", #frontier), "strong")))
+	table.insert(main, ticketList)
+
+	return ui.col(main)
+end
+
+--- 票详情区：描述、动作按钮、阻塞关系。
+local function ticketView(state: State): Node
+	local t = state.ticket
+	if not t then
+		return ui.text(ui.span("从任务板点一张票", "muted"))
+	end
+	local main: { Node } = {}
+	table.insert(main, ui.text({
+		ui.span(t.title, "strong"),
+		ui.span("  " .. tostring(t.type or "无类型"), "muted"),
+	}))
+	table.insert(main, ui.text(ui.link(t.url, t.url, "muted")))
+
+	local buttons: { Node } = {}
+	for _, a in ipairs(actionsFor(t)) do
+		table.insert(buttons, ui.button(a.label, {
+			icon = a.icon,
+			variant = "primary",
+			size = "sm",
+			actions = { click = "act:" .. a.tpl },
+		}))
+	end
+	table.insert(buttons, ui.button("复制", {
+		icon = "copy",
+		size = "sm",
+		actions = { click = "copy-ticket" },
+	}))
+	table.insert(buttons, ui.button("打开链接", {
+		icon = "link",
+		size = "sm",
+		actions = { click = "open-ticket" },
+	}))
+	table.insert(buttons, ui.button("返回任务板", {
+		icon = "back",
+		size = "sm",
+		actions = { click = "back-board" },
+	}))
+	table.insert(main, ui.row(buttons))
+
+	if #t.blockedBy > 0 then
+		table.insert(main, ui.text(ui.span("被阻塞：" .. table.concat(t.blockedBy, ", "), "muted")))
+	end
+
+	local body = state.ticketBody or ""
+	if body ~= "" then
+		table.insert(main, ui.rule(ui.span("描述")))
+		table.insert(main, ui.md(body))
+	end
+
+	return ui.col(main)
+end
+
+--- 顶部工具条：鼠标能点的视图切换与常用操作。
+local function toolbar(state: State): Node
+	local buttons: { Node } = {
+		ui.button("技能", {
+			icon = "sparkle",
+			size = "sm",
+			variant = if state.view == "skills" then "primary" else "default",
+			actions = { click = "view-skills" },
+		}),
+		ui.button("任务板", {
+			icon = "map",
+			size = "sm",
+			variant = if state.view == "board" then "primary" else "default",
+			actions = { click = "view-board" },
+		}),
+		ui.button("刷新", {
+			icon = "refresh",
+			size = "sm",
+			actions = { click = "refresh" },
+		}),
+		ui.button("换仓库", {
+			icon = "repo",
+			size = "sm",
+			actions = { click = "pick-repo" },
+		}),
+		ui.button(if state.showHidden then "隐藏实验技能" else "显示实验技能", {
+			icon = "eye",
+			size = "sm",
+			actions = { click = "toggle-hidden" },
+		}),
+	}
+	return ui.row(buttons)
+end
+
+--- 底部提示条：键位说明。
+local function dockView(state: State): Node
+	local items: { Node } = {
+		ui.text(ui.span("鼠标点行选中 · 点按钮操作", "muted")),
+		ui.text(ui.span("↑↓ 移动 · Enter 看原文 · i 注入", "muted")),
+	}
+	if state.message then
+		table.insert(items, ui.text(ui.span(state.message, "accent")))
+	end
+	return ui.row(items)
+end
+
+---------------------------------------------------------------- 块定义
+
+--- 技能列表里当前选中的技能。
+local function selectedSkill(state: State): skills.Skill?
+	local flat = flatSkills(state)
+	if #flat == 0 then
+		return nil
+	end
+	for _, s in ipairs(flat) do
+		if s.name == state.skillSel then
+			return s
+		end
+	end
+	return flat[1]
+end
+
+--- 任务板里当前选中的票（前沿里的）。
+local function selectedTicket(state: State): tracker.Ticket?
+	local frontier = tracker.computeFrontier(state.tickets)
+	if #frontier == 0 then
+		return nil
+	end
+	for _, t in ipairs(frontier) do
+		if t.number == state.ticketSel then
+			return t
+		end
+	end
+	return frontier[1]
+end
+
+--- 选中一个技能并读出原文。
+local function openSkill(state: State, name: string)
+	local byName: { [string]: skills.Skill } = {}
+	for _, s in ipairs(state.skills) do
+		byName[s.name] = s
+	end
+	local s = byName[name]
+	if not s then
+		return
+	end
+	state.skillSel = name
+	state.skillBody = skills.readDoc(s)
+end
+
+tern.block.define(BLOCK_ID, {
+	init = function(cx: BlockCx, _args: { string }, saved: any): State
+		local state = blank()
+		if type(saved) == "table" then
+			state.view = (saved.view :: View) or "skills"
+			state.showHidden = saved.showHidden == true
+			state.repo = if type(saved.repo) == "string" then saved.repo else nil
+			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
+		end
+		loadSkills(state)
+		loadBoard(state, cx)
+		return state
+	end,
+
+	title = function(state: State): string
+		if state.view == "skills" then
+			return string.format("Matt 面板 · 技能 %d", #state.skills)
+		elseif state.view == "board" then
+			return string.format("Matt 面板 · 前沿 %d", #tracker.computeFrontier(state.tickets))
+		end
+		return string.format("Matt 面板 · %s", state.ticket and state.ticket.title or "票")
+	end,
+
+	view = function(state: State, cx: BlockCx): BlockView
+		local main: Node
+		if state.view == "skills" then
+			main = ui.col({ toolbar(state), skillsView(state, cx) })
+		elseif state.view == "board" then
+			main = ui.col({ toolbar(state), boardView(state, cx) })
+		else
+			main = ui.col({ toolbar(state), ticketView(state) })
+		end
+		return { main = main, dock = dockView(state) }
+	end,
+
+	key = function(state: State, key: Key, cx: BlockCx): boolean?
+		if key.name == "tab" then
+			if state.view == "skills" then
+				state.view = "board"
+			else
+				state.view = "skills"
+			end
+			state.message = nil
+			return true
+		end
+		if key.name == "escape" then
+			if state.view == "ticket" then
+				state.view = "board"
+				state.ticket = nil
+				state.ticketBody = nil
+				return true
+			end
+			return false
+		end
+		if key.name == "r" and not key.shift then
+			loadSkills(state)
+			loadBoard(state, cx)
+			state.message = "已刷新"
+			return true
+		end
+		if key.name == "r" and key.shift then
+			pickRepo(state, cx)
+			return true
+		end
+		if key.name == "s" then
+			state.showHidden = not state.showHidden
+			loadSkills(state)
+			state.message = if state.showHidden then "显示 in-progress / deprecated" else "只显示正式技能"
+			return true
+		end
+
+		if state.view == "skills" then
+			local flat = flatSkills(state)
+			if key.name == "up" then
+				local cur = selectedSkill(state)
+				local at = 1
+				for i, s in ipairs(flat) do
+					if cur and s.name == cur.name then
+						at = i
+						break
+					end
+				end
+				state.skillSel = flat[math.max(1, at - 1)].name
+				state.skillBody = nil
+				return true
+			end
+			if key.name == "down" then
+				local cur = selectedSkill(state)
+				local at = 1
+				for i, s in ipairs(flat) do
+					if cur and s.name == cur.name then
+						at = i
+						break
+					end
+				end
+				state.skillSel = flat[math.min(#flat, at + 1)].name
+				state.skillBody = nil
+				return true
+			end
+			if key.name == "enter" then
+				local s = selectedSkill(state)
+				if not s then
+					return false
+				end
+				-- Enter 只负责看原文；注入走 i 键，避免"按两次"这种要记住的约定。
+				if state.skillBody then
+					state.skillBody = nil
+				else
+					state.skillSel = s.name
+					state.skillBody = skills.readDoc(s)
+				end
+				return true
+			end
+			if key.name == "i" then
+				local s = selectedSkill(state)
+				if not s then
+					return false
+				end
+				inject(state, cx, commands.buildSkillCommand(s), s.name)
+				return true
+			end
+			if key.name == "c" then
+				local s = selectedSkill(state)
+				if not s then
+					return false
+				end
+				cx:copy(s.name)
+				state.message = "已复制：" .. s.name
+				return true
+			end
+			return false
+		end
+
+		if state.view == "board" then
+			local frontier = tracker.computeFrontier(state.tickets)
+			if key.name == "up" or key.name == "down" then
+				local cur = selectedTicket(state)
+				local at = 1
+				for i, t in ipairs(frontier) do
+					if cur and t.number == cur.number then
+						at = i
+						break
+					end
+				end
+				local next_ = if key.name == "up" then math.max(1, at - 1) else math.min(#frontier, at + 1)
+				if frontier[next_] then
+					state.ticketSel = frontier[next_].number
+				end
+				return true
+			end
+			if key.name == "enter" then
+				local t = selectedTicket(state)
+				if not t then
+					return false
+				end
+				state.ticket = t
+				state.ticketBody = t.body
+				state.view = "ticket"
+				return true
+			end
+			if key.name == "c" then
+				local t = selectedTicket(state)
+				if not t then
+					return false
+				end
+				cx:copy(t.title .. "\n" .. t.url)
+				state.message = "已复制票信息"
+				return true
+			end
+			if key.name == "o" then
+				local t = selectedTicket(state)
+				if not t then
+					return false
+				end
+				cx:open(t.url)
+				return true
+			end
+			return false
+		end
+
+		-- 票详情
+		if key.name == "i" then
+			local t = state.ticket
+			if not t then
+				return false
+			end
+			local tpl = templates.byTicketType(t.type)
+			if not tpl then
+				state.message = "这张票没有类型，没有对应动作"
+				return true
+			end
+			inject(state, cx, commands.buildTicketCommand(t, tpl), t.title)
+			return true
+		end
+		if key.name == "c" then
+			local t = state.ticket
+			if not t then
+				return false
+			end
+			cx:copy(t.title .. "\n" .. t.url)
+			state.message = "已复制票信息"
+			return true
+		end
+		if key.name == "o" then
+			local t = state.ticket
+			if not t then
+				return false
+			end
+			cx:open(t.url)
+			return true
+		end
+		return false
+	end,
+
+	event = function(state: State, ev: UiEvent, cx: BlockCx)
+		-- 列表点选：鼠标点行与键盘移动共用同一份选中状态。
+		-- ev.item 形如 "main.<块号>.<列表key>.<行id>"，块号每窗不同，
+		-- 所以只取最后一段当行 id。
+		if (ev.ev == "select" or ev.ev == "activate") and type(ev.item) == "string" then
+			local item = ev.item
+			local last = string.match(item, "([^%.]+)$")
+			if last then
+				item = last
+			end
+			if state.view == "skills" then
+				openSkill(state, item)
+			elseif state.view == "board" then
+				local n = tonumber(item)
+				if n then
+					local frontier = tracker.computeFrontier(state.tickets)
+					for _, t in ipairs(frontier) do
+						if t.number == n then
+							state.ticketSel = n
+							if ev.ev == "activate" then
+								state.ticket = t
+								state.ticketBody = t.body
+								state.view = "ticket"
+							end
+							break
+						end
+					end
+				end
+			end
+			return
+		end
+		if ev.ev ~= "action" or type(ev.act) ~= "string" then
+			return
+		end
+
+		local act = ev.act
+		if act == "view-skills" then
+			state.view = "skills"
+			state.message = nil
+			return
+		end
+		if act == "view-board" then
+			state.view = "board"
+			state.message = nil
+			return
+		end
+		if act == "refresh" then
+			loadSkills(state)
+			loadBoard(state, cx)
+			state.message = "已刷新"
+			return
+		end
+		if act == "pick-repo" then
+			pickRepo(state, cx)
+			return
+		end
+		if act == "toggle-hidden" then
+			state.showHidden = not state.showHidden
+			loadSkills(state)
+			state.message = if state.showHidden then "显示 in-progress / deprecated" else "只显示正式技能"
+			return
+		end
+		if act == "back-board" then
+			state.view = "board"
+			state.ticket = nil
+			state.ticketBody = nil
+			return
+		end
+		if act == "copy-ticket" then
+			local t = state.ticket
+			if not t then
+				return
+			end
+			cx:copy(t.title .. "\n" .. t.url)
+			state.message = "已复制票信息"
+			return
+		end
+		if act == "open-ticket" then
+			local t = state.ticket
+			if not t then
+				return
+			end
+			cx:open(t.url)
+			return
+		end
+		if string.sub(act, 1, 4) == "act:" then
+			local tpl = templates.byId(string.sub(act, 5))
+			local t = state.ticket
+			if not tpl or not t then
+				return
+			end
+			inject(state, cx, commands.buildTicketCommand(t, tpl), t.title)
+		end
+	end,
+
+	save = function(state: State): any
+		return {
+			view = state.view,
+			showHidden = state.showHidden,
+			repo = state.repo,
+			skillSel = state.skillSel,
+		}
+	end,
+})

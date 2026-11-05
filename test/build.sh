@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# 跑 test/run_tests.luau：把桩、lib/、host.luau、window.luau 和断言拼成一个脚本，
+# 再交给 luau CLI。luau 的 require 在独立沙箱里跑，桩进不去，所以只能拼接。
+#
+#   test/build.sh [path-to-luau]
+#
+# luau 依次取 $1、$TERNS_LUAU、PATH 上的 luau。
+set -eu
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+runner="$here/run_tests.luau"
+# 拼接结果放在仓库里：Windows 的 luau.exe 读不了 WSL 的 /tmp。
+out="$here/.bundle.luau"
+trap 'rm -f "$out"' EXIT
+
+luau="${1:-${TERNS_LUAU:-}}"
+if [[ -z "$luau" ]]; then
+	if command -v luau >/dev/null 2>&1; then
+		luau="$(command -v luau)"
+	else
+		echo "no luau CLI: pass one as \$1 or set \$TERNS_LUAU" >&2
+		echo "  download: https://github.com/luau-lang/luau/releases" >&2
+		exit 1
+	fi
+fi
+
+# WSL 里 "C:/…" 不是有效路径，换成 /mnt/c/…。
+case "$luau" in
+[A-Za-z]:[\\/]*)
+	if command -v wslpath >/dev/null 2>&1; then
+		luau="$(wslpath -u "$luau")"
+	fi
+	;;
+esac
+
+python_cmd="$(command -v python3 || command -v python)"
+"$python_cmd" - "$runner" "$repo" "$out" <<'PY'
+import io
+import os
+import re
+import sys
+
+runner_path, repo, out_path = sys.argv[1:4]
+MARKER = "-- ==== MODULES ===="
+REQUIRE = re.compile(r'^local \w+ = require\("\./(lib/)?\w+"\)\n', re.M)
+MODULES = ["util", "paths", "skills", "lanes", "tracker", "templates", "commands"]
+
+
+def source(path):
+	with io.open(path, encoding="utf-8") as fh:
+		text = fh.read()
+	if text.startswith("--!strict\n"):
+		text = text[len("--!strict\n"):]
+	return REQUIRE.sub("", text)
+
+
+with io.open(runner_path, encoding="utf-8") as fh:
+	runner = fh.read()
+head, tail = runner.split(MARKER, 1)
+
+parts = [head]
+for name in MODULES:
+	body = source(os.path.join(repo, "lib", name + ".luau"))
+	parts.append("local %s = (function()\n%s\nend)()\n" % (name, body))
+for name in ("host", "window"):
+	body = source(os.path.join(repo, name + ".luau"))
+	parts.append("do -- %s.luau\n%s\nend\n" % (name, body))
+parts.append(tail)
+
+with io.open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+	fh.write("".join(parts))
+print(out_path)
+PY
+
+# Windows 的 luau.exe 读不了 WSL 的 /tmp，换成它认得的路径。
+if [[ "$luau" == *.exe ]] && command -v wslpath >/dev/null 2>&1; then
+	out="$(wslpath -w "$out")"
+fi
+
+"$luau" "$out"

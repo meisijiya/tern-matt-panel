@@ -1,0 +1,36 @@
+/* Matt 面板的排版。主题负责颜色，这里只管间距与层次。 */
+
+.sf-main[data-surface='plugin.tern-matt-panel.matt'] .sf-list {
+	border-radius: 6px;
+}
+
+.sf-main[data-surface='plugin.tern-matt-panel.matt'] .sf-item {
+	padding-top: 3px;
+	padding-bottom: 3px;
+}
+
+/* 票链接与正文用等宽字体，方便对齐 URL。 */
+.sf-main[data-surface='plugin.tern-matt-panel.matt'] .sf-item-value {
+	font-family: var(--mono);
+	font-size: 12px;
+	opacity: 0.75;
+}
+
+/* 技能泳道之间留一点空隙，泳道标题与列表不至于糊在一起。 */
+.sf-main[data-surface='plugin.tern-matt-panel.matt'] .sf-section {
+	margin-top: 6px;
+}
+
+/* 动作按钮之间拉开一点，避免挤成一团。 */
+.sf-main[data-surface='plugin.tern-matt-panel.matt'] .sf-button {
+	margin-right: 4px;
+}
+
+/* 底部操作栏：徽标之间拉开一点，按键说明更暗。 */
+.sf-dock[data-surface='plugin.tern-matt-panel.matt'] .sf-badge {
+	margin-right: 4px;
+}
+
+.sf-dock[data-surface='plugin.tern-matt-panel.matt'] .sf-t-dim {
+	opacity: 0.7;
+}
