@@ -17,6 +17,21 @@ local templates = require("./lib/templates")
 local tracker = require("./lib/tracker")
 local util = require("./lib/util")
 
+--- 拿当前秒数。宿主沙箱没在类型里暴露 os，用 pcall 兜住：
+--- 拿不到就退化成「没有冷却」，宁可多打一次也不崩。
+local function nowSec(): number?
+	local ok, v = pcall(function()
+		return os.time()
+	end)
+	if ok and type(v) == "number" then
+		return v
+	end
+	return nil
+end
+
+--- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
+local COOLDOWN_SEC = 60
+
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
 -- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
@@ -47,6 +62,10 @@ type State = {
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
+	-- 正在用 REST 拉某张票的正文；view 里发请求必须靠它防重入
+	bodyLoading: number?,
+	-- 上次拉取失败后到这个时刻之前不再发请求
+	cooldownUntil: number?,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
@@ -74,6 +93,8 @@ local function blank(): State
 		ticketSel = nil,
 		ticket = nil,
 		ticketBody = nil,
+		bodyLoading = nil,
+		cooldownUntil = nil,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
@@ -182,6 +203,12 @@ local function loadBoard(state: State, cx: BlockCx)
 	if state.loading then
 		return
 	end
+	local now = nowSec()
+	if now and state.cooldownUntil and now < state.cooldownUntil then
+		state.message = string.format("上次拉取失败，%d 秒后再试", state.cooldownUntil - now)
+		cx:render()
+		return
+	end
 	state.loading = true
 	-- 目录优先：面板跟着窗口所在项目走。
 	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
@@ -221,7 +248,9 @@ end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	local fields = "number,title,body,state,url,labels,assignees,parent,blockedBy,createdAt"
+	-- 刻意不拉 body：列表一次 400 点，5000 点/小时只够刷十来次。
+	-- body 是成本大头，改成点开某张票时用 REST 单独取（REST 不占 GraphQL 配额）。
+	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
 	tern.process.run({
 		"gh",
 		"issue",
@@ -237,6 +266,10 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 	}):next(function(result: any, _err: any, _cx: any)
 		if result == nil or result.status ~= 0 then
 			state.loading = false
+			local now2 = nowSec()
+			if now2 then
+				state.cooldownUntil = now2 + COOLDOWN_SEC
+			end
 			state.message = "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出")
 			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
 			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
@@ -776,8 +809,31 @@ local function mapView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 用 REST 取一张票的正文。REST 走 core 配额，不占 GraphQL，单张票成本可以忽略。
+local function loadTicketBody(state: State, cx: BlockCx, t: tracker.Ticket)
+	local repo = state.repo
+	if not repo then
+		state.bodyLoading = nil
+		return
+	end
+	tern.process.run({
+		"gh", "api",
+		string.format("repos/%s/issues/%d", repo, t.number),
+		"--jq", ".body",
+	}):next(function(result: any, _err: any, _cx: any)
+		state.bodyLoading = nil
+		if result ~= nil and result.status == 0 then
+			state.ticketBody = tostring(result.stdout or "")
+		else
+			state.ticketBody = ""
+			state.message = "取票正文失败：" .. tostring(if result then result.stderr else "无输出")
+		end
+		cx:render()
+	end)
+end
+
 --- 票详情区：描述、动作按钮、阻塞关系。
-local function ticketView(state: State): Node
+local function ticketView(state: State, cx: BlockCx): Node
 	local t = state.ticket
 	if not t then
 		return ui.text(ui.span("从任务板点一张票", "muted"))
@@ -828,10 +884,19 @@ local function ticketView(state: State): Node
 		table.insert(main, ui.text(ui.span("等这些先完成：" .. table.concat(nums, "、"), "warning")))
 	end
 
-	local body = state.ticketBody or ""
-	if body ~= "" then
+	-- 正文不在列表查询里（那是 GraphQL 成本的大头），点开这张票才用 REST 取。
+	local body = state.ticketBody
+	if body == nil then
+		if state.bodyLoading ~= t.number then
+			state.bodyLoading = t.number
+			loadTicketBody(state, cx, t)
+		end
+		table.insert(main, ui.text(ui.span("正在取正文…", "muted")))
+	elseif body ~= "" then
 		table.insert(main, ui.rule(ui.span("描述")))
 		table.insert(main, ui.md(body))
+	else
+		table.insert(main, ui.text(ui.span("这张票没有正文", "muted")))
 	end
 
 	return ui.col(main)
@@ -995,7 +1060,7 @@ tern.block.define(BLOCK_ID, {
 		elseif state.view == "map" then
 			main = ui.col({ toolbar(state), mapView(state, cx) })
 		else
-			main = ui.col({ toolbar(state), ticketView(state) })
+			main = ui.col({ toolbar(state), ticketView(state, cx) })
 		end
 		return { main = main, dock = dockView(state) }
 	end,
@@ -1139,7 +1204,7 @@ tern.block.define(BLOCK_ID, {
 					return false
 				end
 				state.ticket = t
-				state.ticketBody = t.body
+				state.ticketBody = nil
 				state.view = "ticket"
 				return true
 			end
@@ -1188,7 +1253,7 @@ tern.block.define(BLOCK_ID, {
 					return false
 				end
 				state.ticket = t
-				state.ticketBody = t.body
+				state.ticketBody = nil
 				state.view = "ticket"
 				return true
 			end
@@ -1250,7 +1315,7 @@ tern.block.define(BLOCK_ID, {
 						if t.number == n then
 							state.ticketSel = n
 							state.ticket = t
-							state.ticketBody = t.body
+							state.ticketBody = nil
 							state.view = "ticket"
 							break
 						end
@@ -1281,7 +1346,7 @@ tern.block.define(BLOCK_ID, {
 						if t.number == n then
 							state.ticketSel = n
 							state.ticket = t
-							state.ticketBody = t.body
+							state.ticketBody = nil
 							state.view = "ticket"
 							break
 						end
