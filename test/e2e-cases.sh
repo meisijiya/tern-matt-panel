@@ -117,6 +117,74 @@ sys.exit(1)
 	return 0
 }
 
+# 反复点列表项直到目标文本出现。
+# 竞态来源：视图切换后列表项的坐标会随重绘变动，取到坐标的那一瞬
+# 布局可能已经变了 —— 点空了就是"点了没反应"。
+# 幂等做法：点一次，等一小会儿，目标没出现就再点一次，直到超时。
+click_item_until() {
+	local sel="$1"
+	local nth="$2"
+	local needle="$3"
+	local timeout_ms="$4"
+	local ticks=$(( timeout_ms / 500 ))
+	while [ "$ticks" -gt 0 ]; do
+		if ! click_item "$sel" "$nth" >/dev/null 2>&1; then
+			:
+		else
+			local out
+			out="$(ctl tree 2>/dev/null || true)"
+			if printf '%s' "$out" | grep -qF -- "$needle"; then
+				return 0
+			fi
+		fi
+		ticks=$((ticks - 1))
+		sleep 0.5
+	done
+	echo "  FAIL 点 $sel 第 $nth 项后等不到：$needle"
+	return 1
+}
+
+# 反复点按钮直到目标文本出现（点空了就是"点了没反应"，重试即可）。
+click_until() {
+	local want="$1"
+	local needle="$2"
+	local timeout_ms="$3"
+	local ticks=$(( timeout_ms / 500 ))
+	while [ "$ticks" -gt 0 ]; do
+		if click_text "$want" >/dev/null 2>&1; then
+			local out
+			out="$(ctl tree 2>/dev/null || true)"
+			if printf '%s' "$out" | grep -qF -- "$needle"; then
+				return 0
+			fi
+		fi
+		ticks=$((ticks - 1))
+		sleep 0.5
+	done
+	echo "  FAIL 点「$want」后等不到：$needle"
+	return 1
+}
+
+# 等待某段文本出现（最多 timeout 毫秒）。
+# 异步数据（gh 拉取、窗口回写）落盘时间不定，固定 sleep 会偶发失败 ——
+# 等条件成立才是稳定的判据。
+wait_for() {
+	local needle="$1"
+	local timeout_ms="$2"
+	local ticks=$(( timeout_ms / 300 ))
+	while [ "$ticks" -gt 0 ]; do
+		local out
+		out="$(ctl tree 2>/dev/null || true)"
+		if printf '%s' "$out" | grep -qF -- "$needle"; then
+			return 0
+		fi
+		ticks=$((ticks - 1))
+		sleep 0.3
+	done
+	echo "  FAIL 等不到：$needle"
+	return 1
+}
+
 # 一个用例：名字 + 场景文件 + 断言序列
 case_run() {
 	local name="$1"
@@ -126,7 +194,7 @@ case_run() {
 	scen "$file"
 	local ok=1
 	local a
-	local rest idx sel
+	local rest idx sel tmo needle
 	for a in "$@"; do
 		case "$a" in
 		has:*) assert_has "${a#has:}" "$name" || ok=0 ;;
@@ -140,6 +208,32 @@ case_run() {
 			click_item "$sel" "$idx" || ok=0
 			;;
 		wait:*) sleep "$((${a#wait:} / 1000))" ;;
+		wait-for:*)
+			rest="${a#wait-for:}"
+			idx="${rest##*:}"
+			sel="${rest%:*}"
+			wait_for "$sel" "$idx" || ok=0
+			;;
+		click-until:*)
+			# 格式：click-until:<选择器>:<序号>:<目标文本>:<超时毫秒>
+			rest="${a#click-until:}"
+			tmo="${rest##*:}"
+			rest="${rest%:*}"
+			needle="${rest##*:}"
+			rest="${rest%:*}"
+			idx="${rest##*:}"
+			sel="${rest%:*}"
+			click_item_until "$sel" "$idx" "$needle" "$tmo" || ok=0
+			;;
+		click-btn-until:*)
+			# 格式：click-btn-until:<按钮文字>:<目标文本>:<超时毫秒>
+			rest="${a#click-btn-until:}"
+			tmo="${rest##*:}"
+			rest="${rest%:*}"
+			needle="${rest##*:}"
+			sel="${rest%:*}"
+			click_until "$sel" "$needle" "$tmo" || ok=0
+			;;
 		*) echo "  FAIL [$name] 未知断言：$a"; ok=0 ;;
 		esac
 	done
@@ -207,7 +301,7 @@ wait 100
 EOF
 case_run "切到任务板" "$TMP/board.sc" \
 	"click:任务板" \
-	"wait:3000" \
+	"wait-for:前沿:20000" \
 	"has:地图" \
 	"has:前沿"
 
@@ -217,10 +311,8 @@ wait 100
 EOF
 case_run "地图详情视图" "$TMP/map.sc" \
 	"click:任务板" \
-	"wait:3000" \
-	"click-item:.sf-item:1" \
-	"wait:3000" \
-	"has:子票" \
+	"wait-for:前沿:20000" \
+	"click-until:.sf-item:1:子票:15000" \
 	"has:返回任务板"
 
 # 7. 技能视图有注入按钮（鼠标入口）
@@ -230,7 +322,7 @@ wait 100
 EOF
 case_run "技能注入有鼠标入口" "$TMP/back_skills.sc" \
 	"click:技能" \
-	"wait:3000" \
+	"wait-for:ask-matt:15000" \
 	"has:注入技能"
 
 # 8. 注入后提示从"提交中"变成结果（结果回写通道）
@@ -241,10 +333,20 @@ click .sf-item-label
 wait 2000
 EOF
 case_run "注入结果回写" "$TMP/inject.sc" \
-	"click:注入技能" \
-	"wait:3000" \
-	"lacks:提交中" \
-	"has:提交失败"
+	"click-btn-until:注入技能:提交中:10000" \
+	"wait-for:提交失败:20000" \
+	"lacks:提交中"
+
+# 9. 「刷新」按钮重新拉数据（它的动作名与窗口戳宿主用的 refresh 刻意分开）
+cat > "$TMP/reload.sc" <<EOF
+wait 100
+EOF
+case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
+	"click:任务板" \
+	"wait-for:前沿:20000" \
+	"click:刷新" \
+	"wait-for:已刷新:20000" \
+	"has:前沿"
 
 # ---------------------------------------------------------------- 汇总 ----
 

@@ -231,8 +231,10 @@ local function handleAction(cx: WindowCx)
 			})
 		end)
 		-- 通知宿主重画：往 pane 发一个 action 事件，宿主的 event 处理里会读 kv。
+		-- id 必须指向真实节点 —— 宿主那边是工具条上的「刷新」按钮（key = "refresh"），
+		-- 节点 id 是 <区块>.<区域>.<按钮key>。用编造的 id 事件会被丢掉，提示会停在「提交中」。
 		pcall(function()
-			cx.session:event(pane, { ev = "action", id = "main.0.refresh", act = "refresh" })
+			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
 		end)
 	end
 

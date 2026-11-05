@@ -622,7 +622,12 @@ local function toolbar(state: State): Node
 		ui.button("刷新", {
 			icon = "refresh",
 			size = "sm",
-			actions = { click = "refresh" },
+			-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
+			-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
+			key = "refresh",
+			-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
+			-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
+			actions = { click = "reload" },
 		}),
 		ui.button("换仓库", {
 			icon = "repo",
@@ -1037,7 +1042,7 @@ tern.block.define(BLOCK_ID, {
 			state.message = nil
 			return
 		end
-		if act == "refresh" then
+		if act == "reload" then
 			loadSkills(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"

@@ -1,0 +1,1332 @@
+meta:
+  source_markmap: 测试用例_markmap.md
+  extracted_at: '2026-11-05'
+  strategy_ref: 测试策略.md
+modules:
+- module: 1. 技能面板
+  shared_preconditions:
+  - 面板已打开，停在技能视图；本机已安装中文技能包。
+- module: 2. 任务板
+  shared_preconditions:
+  - 面板已打开；`gh` CLI 已登录；工作目录为有 origin remote 的 git 仓库。
+- module: 3. 票详情与动作
+  shared_preconditions:
+  - 任务板已加载；所选票带 wayfinder 类型标签。
+- module: 4. 注入链路
+  shared_preconditions:
+  - 面板已打开；技能或票已选中。
+- module: 5. 键盘与鼠标并行
+  shared_preconditions:
+  - 面板已打开。
+- module: 6. 数据一致性
+  shared_preconditions:
+  - 面板已打开；本仓库 issue 集合固定。
+- module: 7. 回写契约
+  shared_preconditions:
+  - 面板已打开。
+- module: 8. 状态栏与命令
+  shared_preconditions: []
+cases:
+- id: TC-01-01
+  title: 面板打开后列出技能并按泳道分组
+  module: 1. 技能面板
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-1
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R7
+  code_refs:
+  - host.luau:330-394
+  evidence:
+    level: E2
+    source: host.luau:330-394
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-02
+  title: 顶部工具条提供四个可点按钮
+  module: 1. 技能面板
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-2
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:601-649
+  evidence:
+    level: E2
+    source: host.luau:601-649
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-03
+  title: 点技能行展开该技能正文且不含头部元信息
+  module: 1. 技能面板
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-3
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:696-706
+  - lib/skills.luau:99-109
+  evidence:
+    level: E2
+    source: host.luau:696-706
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-04
+  title: 技能视图提供鼠标注入入口
+  module: 1. 技能面板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:641-648
+  evidence:
+    level: E2
+    source: host.luau:641-648
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-05
+  title: 技能视图不出现注入按钮以外的额外干扰项
+  module: 1. 技能面板
+  priority: P2
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:601-649
+  evidence:
+    level: E2
+    source: host.luau:601-649
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-06
+  title: 默认只显示正式技能
+  module: 1. 技能面板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R7
+  code_refs:
+  - lib/skills.luau:112-114
+  evidence:
+    level: E2
+    source: lib/skills.luau:112-114
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-07
+  title: 切换后显示全部探测到的技能
+  module: 1. 技能面板
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R7
+  code_refs:
+  - host.luau:1049-1054
+  evidence:
+    level: E2
+    source: host.luau:1049-1054
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-08
+  title: 再点一次恢复只显示正式技能
+  module: 1. 技能面板
+  priority: P2
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:1049-1054
+  - lib/skills.luau:112-114
+  evidence:
+    level: E2
+    source: host.luau:1049-1054
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-09
+  title: 未安装技能包时给出安装链接与可复制命令
+  module: 1. 技能面板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R3
+  code_refs:
+  - host.luau:336-348
+  evidence:
+    level: E2
+    source: host.luau:336-348
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-10
+  title: 未安装技能包时任务板仍可用
+  module: 1. 技能面板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R3
+  code_refs:
+  - host.luau:396-467
+  evidence:
+    level: E2
+    source: host.luau:396-467
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-01-11
+  title: 技能包缺失提示中的命令可被复制
+  module: 1. 技能面板
+  priority: P2
+  type: exception
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R3
+  code_refs:
+  - host.luau:341-344
+  evidence:
+    level: E2
+    source: host.luau:341-344
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-01
+  title: 任务板显示地图列表与前沿列表
+  module: 2. 任务板
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-4
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:396-467
+  - host.luau:162-233
+  evidence:
+    level: E2
+    source: host.luau:396-467
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-02
+  title: 点地图行进地图详情
+  module: 2. 任务板
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-5
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:991-1004
+  evidence:
+    level: E2
+    source: host.luau:991-1004
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-03
+  title: 地图详情列出子票并显示票类型或阻塞状态
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R8
+  code_refs:
+  - host.luau:502-517
+  evidence:
+    level: E2
+    source: host.luau:502-517
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-04
+  title: 地图详情显示地图级前沿
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R8
+  code_refs:
+  - host.luau:492-500
+  evidence:
+    level: E2
+    source: host.luau:492-500
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-05
+  title: 地图详情显示迷雾与范围外两节文字
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R8
+  code_refs:
+  - host.luau:536-548
+  evidence:
+    level: E2
+    source: host.luau:536-548
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-06
+  title: 点子票行进票详情
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:974-988
+  evidence:
+    level: E2
+    source: host.luau:974-988
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-07
+  title: 地图详情可返回任务板
+  module: 2. 任务板
+  priority: P0
+  type: state
+  execution_model: ui
+  smoke: SMOKE-6
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:1064-1070
+  evidence:
+    level: E2
+    source: host.luau:1064-1070
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-08
+  title: 可手动指定仓库并生效
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:268-280
+  - host.luau:165-172
+  evidence:
+    level: E2
+    source: host.luau:268-280
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-09
+  title: 取消仓库输入不改变当前仓库
+  module: 2. 任务板
+  priority: P2
+  type: exception
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - window.luau:199-209
+  evidence:
+    level: E2
+    source: window.luau:199-209
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-15
+  title: 手动指定仓库输入为空时不改变当前仓库
+  module: 2. 任务板
+  priority: P2
+  type: exception
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - window.luau:201-211
+  evidence:
+    level: E2
+    source: window.luau:201-211
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-10
+  title: gh 未登录时给出失败原因且面板不崩
+  module: 2. 任务板
+  priority: P1
+  type: reliability
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:203-208
+  evidence:
+    level: E2
+    source: host.luau:203-208
+    confidence: medium
+  tags:
+  - '[可靠]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-11
+  title: gh 输出无法解析时给出失败原因且面板不崩
+  module: 2. 任务板
+  priority: P1
+  type: reliability
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:209-215
+  evidence:
+    level: E2
+    source: host.luau:209-215
+    confidence: medium
+  tags:
+  - '[可靠]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-12
+  title: 仓库没有 issue 时给出提示
+  module: 2. 任务板
+  priority: P2
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:219-221
+  evidence:
+    level: E2
+    source: host.luau:219-221
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-13
+  title: 当前目录不是 git 仓库时提示手动指定
+  module: 2. 任务板
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:174-182
+  evidence:
+    level: E2
+    source: host.luau:174-182
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-02-14
+  title: gh 失败后手动刷新恢复
+  module: 2. 任务板
+  priority: P1
+  type: reliability
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R4
+  code_refs:
+  - host.luau:203-208
+  - host.luau:631-635
+  evidence:
+    level: E2
+    source: host.luau:203-208
+    confidence: medium
+  tags:
+  - '[可靠]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-03-01
+  title: 票详情按票类型给出对应动作按钮
+  module: 3. 票详情与动作
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-7
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:307-330
+  evidence:
+    level: E2
+    source: host.luau:307-330
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-03-02
+  title: 复制动作复制票标题与链接
+  module: 3. 票详情与动作
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:949-958
+  evidence:
+    level: E2
+    source: host.luau:949-958
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-03-03
+  title: 打开链接动作打开票的网页地址
+  module: 3. 票详情与动作
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:959-964
+  evidence:
+    level: E2
+    source: host.luau:959-964
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-03-04
+  title: 返回任务板按钮回到列表
+  module: 3. 票详情与动作
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:1064-1070
+  evidence:
+    level: E2
+    source: host.luau:1064-1070
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-03-05
+  title: 无类型标签的票不出现类型动作按钮
+  module: 3. 票详情与动作
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:307-330
+  evidence:
+    level: E2
+    source: host.luau:307-330
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-01
+  title: 技能注入提交后提示进入等待回写状态
+  module: 4. 注入链路
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: SMOKE-8
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  code_refs:
+  - host.luau:282-288
+  evidence:
+    level: E2
+    source: host.luau:282-288
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-02
+  title: 注入成功后提示改为已提交
+  module: 4. 注入链路
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  code_refs:
+  - window.luau:243-248
+  evidence:
+    level: E2
+    source: window.luau:243-248
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-03
+  title: 注入失败时提示改为提交失败并带原因
+  module: 4. 注入链路
+  priority: P0
+  type: reliability
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  - R6
+  code_refs:
+  - window.luau:230-241
+  evidence:
+    level: E2
+    source: window.luau:230-241
+    confidence: medium
+  tags:
+  - '[可靠]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-04
+  title: 注入内容只是一行斜杠技能名
+  module: 4. 注入链路
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  code_refs:
+  - lib/commands.luau:9-11
+  evidence:
+    level: E2
+    source: lib/commands.luau:9-11
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-05
+  title: 票动作注入使用票专用模板
+  module: 4. 注入链路
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  code_refs:
+  - lib/commands.luau:13-20
+  evidence:
+    level: E2
+    source: lib/commands.luau:13-20
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-06
+  title: 注入请求的序号不回退导致请求被丢弃
+  module: 4. 注入链路
+  priority: P1
+  type: concurrency
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R5
+  - R6
+  code_refs:
+  - host.luatu:240-266
+  evidence:
+    level: E2
+    source: host.luatu:240-266
+    confidence: medium
+  tags:
+  - '[并发]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-04-07
+  title: 面板与另一窗口同时发请求时请求不串窗口
+  module: 4. 注入链路
+  priority: P2
+  type: concurrency
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R1
+  - R5
+  code_refs:
+  - window.luau:188-198
+  evidence:
+    level: E2
+    source: window.luau:188-198
+    confidence: medium
+  tags:
+  - '[并发]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-01
+  title: 键盘 Tab 在技能与任务板之间切换
+  module: 5. 键盘与鼠标并行
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:748-756
+  evidence:
+    level: E2
+    source: host.luau:748-756
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-02
+  title: 技能视图内上下键移动选中项并展开正文
+  module: 5. 键盘与鼠标并行
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:757-790
+  evidence:
+    level: E2
+    source: host.luau:757-790
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-03
+  title: 地图详情内上下键在子票间移动
+  module: 5. 键盘与鼠标并行
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:891-913
+  evidence:
+    level: E2
+    source: host.luau:891-913
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-04
+  title: 地图详情内 Esc 返回任务板
+  module: 5. 键盘与鼠标并行
+  priority: P1
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:762-765
+  evidence:
+    level: E2
+    source: host.luau:762-765
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-05
+  title: Tab 键在地图视图返回技能视图
+  module: 5. 键盘与鼠标并行
+  priority: P2
+  type: state
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:746-754
+  evidence:
+    level: E2
+    source: host.luau:746-754
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-05-06
+  title: Esc 键在技能或任务板视图不崩溃
+  module: 5. 键盘与鼠标并行
+  priority: P2
+  type: exception
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R2
+  code_refs:
+  - host.luau:745-790
+  evidence:
+    level: E2
+    source: host.luau:745-790
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-06-01
+  title: 技能不因分组而丢失
+  module: 6. 数据一致性
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R3
+  - R7
+  code_refs:
+  - lib/lanes.luau:38-57
+  evidence:
+    level: E2
+    source: lib/lanes.luau:38-57
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-06-02
+  title: 技能正文读取不改动技能包文件
+  module: 6. 数据一致性
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R3
+  code_refs:
+  - lib/skills.luau:97-109
+  evidence:
+    level: E2
+    source: lib/skills.luau:97-109
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-06-03
+  title: 地图子票数与地图声明的票数一致
+  module: 6. 数据一致性
+  priority: P1
+  type: data
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R8
+  code_refs:
+  - host.luau:478-517
+  evidence:
+    level: E2
+    source: host.luau:478-517
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-06-04
+  title: 前沿票集合与未阻塞未认领口径一致
+  module: 6. 数据一致性
+  priority: P1
+  type: data
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - lib/tracker.luau:178-206
+  evidence:
+    level: E2
+    source: lib/tracker.luau:178-206
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-07-01
+  title: 回写结果与请求序号不匹配时不改写提示
+  module: 7. 回写契约
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R5
+  - R6
+  code_refs:
+  - host.luau:290-306
+  evidence:
+    level: E2
+    source: host.luau:290-306
+    confidence: medium
+  tags:
+  - '[集成]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-07-02
+  title: 回写成功后胶囊数字与面板前沿数一致
+  module: 7. 回写契约
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - host.luau:225-230
+  - window.luau:308-316
+  evidence:
+    level: E2
+    source: host.luau:225-230
+    confidence: medium
+  tags:
+  - '[集成]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-07-03
+  title: 状态栏胶囊显示技能包版本号
+  module: 7. 回写契约
+  priority: P2
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - lib/paths.luau:44-57
+  evidence:
+    level: E2
+    source: lib/paths.luau:44-57
+    confidence: medium
+  tags:
+  - '[集成]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-07-04
+  title: 回写结果序号不匹配时提示保持提交中
+  module: 7. 回写契约
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref:
+  - R5
+  - R6
+  code_refs:
+  - host.luau:290-306
+  evidence:
+    level: E2
+    source: host.luau:290-306
+    confidence: medium
+  tags:
+  - '[集成]'
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-08-01
+  title: 命令面板可打开 Matt 面板
+  module: 8. 状态栏与命令
+  priority: P0
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - window.luau:253-262
+  evidence:
+    level: E2
+    source: window.luau:253-262
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
+- id: TC-08-02
+  title: 技能速览命令列出技能
+  module: 8. 状态栏与命令
+  priority: P1
+  type: functional
+  execution_model: ui
+  smoke: null
+  preconditions: []
+  steps: []
+  expected: []
+  test_data: {}
+  risk_ref: []
+  code_refs:
+  - window.luau:260-306
+  evidence:
+    level: E2
+    source: window.luau:260-306
+    confidence: medium
+  tags: []
+  automation:
+    supported: 'yes'
+    framework: manual
+  status: active
