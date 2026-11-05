@@ -15,6 +15,7 @@ local paths = require("./lib/paths")
 local skills = require("./lib/skills")
 local templates = require("./lib/templates")
 local tracker = require("./lib/tracker")
+local util = require("./lib/util")
 
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
