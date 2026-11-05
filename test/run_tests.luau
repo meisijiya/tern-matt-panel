@@ -539,7 +539,8 @@ test("templates.render", function()
 end)
 
 test("commands.buildSkillCommand", function()
-	eq(commands.buildSkillCommand({ name = "wayfinder" }), "/wayfinder")
+	-- omp 只认 skill: 前缀，不是裸斜杠
+	eq(commands.buildSkillCommand({ name = "wayfinder" }), "/skill:wayfinder")
 end)
 
 test("commands.buildTicketCommand", function()

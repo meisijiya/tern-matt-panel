@@ -497,7 +497,7 @@ local function skillsView(state: State, cx: BlockCx): Node
 			if s then
 				table.insert(items, {
 					label = s.name,
-					value = "/" .. s.name,
+					value = "/skill:" .. s.name,
 					icon = "sparkle",
 					tone = if s.name == state.skillSel then "accent" else nil,
 				})
@@ -1355,8 +1355,8 @@ tern.block.define(BLOCK_ID, {
 				if ev.ev == "activate" then
 					-- 双击 = 把 /技能名 放进剪贴板，不直接投给 agent。
 					-- 注入是替用户做决定，双击只是「准备好」，发不发由人定。
-					sendAction(state, cx, "compose", "/" .. item, item)
-					state.message = "已复制 /" .. item .. "，粘到输入框"
+					sendAction(state, cx, "compose", commands.buildSkillCommand({ name = item }), item)
+					state.message = "已复制 /skill:" .. item .. "，粘到输入框"
 				else
 					openSkill(state, item)
 				end
