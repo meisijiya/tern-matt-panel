@@ -51,6 +51,8 @@ type State = {
 	pendingSeq: number?,
 	loading: boolean,
 	repo: string?,
+	-- 仓库是目录自动识别来的，还是退到上次手动指定的
+	repoManual: boolean,
 	skillVersion: string?,
 	hasSkills: boolean,
 }
@@ -75,6 +77,7 @@ local function blank(): State
 		pendingSeq = nil,
 		loading = false,
 		repo = nil,
+		repoManual = false,
 		skillVersion = nil,
 		hasSkills = false,
 	}
@@ -160,13 +163,7 @@ local function inferRepo(cx: BlockCx, cb: (string?) -> ())
 			cb(nil)
 			return
 		end
-		local url = tostring(result.stdout or "")
-		local owner, repo = string.match(url, "[:/]([^/:]+)/([^/%.]+)%.git")
-		if owner and repo then
-			cb(owner .. "/" .. repo)
-		else
-			cb(nil)
-		end
+		cb(util.parseRemoteUrl(tostring(result.stdout or "")))
 	end)
 end
 
@@ -185,28 +182,40 @@ local function loadBoard(state: State, cx: BlockCx)
 		return
 	end
 	state.loading = true
-	-- 用户手动指定的仓库优先（写在 kv 里，跨窗口共享）。
-	local ok, value = pcall(tern.kv.get, REPO_KEY)
-	local chosen: string? = nil
-	if ok and type(value) == "table" and type(value.repo) == "string" and value.repo ~= "" then
-		chosen = value.repo
-	end
-	local repo = chosen or state.repo
-	if not repo then
-		inferRepo(cx, function(found: string?)
-			if not found then
-				state.loading = false
-				state.message = "找不到仓库：当前目录不是 git 仓库，按 R 手动指定"
-				cx:render()
-				return
+	-- 目录优先：面板跟着窗口所在项目走。
+	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
+	-- 用户在新项目开面板看到的却是上一个项目的票。
+	inferRepo(cx, function(found: string?)
+		local repo = found
+		local manual = false
+		if not repo then
+			-- 目录推不出来（不是 git 仓库 / 没有 origin）才退到上次手动指定的。
+			local ok, value = pcall(tern.kv.get, REPO_KEY)
+			if ok and type(value) == "table" and type(value.repo) == "string" and value.repo ~= "" then
+				repo = value.repo
+				manual = true
 			end
-			state.repo = found
-			fetchIssues(state, cx, found)
-		end)
-		return
-	end
-	state.repo = repo
-	fetchIssues(state, cx, repo)
+		end
+		if not repo then
+			state.loading = false
+			state.repo = nil
+			state.message = "当前目录不是 git 仓库，也没有指定过：点「换仓库」填 owner/repo"
+			cx:render()
+			return
+		end
+		if state.repo ~= repo then
+			-- 换了仓库就把上一个仓库的数据清掉，别让旧票挂在新仓库名下。
+			state.tickets = {}
+			state.maps = {}
+			state.ticket = nil
+			state.ticketBody = nil
+			state.mapSel = nil
+			state.ticketSel = nil
+		end
+		state.repo = repo
+		state.repoManual = manual
+		fetchIssues(state, cx, repo)
+	end)
 end
 
 --- 真正拉 issue 的那一步。
@@ -472,9 +481,18 @@ local function boardView(state: State, cx: BlockCx): Node
 	end
 	if state.repo then
 		table.insert(main, ui.text({
-			ui.span(state.repo, "muted"),
-			ui.span("  点行选中，点「刷新」重取", "muted"),
+			ui.span(state.repo, "strong"),
+			ui.span(if state.repoManual
+				then "  手动指定 · 当前目录没识别到 git remote"
+				else "  来自当前目录的 git remote", "muted"),
 		}))
+	end
+	-- 仓库是空的要说清下一步做什么，只写「没有 issue」等于把问题丢回给用户。
+	if #state.tickets == 0 then
+		table.insert(main, ui.text(ui.span("这个仓库还没有 issue", "warning")))
+		table.insert(main, ui.text(ui.span(
+			"跑 /wayfinder 建路线图（会生成一张地图 issue），再用 /to-spec、/to-tickets 往下拆。", "muted"
+		)))
 	end
 
 	-- 地图
@@ -497,7 +515,7 @@ local function boardView(state: State, cx: BlockCx): Node
 	local mapLp: { [string]: any } = mapList.p or {}
 	mapLp.key = MAP_LIST
 	mapLp.selected = if state.mapSel then tostring(state.mapSel) else nil
-	mapLp.empty = { ui.span("没有 wayfinder:map 地图", "muted") }
+	mapLp.empty = { ui.span("没有 wayfinder:map 地图 · 跑 /wayfinder 建一张", "muted") }
 	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
 	mapList.p = mapLp
 	-- 和 Spec、四组票一样做成可折叠卡片：一张地图占一块地方，

@@ -78,4 +78,24 @@ function M.contains(list: { any }, needle: any): boolean
 	return false
 end
 
+--- 从 git remote 的 URL 里取 owner/repo。
+--- 认这些形状：git@github.com:o/r.git、https://github.com/o/r.git、
+--- ssh://git@host/o/r、以及不带 .git 后缀的网页地址。
+--- 认不出返回 nil —— 调用方据此退到手动指定，而不是拿半个地址去查。
+function M.parseRemoteUrl(url: string): string?
+	local u = M.trim(url)
+	if u == "" then
+		return nil
+	end
+	-- 去掉末尾斜杠，避免 `/repo/` 被当成空 repo
+	u = (u:gsub("/+$", ""))
+	-- .git 后缀可有可无
+	local base = (u:gsub("%.git$", ""))
+	local owner, repo = string.match(base, "[:/]([%w_.-]+)/([%w_.-]+)$")
+	if owner and repo then
+		return owner .. "/" .. repo
+	end
+	return nil
+end
+
 return M

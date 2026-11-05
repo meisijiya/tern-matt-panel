@@ -444,6 +444,17 @@ test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	end
 end)
 
+test("util.parseRemoteUrl 认各种 remote 地址", function()
+	eq(util.parseRemoteUrl("git@github.com:meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "ssh")
+	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "https")
+	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel"), "meisijiya/tern-matt-panel", "no .git suffix")
+	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel/"), "meisijiya/tern-matt-panel", "trailing slash")
+	eq(util.parseRemoteUrl("ssh://git@github.com/meisijiya/tern-matt-panel.git\n"), "meisijiya/tern-matt-panel", "trailing newline")
+	eq(util.parseRemoteUrl("git@gitlab.com:group/sub/proj.git"), "sub/proj", "nested group takes last two")
+	eq(util.parseRemoteUrl(""), nil, "empty")
+	eq(util.parseRemoteUrl("not a url"), nil, "garbage")
+end)
+
 test("tracker 认任意前缀的流程标签", function()
 	local mk = function(labels)
 		return {
