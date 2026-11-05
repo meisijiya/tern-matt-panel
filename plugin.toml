@@ -3,7 +3,7 @@ id = "tern-matt-panel"
 name = "Matt 面板"
 version = "0.1.0"
 description = "中文 mattpocock 技能包的游戏化面板：技能浏览、wayfinder 任务板、状态栏胶囊。"
-icon = "matt"
+icon = "tasks"
 
 host = "host.luau"
 window = "window.luau"
@@ -13,5 +13,5 @@ styles = ["styles.css"]
 [[blocks]]
 id = "matt"
 title = "Matt 面板"
-icon = "matt"
+icon = "tasks"
 palette = false

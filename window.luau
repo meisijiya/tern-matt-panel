@@ -200,7 +200,7 @@ local function handleAction(cx: WindowCx)
 	end
 	if action.kind == "pick-repo" then
 		-- cx:prompt 只有窗口半边有，所以仓库名在这里问、在这里写回 kv。
-		cx:prompt({ placeholder = "owner/repo", value = action.body, icon = "deck" }):next(function(repo, _err, cx)
+		cx:prompt({ placeholder = "owner/repo", value = action.body, icon = "tasks" }):next(function(repo, _err, cx)
 			if not repo or not cx then
 				return
 			end
@@ -288,7 +288,7 @@ end
 tern.command({
 	id = "panel",
 	title = "Matt 面板",
-	icon = "deck",
+	icon = "tasks",
 	run = openPanel,
 })
 
@@ -344,7 +344,7 @@ tern.chrome.status(function(_pane)
 	return {
 		{
 			text = string.format("%d 可领 · 技能 %s", summary.frontier, summary.version),
-			icon = "deck",
+			icon = "tasks",
 			command = "plugin.tern-matt-panel.panel",
 		},
 	}
