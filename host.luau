@@ -612,6 +612,17 @@ local function boardView(state: State, cx: BlockCx): Node
 		for _, t in ipairs(g.items) do
 			local who = if #t.assignees > 0 then "@" .. t.assignees[1] else nil
 			local parts: { string } = {}
+			-- 归属：这张票是从哪拆出来的。没有它，四组里的票像凭空冒出来的。
+			if t.parent then
+				table.insert(parts, "#" .. tostring(t.parent))
+			end
+			if #t.blockedBy > 0 then
+				local nums: { string } = {}
+				for _, n in ipairs(t.blockedBy) do
+					table.insert(nums, "#" .. tostring(n))
+				end
+				table.insert(parts, "等 " .. table.concat(nums, ","))
+			end
 			if t.type then
 				table.insert(parts, t.type)
 			end
@@ -687,15 +698,36 @@ local function mapView(state: State, cx: BlockCx): Node
 		end
 	end
 
-	-- 子票列表
+	-- 子票列表：一行要能读出「什么类型、卡在谁那里、还开没开」。
+	-- 原来 icon 写的是 ticket（tern 图标集没有这个名字，等于没画），
+	-- detail 只有 research / 被阻塞 两种，看不出阻塞源也看不出已关闭。
 	local items: { any } = {}
 	for _, t in ipairs(m.tickets) do
-		local blocked = #t.blockedBy > 0
+		local parts: { string } = {}
+		if #t.blockedBy > 0 then
+			local nums: { string } = {}
+			for _, n in ipairs(t.blockedBy) do
+				table.insert(nums, "#" .. tostring(n))
+			end
+			table.insert(parts, "等 " .. table.concat(nums, ","))
+		end
+		if t.type then
+			table.insert(parts, t.type)
+		end
+		if t.state ~= "OPEN" then
+			table.insert(parts, "已关闭")
+		end
+		local tone = if t.number == state.ticketSel then
+			"accent"
+		elseif t.state ~= "OPEN" then
+			"muted"
+		else
+			nil
 		table.insert(items, {
 			label = t.title,
-			detail = if blocked then "被阻塞" else t.type,
-			icon = "ticket",
-			tone = if t.number == state.ticketSel then "accent" else nil,
+			detail = table.concat(parts, " · "),
+			icon = TYPE_ICON[t.type] or "check",
+			tone = tone,
 		})
 	end
 	local list = ui.list(items)
@@ -785,8 +817,15 @@ local function ticketView(state: State): Node
 	}))
 	table.insert(main, ui.row(buttons))
 
+	if t.parent then
+		table.insert(main, ui.text(ui.span(string.format("所属：#%d", t.parent), "muted")))
+	end
 	if #t.blockedBy > 0 then
-		table.insert(main, ui.text(ui.span("被阻塞：" .. table.concat(t.blockedBy, ", "), "muted")))
+		local nums: { string } = {}
+		for _, n in ipairs(t.blockedBy) do
+			table.insert(nums, "#" .. tostring(n))
+		end
+		table.insert(main, ui.text(ui.span("等这些先完成：" .. table.concat(nums, "、"), "warning")))
 	end
 
 	local body = state.ticketBody or ""
