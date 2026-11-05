@@ -124,6 +124,24 @@ local function loadSkills(state: State)
 	state.lanes = lanes.groupSkills(visible)
 end
 
+--- 拉取成功的 issue 缓存。拉取失败（多半是 GitHub 限流）时退到这里，
+--- 免得面板变成空白 —— 用户刚才还看得到数据。
+local ISSUES_CACHE_KEY = "issues_cache"
+
+--- 用缓存里的 issue 填充 state。缓存不属于当前仓库时返回 false。
+local function applyCachedIssues(state: State, repo: string): boolean
+	local ok, value = pcall(tern.kv.get, ISSUES_CACHE_KEY)
+	if not ok or type(value) ~= "table" then
+		return false
+	end
+	if value.repo ~= repo or type(value.issues) ~= "table" then
+		return false
+	end
+	state.tickets = tracker.parseIssues(value.issues)
+	state.maps = tracker.groupByMap(value.issues)
+	return true
+end
+
 --- 真正拉 issue 的那一步。
 local fetchIssues: (State, BlockCx, string) -> ()
 
@@ -207,6 +225,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		if result == nil or result.status ~= 0 then
 			state.loading = false
 			state.message = "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出")
+			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
+			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
+			if applyCachedIssues(state, repo) then
+				state.message = state.message .. "（显示上次拉到的数据）"
+			end
 			cx:render()
 			return
 		end
@@ -214,6 +237,9 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		if not issues then
 			state.loading = false
 			state.message = "gh 输出解析失败"
+			if applyCachedIssues(state, repo) then
+				state.message = state.message .. "（显示上次拉到的数据）"
+			end
 			cx:render()
 			return
 		end
@@ -228,6 +254,8 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			frontier = #tracker.computeFrontier(state.tickets),
 			version = state.skillVersion or "—",
 		})
+		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
+		pcall(tern.kv.set, ISSUES_CACHE_KEY, { repo = repo, issues = issues })
 		cx:render()
 	end)
 end

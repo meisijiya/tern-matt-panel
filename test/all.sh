@@ -68,12 +68,13 @@ resolve_tool() {
 }
 
 fail=0
+envfail=0
 
 if [ "$run_unit" -eq 1 ]; then
 	luau="$(resolve_tool luau "/c/tools/luau/luau.exe" || true)"
 	if [ -z "$luau" ]; then
 		echo "unit: SKIP 找不到 luau CLI" >&2
-		fail=1
+		envfail=1
 	else
 		echo "== 单元测试 =="
 		if bash "$here/build.sh" "$luau"; then
@@ -87,17 +88,26 @@ fi
 
 if [ "$run_e2e" -eq 1 ]; then
 	echo "== 真机 e2e =="
-	if bash "$here/e2e.sh" $keep; then
+	bash "$here/e2e.sh" $keep
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
 		echo "e2e: PASS"
+	elif [ "$rc" -eq 2 ]; then
+		echo "e2e: 环境不可用（用例全被跳过）" >&2
+		envfail=1
 	else
 		echo "e2e: FAIL" >&2
 		fail=1
 	fi
 fi
 
-if [ "$fail" -eq 0 ]; then
-	echo "all: PASS"
-else
+if [ "$fail" -ne 0 ]; then
 	echo "all: FAIL" >&2
+	exit 1
 fi
-exit "$fail"
+if [ "$envfail" -ne 0 ]; then
+	echo "all: 环境不可用（有层没验到）" >&2
+	exit 2
+fi
+echo "all: PASS"
+exit 0

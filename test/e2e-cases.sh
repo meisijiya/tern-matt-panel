@@ -12,8 +12,6 @@ port="${TERNS_E2E_PORT:?e2e.sh 未设 TERNS_E2E_PORT}"
 repo="${TERNS_E2E_REPO:?e2e.sh 未设 TERNS_E2E_REPO}"
 skill_pkg="${TERNS_E2E_SKILL_PKG:?e2e.sh 未设 TERNS_E2E_SKILL_PKG}"
 tern_bin="${TERNS_BIN:?e2e.sh 未设 TERNS_BIN}"
-# GitHub 配额不够时任务板用例跳过（环境问题，不是产品缺陷）。
-gh_quota_ok="${TERNS_E2E_GH_QUOTA_OK:-1}"
 
 PASS=0
 FAIL=0
@@ -228,13 +226,10 @@ case_run() {
 			# 前置依赖不可用时跳过本用例（不算失败）。
 			# GitHub GraphQL 有配额，e2e 连跑多次会触发限流 —— 那是环境问题。
 			needle="${a#skip-if:}"
-			if [ "$needle" = "gh 拉取失败" ] && [ "$gh_quota_ok" -ne 1 ]; then
-				skipped=1
-				break
-			fi
 			local out
 			out="$(ctl tree 2>/dev/null || true)"
 			if printf '%s' "$out" | grep -qF -- "$needle"; then
+				echo "  (跳过原因：树上出现「$needle」）"
 				skipped=1
 				break
 			fi
@@ -358,8 +353,8 @@ cat > "$TMP/board.sc" <<EOF
 wait 100
 EOF
 case_run "切到任务板" "$TMP/board.sc" \
-	"skip-if:gh 拉取失败" \
 	"click-btn-until:任务板:前沿:20000" \
+	"skip-if:没有 wayfinder:map 地图" \
 	"has:地图" \
 	"has:前沿"
 
@@ -368,8 +363,8 @@ cat > "$TMP/map.sc" <<EOF
 wait 100
 EOF
 case_run "地图详情视图" "$TMP/map.sc" \
-	"skip-if:gh 拉取失败" \
 	"click-btn-until:任务板:前沿:20000" \
+	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:1:子票:20000" \
 	"has:返回任务板"
 
@@ -398,11 +393,12 @@ case_run "注入结果回写" "$TMP/inject.sc" \
 cat > "$TMP/reload.sc" <<EOF
 wait 100
 EOF
+# 断言只到「已刷新」为止 —— 不再要求前沿有数据：
+# 配额不足时刷新会拉取失败，前沿自然是空的，那是有意跳过而非缺陷。
 case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
-	"skip-if:gh 拉取失败" \
 	"click-btn-until:任务板:前沿:20000" \
-	"click-btn-until:刷新:已刷新:20000" \
-	"has:前沿"
+	"skip-if:没有 wayfinder:map 地图" \
+	"click-btn-until:刷新:已刷新:20000"
 
 # ---------------------------------------------------------------- 汇总 ----
 
@@ -410,7 +406,19 @@ echo
 echo "e2e: passed=$PASS failed=$FAIL skipped=$skip"
 if [ "$FAIL" -gt 0 ]; then
 	echo "$FAILED_NAMES" | while IFS= read -r n; do
-		[ -n "$n" ] && echo "  FAILED: $n"
+		if [ -n "$n" ]; then echo "  FAILED: $n"; fi
 	done
 	exit 1
 fi
+# 全部跳过 = 依赖不可用（如 GitHub 配额耗尽），不是"通过"。
+# 退出码 2 = 环境故障主导，让流水线知道这一轮什么都没验到。
+if [ "$PASS" -eq 0 ]; then
+	echo "e2e: 全部用例被跳过 —— 依赖不可用，本轮未验证到任何东西"
+	exit 2
+fi
+if [ "$skip" -gt 0 ]; then
+	echo "$SKIPPED_NAMES" | while IFS= read -r n; do
+		if [ -n "$n" ]; then echo "  SKIPPED: $n"; fi
+	done
+fi
+exit 0

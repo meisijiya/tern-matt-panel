@@ -99,15 +99,17 @@ if [ -z "$skill_pkg" ]; then
 fi
 
 # ---- GitHub 配额预检 ----
-# e2e 每轮要拉两次 issue（打开面板一次 + 刷新用例一次），走的是 GraphQL，
-# 一次约 130 点。配额烧光时 gh 会返回 rate limit 错误，任务板列表是空的 ——
-# 那是环境问题不是产品缺陷。所以开跑前先看配额，不够就把任务板用例跳过，
-# 别把配额烧光导致后面几轮全红。
-gh_quota_ok=1
+# e2e 每轮要拉两次 issue（打开面板一次 + 刷新用例一次），走的是 GraphQL。
+# 实测一次 `gh issue list --json`（含 9 张票的正文）约耗 395 点，一轮约 800 点。
+# 配额烧光时 gh 返回 rate limit 错误，任务板列表是空的 —— 那是环境问题不是
+# 产品缺陷。所以开跑前先看配额，不够就把任务板用例跳过，别把配额烧光
+# 导致后面几轮全红。阈值留一轮的余量。
+# 配额低时只提示，不强制跳过 ——
+# 面板有上次拉到的数据缓存，限流时照样能验任务板界面。
+# 真正跳过的判据是"任务板确实没有数据"，由用例脚本按渲染结果判断。
 quota="$("$gh_bin" api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || echo "")"
-if [ -n "$quota" ] && [ "$quota" -lt 400 ] 2>/dev/null; then
-	gh_quota_ok=0
-	echo "e2e: GitHub GraphQL 配额只剩 $quota（本轮需要约 260 点），任务板用例将跳过"
+if [ -n "$quota" ] && [ "$quota" -lt 1200 ] 2>/dev/null; then
+	echo "e2e: GitHub GraphQL 配额只剩 $quota（本轮约需 800 点），任务板可能退到缓存数据"
 fi
 
 # ---- 参数 ----
@@ -172,7 +174,6 @@ TERNS_E2E_PORT="$port" \
 	TERNS_E2E_REPO="$repo" \
 	TERNS_E2E_REPO_WIN="$repo_win" \
 	TERNS_E2E_SKILL_PKG="$skill_pkg" \
-	TERNS_E2E_GH_QUOTA_OK="$gh_quota_ok" \
 	TERNS_BIN="$tern_bin" \
 	GH_BIN="$gh_bin" \
 	bash "$cases"
