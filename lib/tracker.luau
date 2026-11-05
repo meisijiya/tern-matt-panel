@@ -232,6 +232,10 @@ function M.classify(tickets: { Ticket }): Buckets
 	end
 	local out: Buckets = { claimable = {}, assigned = {}, blocked = {}, closed = {} }
 	for _, t in ipairs(tickets) do
+		-- 顶层 spec 有自己的卡片；再进四组就是同一张票画两遍。
+		if t.isSpec and t.parent == nil then
+			continue
+		end
 		if t.state ~= "OPEN" then
 			table.insert(out.closed, t)
 			continue

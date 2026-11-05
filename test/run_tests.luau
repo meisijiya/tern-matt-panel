@@ -403,7 +403,7 @@ test("tracker.computeFrontier", function()
 	ok(not util.contains(nums, 6), "t6 closed")
 end)
 
-test("tracker.classify 四组互斥且覆盖全部票", function()
+test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	local mk = function(n, state, assignees, blockedBy)
 		return {
 			number = n,
@@ -423,7 +423,10 @@ test("tracker.classify 四组互斥且覆盖全部票", function()
 	local t2 = mk(2, "OPEN", {}, { 1 })
 	local t3 = mk(3, "OPEN", { "alice" }, {})
 	local t4 = mk(4, "CLOSED", {}, {})
-	local b = tracker.classify({ t1, t2, t3, t4 })
+	-- 顶层 spec 有自己的卡片，不该在四组里再出现一遍
+	local t5 = mk(5, "OPEN", {}, {})
+	t5.isSpec = true
+	local b = tracker.classify({ t1, t2, t3, t4, t5 })
 	eq(#b.claimable, 1, "claimable")
 	eq(b.claimable[1].number, 1)
 	eq(#b.blocked, 1, "blocked")
@@ -432,8 +435,13 @@ test("tracker.classify 四组互斥且覆盖全部票", function()
 	eq(b.assigned[1].number, 3)
 	eq(#b.closed, 1, "closed")
 	eq(b.closed[1].number, 4)
-	-- 四组合计等于总数：没有票被丢掉
-	eq(#b.claimable + #b.assigned + #b.blocked + #b.closed, 4, "no ticket dropped")
+	-- 非 spec 票一张都不丢
+	eq(#b.claimable + #b.assigned + #b.blocked + #b.closed, 4, "no non-spec ticket dropped")
+	for _, group in ipairs({ b.claimable, b.assigned, b.blocked, b.closed }) do
+		for _, t in ipairs(group) do
+			ok(t.number ~= 5, "spec stays out of the four buckets")
+		end
+	end
 end)
 
 test("tracker.groupBySpec 按父 issue 挂工单", function()
