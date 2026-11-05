@@ -209,7 +209,9 @@ local function handleAction(cx: WindowCx)
 			if repo == "" then
 				return
 			end
-			tern.kv.set(REPO_KEY, { repo = repo })
+			-- 带上 pane：手动指定的仓库只对本窗口有效。
+			-- 不绑 pane 的话，所有窗口都会读到这一份，新项目里开面板会显示别的仓库。
+			tern.kv.set(REPO_KEY, { repo = repo, pane = pane })
 			cx:toast("success", "仓库：" .. repo, "按面板里的 r 刷新")
 		end)
 		return

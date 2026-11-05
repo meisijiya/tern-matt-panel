@@ -73,6 +73,8 @@ type State = {
 	repo: string?,
 	-- 仓库是目录自动识别来的，还是退到上次手动指定的
 	repoManual: boolean,
+	-- 没识别到仓库时给用户的下一步说明（含失败原因）
+	setupHint: string?,
 	skillVersion: string?,
 	hasSkills: boolean,
 }
@@ -100,6 +102,7 @@ local function blank(): State
 		loading = false,
 		repo = nil,
 		repoManual = false,
+		setupHint = nil,
 		skillVersion = nil,
 		hasSkills = false,
 	}
@@ -174,18 +177,31 @@ end
 local fetchIssues: (State, BlockCx, string) -> ()
 
 --- 从 git remote 推断 owner/repo。
-local function inferRepo(cx: BlockCx, cb: (string?) -> ())
+--- 失败时把原因带回去：只回 nil，用户看到的永远是「没识别到」，不知道卡在哪。
+local function inferRepo(cx: BlockCx, cb: (string?, string?) -> ())
 	local cwd = cx.cwd
-	if not cwd then
-		cb(nil)
+	if not cwd or cwd == "" then
+		cb(nil, "宿主没给工作目录")
 		return
 	end
 	tern.process.run({ "git", "-C", cwd, "remote", "get-url", "origin" }):next(function(result: any, _err: any, _cx: any)
-		if result == nil or result.status ~= 0 then
-			cb(nil)
+		if result == nil then
+			cb(nil, "git 没跑起来（命令本身失败）")
 			return
 		end
-		cb(util.parseRemoteUrl(tostring(result.stdout or "")))
+		if result.status ~= 0 then
+			local err = tostring(result.stderr or "")
+			err = (err:gsub("%s+$", ""))
+			cb(nil, string.format("git 退出 %s：%s", tostring(result.status), err:sub(1, 90)))
+			return
+		end
+		local url = tostring(result.stdout or "")
+		local repo = util.parseRemoteUrl(url)
+		if not repo then
+			cb(nil, "这条 remote 解析不出 owner/repo：" .. url:sub(1, 60))
+			return
+		end
+		cb(repo, nil)
 	end)
 end
 
@@ -213,13 +229,15 @@ local function loadBoard(state: State, cx: BlockCx)
 	-- 目录优先：面板跟着窗口所在项目走。
 	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
 	-- 用户在新项目开面板看到的却是上一个项目的票。
-	inferRepo(cx, function(found: string?)
+	inferRepo(cx, function(found: string?, reason: string?)
 		local repo = found
 		local manual = false
 		if not repo then
-			-- 目录推不出来（不是 git 仓库 / 没有 origin）才退到上次手动指定的。
+			-- 只认「本窗口手动指定」的那一份。
+			-- 跨窗口共用的旧值会让新项目显示上一个项目的仓库 —— 那正是用户看到的怪象。
 			local ok, value = pcall(tern.kv.get, REPO_KEY)
-			if ok and type(value) == "table" and type(value.repo) == "string" and value.repo ~= "" then
+			if ok and type(value) == "table" and value.pane == cx.pane
+				and type(value.repo) == "string" and value.repo ~= "" then
 				repo = value.repo
 				manual = true
 			end
@@ -227,10 +245,19 @@ local function loadBoard(state: State, cx: BlockCx)
 		if not repo then
 			state.loading = false
 			state.repo = nil
-			state.message = "当前目录不是 git 仓库，也没有指定过：点「换仓库」填 owner/repo"
+			-- 没识别到就清空，别把别的仓库的票挂在这个项目下面。
+			state.tickets = {}
+			state.maps = {}
+			state.ticket = nil
+			state.ticketBody = nil
+			state.mapSel = nil
+			state.ticketSel = nil
+			state.setupHint = reason or "当前目录没识别到 git remote"
+			state.message = nil
 			cx:render()
 			return
 		end
+		state.setupHint = nil
 		if state.repo ~= repo then
 			-- 换了仓库就把上一个仓库的数据清掉，别让旧票挂在新仓库名下。
 			state.tickets = {}
@@ -523,6 +550,26 @@ local function boardView(state: State, cx: BlockCx): Node
 				else "  来自当前目录的 git remote", "muted"),
 		}))
 	end
+	-- 没识别到仓库：说清卡在哪，并给下一步。别把别的仓库的票画在这。
+	if state.setupHint then
+		table.insert(main, ui.text(ui.span("没识别到仓库", "warning")))
+		table.insert(main, ui.text({
+			ui.span("原因：", "muted"),
+			ui.span(state.setupHint, "muted"),
+		}))
+		table.insert(main, ui.text(ui.span(
+			"面板按当前目录的 git remote 认仓库。目录要有 .git、且配了 origin。", "muted"
+		)))
+		table.insert(main, ui.row({
+			ui.button("手动指定 owner/repo", {
+				icon = "repo",
+				size = "sm",
+				variant = "primary",
+				actions = { click = "pick-repo" },
+			}),
+		}))
+	end
+
 	-- 空仓库给两条路，别只甩一条。
 	-- 只写「跑 /wayfinder」会误导需求已经明确的人：他不需要画地图，
 	-- 直接 grill 需求再 to-spec / to-tickets 更快。
