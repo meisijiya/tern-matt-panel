@@ -18,11 +18,13 @@ local tracker = require("./lib/tracker")
 
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
+-- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
+local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
 local BLOCK_ID = "matt"
 
-type View = "skills" | "board" | "ticket"
+type View = "skills" | "board" | "map" | "ticket"
 
 type State = {
 	view: View,
@@ -44,6 +46,7 @@ type State = {
 	ticketBody: string?,
 	-- 通用
 	message: string?,
+	pendingSeq: number?,
 	loading: boolean,
 	repo: string?,
 	skillVersion: string?,
@@ -66,6 +69,7 @@ local function blank(): State
 		ticket = nil,
 		ticketBody = nil,
 		message = nil,
+		pendingSeq = nil,
 		loading = false,
 		repo = nil,
 		skillVersion = nil,
@@ -248,14 +252,16 @@ local function nextSeq(): number
 	return seq
 end
 
-local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string)
+local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string): number
+	local seq = nextSeq()
 	tern.kv.set(ACTION_KEY, {
-		seq = nextSeq(),
+		seq = seq,
 		kind = kind,
 		pane = cx.pane,
 		body = body,
 		name = name,
 	})
+	return seq
 end
 
 --- 让窗口半边弹输入框问仓库名。当前目录不是 git 仓库、或用户想换仓库时用。
@@ -270,9 +276,31 @@ local function pickRepo(state: State, cx: BlockCx)
 end
 
 --- 注入一段文本到邻近 agent（真正执行在窗口半边）。
+---
+--- 宿主不能自己下"成功"的结论：注入可能失败（没 agent、agent 忙、投递出错）。
+--- 所以这里只标"提交中"，等窗口半边把结果写回 RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
-	sendAction(state, cx, "inject", body, name)
-	state.message = "已提交：" .. name
+	local seq = sendAction(state, cx, "inject", body, name)
+	state.pendingSeq = seq
+	state.message = "提交中：" .. name
+end
+
+--- 读窗口半边写回的结果，更新提示。
+--- 结果里的 seq 与请求的 seq 对得上才算这次请求的结论。
+local function readResult(state: State)
+	local ok, value = pcall(tern.kv.get, INJECT_RESULT_KEY)
+	if not ok or type(value) ~= "table" then
+		return
+	end
+	local seq = value.seq
+	if type(seq) ~= "number" or seq ~= state.pendingSeq then
+		return
+	end
+	state.pendingSeq = nil
+	local ok2 = value.ok == true
+	state.message = if ok2
+		then "已提交：" .. tostring(value.name or "")
+		else "提交失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
 end
 
 --- 票的动作按钮：按票类型给出。
@@ -294,6 +322,7 @@ end
 -- 列表的行 id 前缀：区域.列表key.行id。鼠标点选与键盘移动共用同一份选中状态。
 local SKILL_LIST = "skills"
 local MAP_LIST = "maps"
+local MAP_TICKET_LIST = "maptickets"
 local TICKET_LIST = "tickets"
 
 --- 技能区：按泳道分组，全部走一个可点列表。
@@ -307,8 +336,10 @@ local function skillsView(state: State, cx: BlockCx): Node
 			"安装：https://github.com/devcxl/mattpocock-skills-zh",
 			"https://github.com/devcxl/mattpocock-skills-zh"
 		)))
+		-- 给可复制的命令：光有链接用户还得自己拼命令
+		table.insert(main, ui.code("git clone https://github.com/devcxl/mattpocock-skills-zh", "bash"))
 		table.insert(main, ui.text(ui.span(
-			"面板不自带技能，也不代装。装好后点「刷新」。",
+			"装到 omp 插件缓存的 marketplaces 目录下（或用 omp marketplace 安装）。面板不自带技能，也不代装。装好后点「刷新」。",
 			"muted"
 		)))
 		return ui.col(main)
@@ -432,6 +463,95 @@ local function boardView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 任务板里当前选中的地图。
+local function selectedMap(state: State): tracker.Map?
+	for _, m in ipairs(state.maps) do
+		if m.number == state.mapSel then
+			return m
+		end
+	end
+	return state.maps[1]
+end
+
+--- 地图详情区：地图的子票、迷雾、范围外。
+--- 点地图行进来；地图自己的票按类型分组，前沿票单独标出来。
+local function mapView(state: State, cx: BlockCx): Node
+	local m = selectedMap(state)
+	if not m then
+		return ui.text(ui.span("从任务板点一张地图", "muted"))
+	end
+	local main: { Node } = {}
+	table.insert(main, ui.text({
+		ui.span(m.title, "strong"),
+		ui.span(string.format("  #%d · %d 票", m.number, #m.tickets), "muted"),
+	}))
+	table.insert(main, ui.text(ui.link(m.url, m.url, "muted")))
+
+	-- 地图级前沿：该地图里未关闭、未阻塞、未认领的票
+	local mapFrontier: { tracker.Ticket } = {}
+	for _, t in ipairs(m.tickets) do
+		if tracker.computeFrontier({ t })[1] ~= nil then
+			table.insert(mapFrontier, t)
+		end
+	end
+
+	-- 子票列表
+	local items: { any } = {}
+	for _, t in ipairs(m.tickets) do
+		local blocked = #t.blockedBy > 0
+		table.insert(items, {
+			label = t.title,
+			detail = if blocked then "被阻塞" else t.type,
+			icon = "ticket",
+			tone = if t.number == state.ticketSel then "accent" else nil,
+		})
+	end
+	local list = ui.list(items)
+	local kids = list.c or {}
+	for i, t in ipairs(m.tickets) do
+		local p: { [string]: any } = kids[i].p or {}
+		p.key = tostring(t.number)
+		kids[i].p = p
+	end
+	local lp: { [string]: any } = list.p or {}
+	lp.key = MAP_TICKET_LIST
+	lp.selected = if state.ticketSel then tostring(state.ticketSel) else nil
+	lp.empty = { ui.span("这张地图还没有票", "muted") }
+	lp.max = { lines = math.max(4, cx.rows - 14) }
+	list.p = lp
+
+	table.insert(main, ui.text(ui.span(string.format("子票（%d）", #m.tickets), "strong")))
+	table.insert(main, list)
+
+	if #mapFrontier > 0 then
+		table.insert(main, ui.text(ui.span(string.format("前沿（%d）", #mapFrontier), "strong")))
+		for _, t in ipairs(mapFrontier) do
+			table.insert(main, ui.text(ui.span("· " .. t.title, "accent")))
+		end
+	end
+
+	-- 迷雾与范围外：地图正文里 wayfinder 的两节，只呈现不解析
+	if m.fog and m.fog ~= "" then
+		table.insert(main, ui.rule(ui.span("尚未明确（迷雾）")))
+		table.insert(main, ui.md(m.fog))
+	end
+	if m.outOfScope and m.outOfScope ~= "" then
+		table.insert(main, ui.rule(ui.span("范围外")))
+		table.insert(main, ui.md(m.outOfScope))
+	end
+
+	local buttons: { Node } = {
+		ui.button("返回任务板", {
+			icon = "back",
+			size = "sm",
+			actions = { click = "back-board" },
+		}),
+	}
+	table.insert(main, ui.row(buttons))
+
+	return ui.col(main)
+end
+
 --- 票详情区：描述、动作按钮、阻塞关系。
 local function ticketView(state: State): Node
 	local t = state.ticket
@@ -515,6 +635,15 @@ local function toolbar(state: State): Node
 			actions = { click = "toggle-hidden" },
 		}),
 	}
+	-- 技能视图下多一个注入按钮：技能侧的注入也要有鼠标入口（不只是键盘 i）。
+	if state.view == "skills" then
+		table.insert(buttons, ui.button("注入技能", {
+			icon = "send",
+			size = "sm",
+			variant = "primary",
+			actions = { click = "inject-skill" },
+		}))
+	end
 	return ui.row(buttons)
 end
 
@@ -598,11 +727,15 @@ tern.block.define(BLOCK_ID, {
 	end,
 
 	view = function(state: State, cx: BlockCx): BlockView
+		-- 注入结果由窗口半边写回 kv，view 里读一次更新提示。
+		readResult(state)
 		local main: Node
 		if state.view == "skills" then
 			main = ui.col({ toolbar(state), skillsView(state, cx) })
 		elseif state.view == "board" then
 			main = ui.col({ toolbar(state), boardView(state, cx) })
+		elseif state.view == "map" then
+			main = ui.col({ toolbar(state), mapView(state, cx) })
 		else
 			main = ui.col({ toolbar(state), ticketView(state) })
 		end
@@ -624,6 +757,10 @@ tern.block.define(BLOCK_ID, {
 				state.view = "board"
 				state.ticket = nil
 				state.ticketBody = nil
+				return true
+			end
+			if state.view == "map" then
+				state.view = "board"
 				return true
 			end
 			return false
@@ -754,6 +891,38 @@ tern.block.define(BLOCK_ID, {
 			return false
 		end
 
+		if state.view == "map" then
+			local m = selectedMap(state)
+			if key.name == "up" or key.name == "down" then
+				local cur = state.ticketSel
+				local at = 1
+				if m then
+					for i, t in ipairs(m.tickets) do
+						if t.number == cur then
+							at = i
+							break
+						end
+					end
+				end
+				local next_ = if key.name == "up" then math.max(1, at - 1) else math.max(1, at + 1)
+				if m and m.tickets[next_] then
+					state.ticketSel = m.tickets[next_].number
+				end
+				return true
+			end
+			if key.name == "enter" then
+				local t = m and m.tickets[1]
+				if not t then
+					return false
+				end
+				state.ticket = t
+				state.ticketBody = t.body
+				state.view = "ticket"
+				return true
+			end
+			return false
+		end
+
 		-- 票详情
 		if key.name == "i" then
 			local t = state.ticket
@@ -800,9 +969,38 @@ tern.block.define(BLOCK_ID, {
 			end
 			if state.view == "skills" then
 				openSkill(state, item)
+			elseif state.view == "map" then
+				-- 地图详情里的子票：点开看票详情
+				local n = tonumber(item)
+				local m = selectedMap(state)
+				if n and m then
+					for _, t in ipairs(m.tickets) do
+						if t.number == n then
+							state.ticketSel = n
+							state.ticket = t
+							state.ticketBody = t.body
+							state.view = "ticket"
+							break
+						end
+					end
+				end
 			elseif state.view == "board" then
 				local n = tonumber(item)
 				if n then
+					-- 地图行：进去看地图详情
+					local isMap = false
+					for _, m in ipairs(state.maps) do
+						if m.number == n then
+							isMap = true
+							break
+						end
+					end
+					if isMap then
+						state.mapSel = n
+						state.ticketSel = nil
+						state.view = "map"
+						return
+					end
 					local frontier = tracker.computeFrontier(state.tickets)
 					for _, t in ipairs(frontier) do
 						if t.number == n then
@@ -824,6 +1022,11 @@ tern.block.define(BLOCK_ID, {
 		end
 
 		local act = ev.act
+		-- 窗口半边执行完注入会戳一下，让宿主重画（读回写回的结果）。
+		if act == "refresh" then
+			readResult(state)
+			return
+		end
 		if act == "view-skills" then
 			state.view = "skills"
 			state.message = nil
@@ -848,6 +1051,15 @@ tern.block.define(BLOCK_ID, {
 			state.showHidden = not state.showHidden
 			loadSkills(state)
 			state.message = if state.showHidden then "显示 in-progress / deprecated" else "只显示正式技能"
+			return
+		end
+		if act == "inject-skill" then
+			local s = selectedSkill(state)
+			if not s then
+				state.message = "没有选中技能"
+				return
+			end
+			inject(state, cx, commands.buildSkillCommand(s), s.name)
 			return
 		end
 		if act == "back-board" then

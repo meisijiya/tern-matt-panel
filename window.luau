@@ -14,6 +14,8 @@ local templates = require("./lib/templates")
 local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
+-- 注入结果单独一个键：RESULT_KEY 已被前沿/版本摘要占着。
+local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local POLL_MS = 300
 
@@ -217,20 +219,40 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
+	-- 结果回写：宿主不能自己下"成功"的结论，注入可能失败。
+	-- 写回后戳宿主一下，让它重画（否则提示停在"提交中"）。
+	local function report(ok: boolean, err: string?)
+		pcall(function()
+			tern.kv.set(INJECT_RESULT_KEY, {
+				seq = seq,
+				ok = ok,
+				name = tostring(action.name or ""),
+				error = err or "",
+			})
+		end)
+		-- 通知宿主重画：往 pane 发一个 action 事件，宿主的 event 处理里会读 kv。
+		pcall(function()
+			cx.session:event(pane, { ev = "action", id = "main.0.refresh", act = "refresh" })
+		end)
+	end
+
 	local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
 	if not agent then
 		-- 没有 agent 就退到剪贴板，别让用户白点一次。
 		cx:copy(action.body)
 		cx:toast("info", "没有可用的 agent", "正文已复制到剪贴板。")
+		report(false, "没有可用的 agent（正文已复制到剪贴板）")
 		return
 	end
 	local err = sendToAgent(cx, agent, pasteText(action.body))
 	if err then
 		cx:copy(action.body)
 		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（正文已复制）")
+		report(false, err)
 		return
 	end
 	cx:toast("success", "已提交：" .. tostring(action.name or ""))
+	report(true, nil)
 end
 
 local poll: (WindowCx?) -> ()
