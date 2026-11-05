@@ -19,6 +19,7 @@ export type Ticket = {
 	type: string?, -- "grilling" | "prototype" | "research" | "task"，无 wayfinder:<type> 标签时 nil
 	parent: number?, -- 父 issue 号：决策票挂地图，工单挂 spec
 	isSpec: boolean, -- 带 ready-for-agent 标签 = to-spec 的产物
+	createdAt: string?, -- ISO8601，任务板按它排序；缺省时排到最后
 }
 
 --- 按状态把票分成四组，供任务板分组展示。
@@ -139,6 +140,7 @@ function M.parseIssue(json: any): Ticket?
 		type = readType(labels),
 		parent = parentNum,
 		isSpec = util.contains(labels, "ready-for-agent"),
+		createdAt = type(json.createdAt) == "string" and json.createdAt or nil,
 	}
 end
 
@@ -258,6 +260,33 @@ function M.classify(tickets: { Ticket }): Buckets
 			table.insert(out.claimable, t)
 		end
 	end
+	return out
+end
+
+--- 按创建时间排序。ISO8601 定长且同格式，字典序就是时间序，不必解日期。
+--- 缺 createdAt 的票排在最后 —— 它们不是"最旧"，是"不知道"，混进时间序里会骗人。
+function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
+	local out = table.clone(tickets)
+	table.sort(out, function(a, b)
+		local ka = a.createdAt
+		local kb = b.createdAt
+		if ka == nil and kb == nil then
+			return a.number < b.number
+		end
+		if ka == nil then
+			return false
+		end
+		if kb == nil then
+			return true
+		end
+		if ka == kb then
+			return a.number < b.number
+		end
+		if newestFirst then
+			return ka > kb
+		end
+		return ka < kb
+	end)
 	return out
 end
 

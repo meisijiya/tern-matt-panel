@@ -444,6 +444,32 @@ test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	end
 end)
 
+test("tracker.sortByCreated 默认最新在上，缺时间的排最后", function()
+	local mk = function(n, at)
+		return {
+			number = n, title = "t", body = "", state = "OPEN", url = "",
+			labels = {}, assignees = {}, blockedBy = {}, type = nil,
+			parent = nil, isSpec = false, createdAt = at,
+		}
+	end
+	local old = mk(1, "2026-01-01T00:00:00Z")
+	local mid = mk(2, "2026-06-01T00:00:00Z")
+	local new = mk(3, "2026-11-01T00:00:00Z")
+	local none = mk(4, nil)
+
+	local desc = tracker.sortByCreated({ old, none, mid, new }, true)
+	eq(desc[1].number, 3, "newest first")
+	eq(desc[2].number, 2)
+	eq(desc[3].number, 1)
+	eq(desc[4].number, 4, "missing createdAt sorts last, not oldest")
+
+	local asc = tracker.sortByCreated({ old, none, mid, new }, false)
+	eq(asc[1].number, 1, "oldest first")
+	eq(asc[2].number, 2)
+	eq(asc[3].number, 3)
+	eq(asc[4].number, 4, "missing still last")
+end)
+
 test("tracker.groupBySpec 按父 issue 挂工单", function()
 	local spec = {
 		number = 10, title = "spec", body = "", state = "OPEN", url = "",

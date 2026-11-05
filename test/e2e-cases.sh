@@ -392,6 +392,16 @@ case_run "票行单击进详情" "$TMP/ticket_row.sc" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:2:打开链接:20000"
 
+# 6c. 排序切换：默认最新在上，点一下变最早在上
+cat > "$TMP/sort.sc" <<EOF
+wait 100
+EOF
+case_run "任务板排序切换" "$TMP/sort.sc" \
+	"click-btn-until:任务板:最新在上:20000" \
+	"skip-if:没有 wayfinder:map 地图" \
+	"has:最新在上" \
+	"click-btn-until:最新在上:最早在上:15000"
+
 # 7. 技能视图有注入按钮（鼠标入口）
 # 用例之间共享同一个面板，所以先切回技能视图。
 cat > "$TMP/back_skills.sc" <<EOF

@@ -41,6 +41,8 @@ type State = {
 	-- 选中的地图号与票号
 	mapSel: number?,
 	ticketSel: number?,
+	-- 票按创建时间排：默认最新在上
+	sortNewest: boolean,
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
@@ -57,6 +59,7 @@ type State = {
 local function blank(): State
 	return {
 		view = "skills",
+		sortNewest = true,
 		skills = {},
 		lanes = {},
 		skillSel = nil,
@@ -208,7 +211,7 @@ end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	local fields = "number,title,body,state,url,labels,assignees,parent,blockedBy"
+	local fields = "number,title,body,state,url,labels,assignees,parent,blockedBy,createdAt"
 	tern.process.run({
 		"gh",
 		"issue",
@@ -505,10 +508,28 @@ local function boardView(state: State, cx: BlockCx): Node
 	if #specs > 0 then
 		local specItems: { any } = {}
 		for _, entry in ipairs(specs) do
+			-- 工单数要能读出完成度：只报总数，用户分不清「还剩几张」。
+			local total = #entry.tickets
+			local openCount = 0
+			for _, kid in ipairs(entry.tickets) do
+				if kid.state == "OPEN" then
+					openCount += 1
+				end
+			end
+			local detail: string
+			local icon = "file"
+			if total == 0 then
+				detail = "未拆工单"
+			elseif openCount == 0 then
+				detail = string.format("%d 工单 · 已完成", total)
+				icon = "check"
+			else
+				detail = string.format("%d 工单 · %d 未完成", total, openCount)
+			end
 			table.insert(specItems, {
 				label = entry.spec.title,
-				detail = string.format("%d 工单", #entry.tickets),
-				icon = "file",
+				detail = detail,
+				icon = icon,
 				tone = if entry.spec.number == state.ticketSel then "accent" else nil,
 			})
 		end
@@ -538,6 +559,7 @@ local function boardView(state: State, cx: BlockCx): Node
 	for _, g in ipairs(groups) do
 		-- 空组也要画：卡片标题上的「0 张」本身就是信息，
 		-- 少画一张卡用户就以为那一组不存在。
+		g.items = tracker.sortByCreated(g.items, state.sortNewest)
 		local items: { any } = {}
 		for _, t in ipairs(g.items) do
 			local who = if #t.assignees > 0 then "@" .. t.assignees[1] else nil
@@ -758,6 +780,14 @@ local function toolbar(state: State): Node
 			actions = { click = "toggle-hidden" },
 		}),
 	}
+	-- 任务板视图下多一个排序开关：票按创建时间排，默认最新在上。
+	if state.view == "board" then
+		table.insert(buttons, ui.button(if state.sortNewest then "最新在上" else "最早在上", {
+			icon = "refresh",
+			size = "sm",
+			actions = { click = "toggle-sort" },
+		}))
+	end
 	-- 技能视图下多一个注入按钮：技能侧的注入也要有鼠标入口（不只是键盘 i）。
 	if state.view == "skills" then
 		table.insert(buttons, ui.button("注入技能", {
@@ -773,8 +803,7 @@ end
 --- 底部提示条：键位说明。
 local function dockView(state: State): Node
 	local items: { Node } = {
-		ui.text(ui.span("鼠标点行选中 · 点按钮操作", "muted")),
-		ui.text(ui.span("↑↓ 移动 · Enter 看原文 · i 注入", "muted")),
+		ui.text(ui.span("点行看内容 · 点按钮操作", "muted")),
 	}
 	if state.message then
 		table.insert(items, ui.text(ui.span(state.message, "accent")))
@@ -1186,6 +1215,11 @@ tern.block.define(BLOCK_ID, {
 		if act == "view-board" then
 			state.view = "board"
 			state.message = nil
+			return
+		end
+		if act == "toggle-sort" then
+			state.sortNewest = not state.sortNewest
+			state.message = if state.sortNewest then "最新在上" else "最早在上"
 			return
 		end
 		if act == "reload" then
