@@ -482,7 +482,7 @@ local function boardView(state: State, cx: BlockCx): Node
 	for _, m in ipairs(state.maps) do
 		table.insert(mapItems, {
 			label = m.title,
-			detail = string.format("%d 票", #m.tickets),
+			detail = string.format("%d 张子票", #m.tickets),
 			icon = "map",
 			tone = if m.number == state.mapSel then "accent" else nil,
 		})
@@ -500,7 +500,10 @@ local function boardView(state: State, cx: BlockCx): Node
 	mapLp.empty = { ui.span("没有 wayfinder:map 地图", "muted") }
 	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
 	mapList.p = mapLp
-	table.insert(main, ui.text(ui.span("地图", "strong")))
+	table.insert(main, ui.text({
+		ui.span("地图", "strong"),
+		ui.span("  wayfinder:map · 子票挂在它名下", "muted"),
+	}))
 	table.insert(main, mapList)
 
 	-- Spec：to-spec 的产物是打了 ready-for-agent 标签的 issue，工单是它的子 issue。
@@ -621,7 +624,7 @@ local function mapView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 	table.insert(main, ui.text({
 		ui.span(m.title, "strong"),
-		ui.span(string.format("  #%d · %d 票", m.number, #m.tickets), "muted"),
+		ui.span(string.format("  #%d · %d 张子票", m.number, #m.tickets), "muted"),
 	}))
 	table.insert(main, ui.text(ui.link(m.url, m.url, "muted")))
 
