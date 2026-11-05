@@ -30,7 +30,7 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 
 ## 用法
 
-全部操作走鼠标。宿主 block 收不到 key 事件，键盘不作为可用操作。
+全部操作都有鼠标入口，面板以鼠标为主。键盘代码仍在（`Tab` 实测可切视图），其余键未在真机验证，界面不宣传。
 
 | 操作 | 怎么点 |
 | --- | --- |
