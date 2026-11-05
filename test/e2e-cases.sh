@@ -17,8 +17,10 @@ PASS=0
 FAIL=0
 FAILED_NAMES=""
 
+# 每次 ctl 都套超时：窗口崩了或卡死时立刻返回失败，
+# 否则整段用例会无限等，跑不完就只能被外面切断 —— 一切断就留孤儿进程。
 ctl() {
-	"$tern_bin" ctl --control "$port" "$@"
+	timeout 10 "$tern_bin" ctl --control "$port" "$@"
 }
 
 # 跑一段场景（.sc 语法）
@@ -191,11 +193,22 @@ wait_for() {
 	local needle="$1"
 	local timeout_ms="$2"
 	local ticks=$(( timeout_ms / 300 ))
+	local blind=0
 	while [ "$ticks" -gt 0 ]; do
 		local out
-		out="$(ctl tree 2>/dev/null || true)"
-		if printf '%s' "$out" | grep -qF -- "$needle"; then
-			return 0
+		if out="$(ctl tree 2>/dev/null)" && [ -n "$out" ]; then
+			blind=0
+			if printf '%s' "$out" | grep -qF -- "$needle"; then
+				return 0
+			fi
+		else
+			# 连续读不到渲染树 = 窗口已经没了（GPU 崩、进程被杀）。
+			# 这时再等下去毫无意义，还会把进程拖成孤儿。
+			blind=$((blind + 1))
+			if [ "$blind" -ge 5 ]; then
+				echo "  FAIL 窗口失联（连续 5 次读不到渲染树），中止本轮"
+				exit 2
+			fi
 		fi
 		ticks=$((ticks - 1))
 		sleep 0.3
@@ -348,22 +361,22 @@ EOF
 case_run "点技能行展开原文" "$TMP/open_doc.sc" \
 	"click-sel-until:.sf-item:sf-md:20000"
 
-# 5. 切到任务板：地图列表与前沿列表
+# 5. 切到任务板：地图卡片与「可领」分组卡片
 cat > "$TMP/board.sc" <<EOF
 wait 100
 EOF
 case_run "切到任务板" "$TMP/board.sc" \
-	"click-btn-until:任务板:前沿:20000" \
+	"click-btn-until:任务板:点行选中:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"has:地图" \
-	"has:前沿"
+	"has:点行选中"
 
 # 6. 点地图行进地图详情：子票 / 迷雾 / 范围外
 cat > "$TMP/map.sc" <<EOF
 wait 100
 EOF
 case_run "地图详情视图" "$TMP/map.sc" \
-	"click-btn-until:任务板:前沿:20000" \
+	"click-btn-until:任务板:点行选中:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:1:子票:20000" \
 	"has:返回任务板"
@@ -393,10 +406,10 @@ case_run "注入结果回写" "$TMP/inject.sc" \
 cat > "$TMP/reload.sc" <<EOF
 wait 100
 EOF
-# 断言只到「已刷新」为止 —— 不再要求前沿有数据：
-# 配额不足时刷新会拉取失败，前沿自然是空的，那是有意跳过而非缺陷。
+# 断言只到「已刷新」为止 —— 不再要求有票：
+# 配额不足时刷新会拉取失败，分组自然是空的，那是有意跳过而非缺陷。
 case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
-	"click-btn-until:任务板:前沿:20000" \
+	"click-btn-until:任务板:点行选中:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-btn-until:刷新:已刷新:20000"
 

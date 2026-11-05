@@ -403,6 +403,62 @@ test("tracker.computeFrontier", function()
 	ok(not util.contains(nums, 6), "t6 closed")
 end)
 
+test("tracker.classify 四组互斥且覆盖全部票", function()
+	local mk = function(n, state, assignees, blockedBy)
+		return {
+			number = n,
+			title = "t" .. tostring(n),
+			body = "",
+			state = state,
+			url = "",
+			labels = {},
+			assignees = assignees or {},
+			blockedBy = blockedBy or {},
+			type = nil,
+			parent = nil,
+			isSpec = false,
+		}
+	end
+	local t1 = mk(1, "OPEN", {}, {})
+	local t2 = mk(2, "OPEN", {}, { 1 })
+	local t3 = mk(3, "OPEN", { "alice" }, {})
+	local t4 = mk(4, "CLOSED", {}, {})
+	local b = tracker.classify({ t1, t2, t3, t4 })
+	eq(#b.claimable, 1, "claimable")
+	eq(b.claimable[1].number, 1)
+	eq(#b.blocked, 1, "blocked")
+	eq(b.blocked[1].number, 2)
+	eq(#b.assigned, 1, "assigned")
+	eq(b.assigned[1].number, 3)
+	eq(#b.closed, 1, "closed")
+	eq(b.closed[1].number, 4)
+	-- 四组合计等于总数：没有票被丢掉
+	eq(#b.claimable + #b.assigned + #b.blocked + #b.closed, 4, "no ticket dropped")
+end)
+
+test("tracker.groupBySpec 按父 issue 挂工单", function()
+	local spec = {
+		number = 10, title = "spec", body = "", state = "OPEN", url = "",
+		labels = { "ready-for-agent" }, assignees = {}, blockedBy = {}, type = nil,
+		parent = nil, isSpec = true,
+	}
+	local kid = {
+		number = 11, title = "工单", body = "", state = "OPEN", url = "",
+		labels = { "ready-for-agent" }, assignees = {}, blockedBy = {}, type = nil,
+		parent = 10, isSpec = true,
+	}
+	local orphan = {
+		number = 12, title = "无父工单", body = "", state = "OPEN", url = "",
+		labels = {}, assignees = {}, blockedBy = {}, type = nil,
+		parent = 99, isSpec = false,
+	}
+	local groups = tracker.groupBySpec({ spec, kid, orphan })
+	eq(#groups, 1, "one spec")
+	eq(groups[1].spec.number, 10)
+	eq(#groups[1].tickets, 1, "one child")
+	eq(groups[1].tickets[1].number, 11, "child attached")
+end)
+
 test("templates.render", function()
 	local tpl = templates.TEMPLATES[1]
 	local out = templates.render(tpl, { url = "http://x", title = "T" })

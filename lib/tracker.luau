@@ -17,6 +17,16 @@ export type Ticket = {
 	assignees: { string },
 	blockedBy: { number },
 	type: string?, -- "grilling" | "prototype" | "research" | "task"，无 wayfinder:<type> 标签时 nil
+	parent: number?, -- 父 issue 号：决策票挂地图，工单挂 spec
+	isSpec: boolean, -- 带 ready-for-agent 标签 = to-spec 的产物
+}
+
+--- 按状态把票分成四组，供任务板分组展示。
+export type Buckets = {
+	claimable: { Ticket }, -- 未关闭 + 未认领 + 不被未关闭的票阻塞
+	assigned: { Ticket }, -- 未关闭 + 已认领
+	blocked: { Ticket }, -- 未关闭 + 未认领 + 被未关闭的票阻塞
+	closed: { Ticket },
 }
 
 export type Map = {
@@ -112,6 +122,11 @@ function M.parseIssue(json: any): Ticket?
 	end
 	local labels = readLabels(json.labels)
 	local body = type(json.body) == "string" and json.body or ""
+	local parentNum: number? = nil
+	local parent = json.parent
+	if type(parent) == "table" and type(parent.number) == "number" then
+		parentNum = parent.number
+	end
 	return {
 		number = number,
 		title = type(json.title) == "string" and json.title or "",
@@ -122,6 +137,8 @@ function M.parseIssue(json: any): Ticket?
 		assignees = readAssignees(json.assignees),
 		blockedBy = readBlockedBy(json.blockedBy),
 		type = readType(labels),
+		parent = parentNum,
+		isSpec = util.contains(labels, "ready-for-agent"),
 	}
 end
 
@@ -200,6 +217,61 @@ function M.computeFrontier(tickets: { Ticket }): { Ticket }
 		end
 		if not blocked then
 			table.insert(out, t)
+		end
+	end
+	return out
+end
+
+--- 把票按「现在能不能干」分成四组，供任务板分组展示。
+--- 与 computeFrontier 同一套判据，只是不再丢掉已认领 / 被阻塞 / 已关闭的票 ——
+--- 那些票在面板上看不到，用户就以为任务板是空的。
+function M.classify(tickets: { Ticket }): Buckets
+	local byNumber: { [number]: Ticket } = {}
+	for _, t in ipairs(tickets) do
+		byNumber[t.number] = t
+	end
+	local out: Buckets = { claimable = {}, assigned = {}, blocked = {}, closed = {} }
+	for _, t in ipairs(tickets) do
+		if t.state ~= "OPEN" then
+			table.insert(out.closed, t)
+			continue
+		end
+		if #t.assignees > 0 then
+			table.insert(out.assigned, t)
+			continue
+		end
+		local blocked = false
+		for _, b in ipairs(t.blockedBy) do
+			local blocker = byNumber[b]
+			if blocker and blocker.state == "OPEN" then
+				blocked = true
+				break
+			end
+		end
+		if blocked then
+			table.insert(out.blocked, t)
+		else
+			table.insert(out.claimable, t)
+		end
+	end
+	return out
+end
+
+--- 把 spec 与它拆出的工单归组。
+--- spec = 带 ready-for-agent 标签且没有父 issue 的 issue；工单 = 父 issue 指向该 spec 的子 issue。
+--- 不递归：只看一层，够用且不会因为环状 parent 打转。
+function M.groupBySpec(tickets: { Ticket }): { { spec: Ticket, tickets: { Ticket } } }
+	local out: { { spec: Ticket, tickets: { Ticket } } } = {}
+	local index: { [number]: number } = {}
+	for _, t in ipairs(tickets) do
+		if t.isSpec and t.parent == nil then
+			table.insert(out, { spec = t, tickets = {} })
+			index[t.number] = #out
+		end
+	end
+	for _, t in ipairs(tickets) do
+		if t.parent ~= nil and index[t.parent] then
+			table.insert(out[index[t.parent]].tickets, t)
 		end
 	end
 	return out

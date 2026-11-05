@@ -125,7 +125,19 @@ done
 
 # ---- 起窗口 ----
 log="$here/.e2e.log"
+pidfile="$here/.e2e.pid"
 : > "$log"
+
+# 上次跑到一半被杀（或 Ctrl-C）会留下窗口和用例进程 ——
+# 不清理的话每跑一次叠一层，窗口越堆越多。
+if [ -f "$pidfile" ]; then
+	old_pid="$(cat "$pidfile" 2>/dev/null || true)"
+	if [ -n "$old_pid" ]; then
+		echo "e2e: 清理上次残留的窗口（pid $old_pid）"
+		kill "$old_pid" 2>/dev/null || true
+	fi
+	rm -f "$pidfile"
+fi
 
 # 端口占用则顺延
 while netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$port" '$0 ~ p && /LISTENING/ {found=1} END {exit found?0:1}'; do
@@ -137,14 +149,36 @@ repo_win="$(cygpath -w "$repo" 2>/dev/null || echo "$repo")"
 
 "$tern_bin" --control "$port" --dir "$repo_win" > "$log" 2>&1 &
 tern_pid=$!
+echo "$tern_pid" > "$pidfile"
+
+cases_pid=""
 cleanup() {
+	# 子脚本（用例）也要杀 —— 它自己会循环调 ctl，留着就是孤儿进程，
+	# 下次再跑 e2e 就叠一层，窗口越堆越多。
+	if [ -n "$cases_pid" ]; then
+		kill "$cases_pid" 2>/dev/null || true
+		wait "$cases_pid" 2>/dev/null || true
+	fi
 	if [ "$keep" -eq 0 ]; then
+		# 先走优雅退出：只有窗口正常关闭 daemon 才记账。
+		# 直接 kill 会被记成「未关闭会话」，下次 tern 启动全部恢复 ——
+		# 跑几次 e2e 就攒出一堆窗口，把 GPU 和内存拖垮。
+		"$tern_bin" ctl --control "$port" quit >/dev/null 2>&1 || true
+		for _ in $(seq 1 20); do
+			if ! kill -0 "$tern_pid" 2>/dev/null; then
+				break
+			fi
+			sleep 0.25
+		done
+		# 优雅退出没生效才硬杀兜底。
 		kill "$tern_pid" 2>/dev/null || true
 		wait "$tern_pid" 2>/dev/null || true
 	fi
-	rm -f "$log"
+	rm -f "$log" "$pidfile"
 }
-trap cleanup EXIT
+# INT/TERM 必须一起 trap：`timeout 200 bash test/e2e.sh` 发的是 TERM，
+# 只 trap EXIT 的话窗口和用例进程都会变成孤儿。
+trap cleanup EXIT INT TERM HUP
 
 # 等控制端点就绪
 ready=0
@@ -176,6 +210,11 @@ TERNS_E2E_PORT="$port" \
 	TERNS_E2E_SKILL_PKG="$skill_pkg" \
 	TERNS_BIN="$tern_bin" \
 	GH_BIN="$gh_bin" \
-	bash "$cases"
+	bash "$cases" &
+cases_pid=$!
+cases_rc=0
+wait "$cases_pid" || cases_rc=$?
+cases_pid=""
 
 echo "e2e: 全部用例结束"
+exit "$cases_rc"

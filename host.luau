@@ -352,9 +352,28 @@ local SKILL_LIST = "skills"
 local MAP_LIST = "maps"
 local MAP_TICKET_LIST = "maptickets"
 local TICKET_LIST = "tickets"
+local SPEC_LIST = "specs"
 
---- 技能区：按泳道分组，全部走一个可点列表。
---- 泳道用 detail 列显示在行尾，鼠标点行即选中。
+--- 把一组票做成可点列表：每行给 key（= 票号），选中态跟着 ticketSel 走。
+local function makeList(items: { any }, tickets: { tracker.Ticket }, key: string, selected: number?, hint: string): Node
+	local list = ui.list(items)
+	local kids = list.c or {}
+	for i, t in ipairs(tickets) do
+		local p: { [string]: any } = kids[i].p or {}
+		p.key = tostring(t.number)
+		kids[i].p = p
+	end
+	local lp: { [string]: any } = list.p or {}
+	lp.key = key
+	lp.selected = if selected then tostring(selected) else nil
+	lp.empty = { ui.span(hint, "muted") }
+	list.p = lp
+	return list
+end
+
+--- 技能区：每个泳道一张可折叠卡片，卡片里是该泳道的技能列表。
+--- 之前是一个扁平列表、泳道名塞在行尾小字里 —— 扫一眼分不出组，
+--- 于是把泳道真正做成分组。
 local function skillsView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
@@ -373,44 +392,55 @@ local function skillsView(state: State, cx: BlockCx): Node
 		return ui.col(main)
 	end
 
-	local flat = flatSkills(state)
-	local items: { any } = {}
-	for _, s in ipairs(flat) do
-		local lane = ""
-		for _, l in ipairs(state.lanes) do
-			if table.find(l.skills, s.name) then
-				lane = l.title
-				break
-			end
-		end
-		table.insert(items, {
-			label = s.name,
-			detail = lane,
-			value = "/" .. s.name,
-			icon = "sparkle",
-			tone = if s.name == state.skillSel then "accent" else nil,
-		})
-	end
-
-	local list = ui.list(items)
-	local kids = list.c or {}
-	for i, s in ipairs(flat) do
-		local p: { [string]: any } = kids[i].p or {}
-		p.key = s.name
-		kids[i].p = p
-	end
-	local lp: { [string]: any } = list.p or {}
-	lp.key = SKILL_LIST
-	lp.selected = state.skillSel
-	lp.empty = { ui.span("没有技能", "muted") }
-	lp.max = { lines = math.max(6, cx.rows - 8) }
-	list.p = lp
-
 	table.insert(main, ui.text({
 		ui.span("技能", "strong"),
-		ui.span(string.format("  %s · %d 个", state.skillVersion or "未知版本", #flat), "muted"),
+		ui.span(string.format("  %s · %d 个", state.skillVersion or "未知版本", #flatSkills(state)), "muted"),
 	}))
-	table.insert(main, list)
+
+	local rows = math.max(4, math.floor((cx.rows - 6) / 2))
+	local byName: { [string]: skills.Skill } = {}
+	for _, s in ipairs(state.skills) do
+		byName[s.name] = s
+	end
+	for i, lane in ipairs(state.lanes) do
+		-- 空泳道不画，免得面板全是空标题。
+		if #lane.skills == 0 then
+			continue
+		end
+		local items: { any } = {}
+		for _, name in ipairs(lane.skills) do
+			local s = byName[name]
+			if s then
+				table.insert(items, {
+					label = s.name,
+					value = "/" .. s.name,
+					icon = "sparkle",
+					tone = if s.name == state.skillSel then "accent" else nil,
+				})
+			end
+		end
+		local list = ui.list(items)
+		local kids = list.c or {}
+		local n = 0
+		for _, name in ipairs(lane.skills) do
+			if byName[name] then
+				n += 1
+				local p: { [string]: any } = kids[n].p or {}
+				p.key = name
+				kids[n].p = p
+			end
+		end
+		local lp: { [string]: any } = list.p or {}
+		lp.key = SKILL_LIST .. "_" .. tostring(i)
+		lp.selected = state.skillSel
+		lp.empty = { ui.span("空", "muted") }
+		lp.max = { lines = rows }
+		list.p = lp
+		table.insert(main, ui.card(ui.span(lane.title, "strong"), { list }, {
+			icon = "sparkle",
+			meta = ui.span(string.format("%d 个", n), "muted"),
+		}))
+	end
 
 	if state.skillBody then
 		table.insert(main, ui.rule(ui.span(state.skillSel or "")))
@@ -461,32 +491,69 @@ local function boardView(state: State, cx: BlockCx): Node
 	table.insert(main, ui.text(ui.span("地图", "strong")))
 	table.insert(main, mapList)
 
-	-- 前沿票
-	local frontier = tracker.computeFrontier(state.tickets)
-	local ticketItems: { any } = {}
-	for _, t in ipairs(frontier) do
-		table.insert(ticketItems, {
-			label = t.title,
-			detail = t.type,
+	-- Spec：to-spec 的产物是打了 ready-for-agent 标签的 issue，工单是它的子 issue。
+	local specs = tracker.groupBySpec(state.tickets)
+	if #specs > 0 then
+		local specItems: { any } = {}
+		for _, entry in ipairs(specs) do
+			table.insert(specItems, {
+				label = entry.spec.title,
+				detail = string.format("%d 工单", #entry.tickets),
+				icon = "file",
+				tone = if entry.spec.number == state.ticketSel then "accent" else nil,
+			})
+		end
+		local specList = makeList(specItems, specs, SPEC_LIST, state.ticketSel, "没有 spec")
+		specList.p.max = { lines = math.max(3, math.floor((cx.rows - 16) / 3)) }
+		table.insert(main, ui.card(ui.span("Spec", "strong"), { specList }, {
+			icon = "file",
+			meta = ui.span(string.format("%d 份", #specs), "muted"),
+		}))
+	end
+
+	-- 票：按「现在能不能干」分四组。只显示前沿会把已认领 / 被阻塞 / 已关闭的票
+	-- 全藏起来，用户看到的任务板就成了空板。
+	local buckets = tracker.classify(state.tickets)
+	local groups = {
+		{ title = "可领", items = buckets.claimable, key = TICKET_LIST .. "_claimable", hint = "没有可领的票" },
+		{ title = "已认领", items = buckets.assigned, key = TICKET_LIST .. "_assigned", hint = "没有人认领", }
+			,
+		{ title = "被阻塞", items = buckets.blocked, key = TICKET_LIST .. "_blocked", hint = "没有阻塞的票" },
+		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed", hint = "没有关闭的票" },
+	}
+	for _, g in ipairs(groups) do
+		-- 空组也要画：卡片标题上的「0 张」本身就是信息，
+		-- 少画一张卡用户就以为那一组不存在。
+		local items: { any } = {}
+		for _, t in ipairs(g.items) do
+			local who = if #t.assignees > 0 then "@" .. t.assignees[1] else nil
+			local parts: { string } = {}
+			if t.type then
+				table.insert(parts, t.type)
+			end
+			if who then
+				table.insert(parts, who)
+			end
+			table.insert(items, {
+				label = t.title,
+				detail = table.concat(parts, " · "),
+				icon = "ticket",
+				tone = if t.number == state.ticketSel then "accent" else nil,
+			})
+		end
+		local list = makeList(items, g.items, g.key, state.ticketSel, g.hint)
+		list.p.max = { lines = math.max(3, math.floor((cx.rows - 16) / 3)) }
+		local props: { [string]: any } = {
 			icon = "ticket",
-			tone = if t.number == state.ticketSel then "accent" else nil,
-		})
+			meta = ui.span(string.format("%d 张", #g.items), "muted"),
+			collapsible = true,
+		}
+		-- 空组和已关闭组默认收起，别把界面撑满；有活的组展开。
+		if #g.items == 0 or g.title == "已关闭" then
+			props.collapsed = true
+		end
+		table.insert(main, ui.card(ui.span(g.title, "strong"), { list }, props))
 	end
-	local ticketList = ui.list(ticketItems)
-	local ticketKids = ticketList.c or {}
-	for i, t in ipairs(frontier) do
-		local p: { [string]: any } = ticketKids[i].p or {}
-		p.key = tostring(t.number)
-		ticketKids[i].p = p
-	end
-	local ticketLp: { [string]: any } = ticketList.p or {}
-	ticketLp.key = TICKET_LIST
-	ticketLp.selected = if state.ticketSel then tostring(state.ticketSel) else nil
-	ticketLp.empty = { ui.span("没有可领的票", "muted") }
-	ticketLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
-	ticketList.p = ticketLp
-	table.insert(main, ui.text(ui.span(string.format("前沿（%d）", #frontier), "strong")))
-	table.insert(main, ticketList)
 
 	return ui.col(main)
 end
@@ -708,9 +775,22 @@ local function selectedSkill(state: State): skills.Skill?
 	return flat[1]
 end
 
---- 任务板里当前选中的票（前沿里的）。
+--- 任务板里当前选中的票（四组里任一）。
 local function selectedTicket(state: State): tracker.Ticket?
-	local frontier = tracker.computeFrontier(state.tickets)
+	local b = tracker.classify(state.tickets)
+	local frontier: { tracker.Ticket } = {}
+	for _, t in ipairs(b.claimable) do
+		table.insert(frontier, t)
+	end
+	for _, t in ipairs(b.assigned) do
+		table.insert(frontier, t)
+	end
+	for _, t in ipairs(b.blocked) do
+		table.insert(frontier, t)
+	end
+	for _, t in ipairs(b.closed) do
+		table.insert(frontier, t)
+	end
 	if #frontier == 0 then
 		return nil
 	end
@@ -878,7 +958,21 @@ tern.block.define(BLOCK_ID, {
 		end
 
 		if state.view == "board" then
-			local frontier = tracker.computeFrontier(state.tickets)
+			-- 展平顺序跟界面上的分组顺序一致：可领 → 已认领 → 被阻塞 → 已关闭。
+			local buckets = tracker.classify(state.tickets)
+			local frontier: { tracker.Ticket } = {}
+			for _, t in ipairs(buckets.claimable) do
+				table.insert(frontier, t)
+			end
+			for _, t in ipairs(buckets.assigned) do
+				table.insert(frontier, t)
+			end
+			for _, t in ipairs(buckets.blocked) do
+				table.insert(frontier, t)
+			end
+			for _, t in ipairs(buckets.closed) do
+				table.insert(frontier, t)
+			end
 			if key.name == "up" or key.name == "down" then
 				local cur = selectedTicket(state)
 				local at = 1
@@ -1034,8 +1128,9 @@ tern.block.define(BLOCK_ID, {
 						state.view = "map"
 						return
 					end
-					local frontier = tracker.computeFrontier(state.tickets)
-					for _, t in ipairs(frontier) do
+					-- 票行：四组（可领 / 已认领 / 被阻塞 / 已关闭）与 Spec 都按票号找，
+					-- 不再只认前沿 —— 已认领和已关闭的票也得点得开。
+					for _, t in ipairs(state.tickets) do
 						if t.number == n then
 							state.ticketSel = n
 							if ev.ev == "activate" then
