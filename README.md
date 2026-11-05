@@ -47,6 +47,10 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 
 没有邻近 agent 时，注入会退到剪贴板并提示，不会失败。
 
+## 与参考实现的关系
+
+本插件是 [dsh-mattpocock-skills-deck](https://github.com/FeatherHunter/dsh-mattpocock-skills-deck) 的 tern 适配版：功能形态尽量对齐，落在 tern 能力边界内的部分换成等价实现。逐项对照（对得上 / 简化 / 范围外 / 因平台约束改造）见 [`docs/spec/对照参考实现.md`](docs/spec/对照参考实现.md)。
+
 ## 架构
 
 ```
