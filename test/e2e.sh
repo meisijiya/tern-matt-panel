@@ -33,7 +33,7 @@ if ! bash --version 2>/dev/null | head -1 | grep -qiE "msys|mingw"; then
 	done
 	if [ -z "$gitbash" ]; then
 		echo "SKIP: 需要 Git Bash（本机 bash 是 WSL，跑不了 Windows 的 .exe）"
-		exit 0
+		exit 2
 	fi
 	# Git Bash 里的仓库路径：/mnt/d/x → /d/x，/mnt/c/x → /c/x
 	case "$repo" in
@@ -73,7 +73,7 @@ tern_bin="$(resolve_tool tern \
 	"/c/Users/22923/AppData/Local/Tern/tern.exe" || true)"
 if [ -z "$tern_bin" ]; then
 	echo "SKIP: 找不到 tern"
-	exit 0
+	exit 2
 fi
 
 gh_bin="$(resolve_tool gh \
@@ -81,12 +81,12 @@ gh_bin="$(resolve_tool gh \
 	"/c/Program Files (x86)/GitHub CLI/gh.exe" || true)"
 if [ -z "$gh_bin" ]; then
 	echo "SKIP: 找不到 gh"
-	exit 0
+	exit 2
 fi
 
 if ! "$gh_bin" auth status >/dev/null 2>&1; then
 	echo "SKIP: gh 未登录"
-	exit 0
+	exit 2
 fi
 
 # 技能包：面板的核心依赖。探测位置与插件一致（见 lib/paths.luau）。
@@ -100,7 +100,7 @@ for base in "${USERPROFILE:-}" "${HOME:-}"; do
 done
 if [ -z "$skill_pkg" ]; then
 	echo "SKIP: 没装中文技能包（https://github.com/devcxl/mattpocock-skills-zh）"
-	exit 0
+	exit 2
 fi
 
 # ---- GitHub 配额预检 ----
@@ -173,7 +173,7 @@ SKIP: 没有可接的受控 tern 窗口（只有 --launch 才自己起）。
     "$tern_bin" --control 17311 --dir "$repo_win"
   再跑本脚本；端口不是 17311 就用 --port 指定。
 EOF
-	exit 0
+	exit 2
 fi
 
 cases_pid=""

@@ -12,6 +12,8 @@
 set -eu
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 转发给 Git Bash 的那份参数：解析会 shift 掉 $@，先留一份。
+forward=("$@")
 
 run_unit=1
 run_e2e=1
@@ -45,7 +47,7 @@ if ! bash --version 2>/dev/null | head -1 | grep -qiE "msys|mingw"; then
 	/mnt/[a-z]/*) here_git="/${here_git#/mnt/}" ;;
 	esac
 	args=""
-	for a in "$@"; do
+	for a in "${forward[@]}"; do
 		args="$args $(printf '%q' "$a")"
 	done
 	exec "$gitbash" -lc "cd '$here_git/..' && bash test/all.sh$args"
@@ -88,8 +90,9 @@ fi
 
 if [ "$run_e2e" -eq 1 ]; then
 	echo "== 真机 e2e =="
-	bash "$here/e2e.sh" $keep
-	rc=$?
+	# set -e 下直接接 rc=$? 会让失败用例在半路把脚本带走，改成 ||。
+	rc=0
+	bash "$here/e2e.sh" $keep || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		echo "e2e: PASS"
 	elif [ "$rc" -eq 2 ]; then
