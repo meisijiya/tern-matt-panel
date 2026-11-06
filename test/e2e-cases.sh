@@ -222,6 +222,32 @@ wait_for() {
 skip=0
 SKIPPED_NAMES=""
 
+# 断言：工具条按钮占了几行（按 rect 的 y 去重）。窄面板下换行生效、按钮没被挤掉。
+assert_toolbar_rows() {
+	local want="$1"
+	local out rows
+	out="$(ctl tree '.sf-button' 2>/dev/null || true)"
+	rows="$(printf '%s' "$out" | python -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    sys.exit(0)
+ys = set()
+for n in d.get("nodes", []):
+    r = n.get("rect")
+    if r and r[2] > 0 and r[3] > 0:
+        ys.add(round(r[1]))
+print(len(ys))
+' 2>/dev/null || echo 0)"
+	if [ "${rows:-0}" -ge "$want" ]; then
+		return 0
+	fi
+	echo "  FAIL 工具条只有 ${rows:-0} 行，期望至少 $want 行（按钮被裁或没换行）"
+	return 1
+}
+
 # 一个用例：名字 + 场景文件 + 断言序列
 case_run() {
 	local name="$1"
@@ -248,6 +274,7 @@ case_run() {
 			fi
 			;;
 		has:*) assert_has "${a#has:}" "$name" || ok=0 ;;
+		toolbar-rows:*) assert_toolbar_rows "${a#toolbar-rows:}" || ok=0 ;;
 		lacks:*) assert_lacks "${a#lacks:}" "$name" || ok=0 ;;
 		click:*) click_text "${a#click:}" || ok=0 ;;
 		click-item:*)
@@ -320,14 +347,19 @@ trap 'rm -rf "$TMP"' EXIT
 : > "$TMP/noop.sc"
 
 # ---------------------------------------------------------------- 准备 ----
-# 面板只开一次。
-cat > "$TMP/open.sc" <<EOF
+# 面板只开一次。窗口可能被复用，里面已经开着面板了 —— 那就别叠第二个：
+# 每个 panel 都是一块真 UI，叠起来 GPU 与内存一路涨。
+if ctl tree 2>/dev/null | grep -qF '点行看内容'; then
+	echo "e2e: 复用已开的面板"
+else
+	cat > "$TMP/open.sc" <<EOF
 palette "Matt 面板"
 wait 1500
 key return
 wait 10000
 EOF
-scen "$TMP/open.sc"
+	scen "$TMP/open.sc"
+fi
 
 # ---------------------------------------------------------------- 用例 ----
 
@@ -433,6 +465,24 @@ case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
 	"click-btn-until:任务板:点行选中:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-btn-until:刷新:已刷新:20000"
+
+# 10. 面板变窄时工具条换行：按钮不许被裁掉（裁掉就是点不到）
+cat > "$TMP/narrow.sc" <<EOF
+wait 100
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+wait 500
+EOF
+case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
+	"click-btn-until:任务板:点行选中:20000" \
+	"toolbar-rows:2" \
+	"has:换仓库" \
+	"has:问下一步" \
+	"has:刷新"
 
 # ---------------------------------------------------------------- 汇总 ----
 

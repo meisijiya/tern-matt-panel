@@ -36,6 +36,97 @@ local TEMPLATES: { Template } = {
 }
 M.TEMPLATES = TEMPLATES
 
+--- 「问下一步」：把任务板快照装进信封，交给会话里的 /skill:ask-matt 排序。
+--- 面板自己不做判断，只负责把票、地图、流程链摆全，省掉用户复述上下文。
+--- 与票动作模板同机制：随插件分发，用户可覆盖。
+M.NEXT_STEP = {
+	id = "next-step",
+	title = "问下一步",
+	body = table.concat({
+		"/skill:ask-matt",
+		"项目 {repo}（tern 面板插件）的任务板快照。",
+		"",
+		"可领（未关闭、未认领、无 OPEN 阻塞）：",
+		"{claimable}",
+		"",
+		"已认领：",
+		"{assigned}",
+		"",
+		"被阻塞：",
+		"{blocked}",
+		"",
+		"地图：",
+		"{maps}",
+		"",
+		"流程链：/skill:ask-matt 定位 → /skill:grill-with-docs 盘问（写 GLOSSARY/ADR）→ /skill:to-spec → /skill:to-tickets 拆票 → /skill:implement 逐票实施（小改在同一上下文直接 /skill:implement）→ /skill:tdd → /skill:code-review → /skill:pr。大而模糊才用 /skill:wayfinder；坏了用 /skill:diagnosing-bugs。",
+		"",
+		"请按「解锁最多下游 + 一次会话可交付」给 1~3 张现在该做的票：逐条说明理由、要用的技能命令，并列出「你不确定我掌握什么」的假设。",
+	}, "\n"),
+}
+
+--- 每桶最多列多少张，避免把整个任务板塞进提示词。
+local BRIEF_MAX = 12
+
+export type TicketBrief = {
+	number: number,
+	title: string,
+	type: string?,
+	blockedBy: { number },
+}
+
+local function ticketLine(t: TicketBrief): string
+	local kind = if t.type then "wayfinder:" .. t.type else "无类型"
+	return string.format("- #%d %s %s", t.number, kind, t.title)
+end
+
+local function bucketText(items: { TicketBrief }, extra: (TicketBrief) -> string?): string
+	if #items == 0 then
+		return "（无）"
+	end
+	local out: { string } = {}
+	for i, t in ipairs(items) do
+		if i > BRIEF_MAX then
+			table.insert(out, string.format("- …还有 %d 张", #items - BRIEF_MAX))
+			break
+		end
+		local line = ticketLine(t)
+		local tail = if extra then extra(t) else nil
+		if tail then
+			line = line .. "（" .. tail .. "）"
+		end
+		table.insert(out, line)
+	end
+	return table.concat(out, "\n")
+end
+
+--- 把任务板快照摊成模板占位符的值。纯函数，好单测。
+function M.nextStepVars(
+	repo: string,
+	buckets: { claimable: { TicketBrief }, assigned: { TicketBrief }, blocked: { TicketBrief } },
+	maps: { { number: number, title: string } }
+): { [string]: string }
+	local mapLines: { string } = {}
+	for _, m in ipairs(maps) do
+		table.insert(mapLines, string.format("- #%d %s", m.number, m.title))
+	end
+	return {
+		repo = repo,
+		claimable = bucketText(buckets.claimable, nil),
+		assigned = bucketText(buckets.assigned, nil),
+		blocked = bucketText(buckets.blocked, function(t)
+			if #t.blockedBy == 0 then
+				return nil
+			end
+			local nums: { string } = {}
+			for _, n in ipairs(t.blockedBy) do
+				table.insert(nums, "#" .. tostring(n))
+			end
+			return "等 " .. table.concat(nums, ",")
+		end),
+		maps = if #mapLines > 0 then table.concat(mapLines, "\n") else "（无）",
+	}
+end
+
 --- 仓库空的时候给两条路，对应参考实现的「探索地图 / 实施地图」二选一：
 --- 需求还没摸清走 wayfinder 画地图；需求已经明确直接 grill 收敛成 spec。
 --- 只甩一条 /wayfinder 会误导 —— 需求清楚的人不需要画地图。
@@ -90,18 +181,10 @@ function M.byTicketType(kind: string?): Template?
 	return M.byId(kind)
 end
 
---- 替换 {url} / {title} 占位符；未提供的占位符留原样（不静默吞掉，便于发现模板写错）。
-function M.render(tpl: Template, vars: { url: string?, title: string? }): string
-	local url = vars.url or ""
-	local title = vars.title or ""
-	return (tpl.body:gsub("{(%w+)}", function(key)
-		if key == "url" then
-			return url
-		end
-		if key == "title" then
-			return title
-		end
-		return "{" .. key .. "}"
+--- 替换模板里的 {占位符}。缺的占位符留原样（不静默吞掉，便于发现模板写错）。
+function M.render(tpl: Template, vars: { [string]: string }): string
+	return (tpl.body:gsub("{(%w+)}", function(key: string)
+		return vars[key] or ("{" .. key .. "}")
 	end))
 end
 

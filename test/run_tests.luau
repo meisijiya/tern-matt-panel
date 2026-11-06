@@ -551,6 +551,73 @@ test("commands.buildTicketCommand", function()
 	ok(string.find(out, "MyTask", 1, true) ~= nil, "title in ticket cmd")
 end)
 
+test("templates.render 缺的占位符留原样", function()
+	local out = templates.render(templates.NEXT_STEP, { repo = "o/r" })
+	ok(string.find(out, "o/r", 1, true) ~= nil, "repo substituted")
+	ok(string.find(out, "{claimable}", 1, true) ~= nil, "missing placeholder kept")
+end)
+
+test("templates.nextStepVars 摊出真实票清单", function()
+	local buckets = {
+		claimable = {
+			{ number = 12, title = "修 X", type = "task", blockedBy = {} },
+			{ number = 13, title = "没打标签的票", type = nil, blockedBy = {} },
+		},
+		assigned = {},
+		blocked = { { number = 15, title = "等前置", type = "research", blockedBy = { 10, 3 } } },
+	}
+	local vars = templates.nextStepVars("me/repo", buckets, { { number = 1, title = "地图一" } })
+	eq(vars.repo, "me/repo")
+	ok(string.find(vars.claimable, "- #12 wayfinder:task 修 X", 1, true) ~= nil, "claimable line")
+	ok(string.find(vars.claimable, "- #13 无类型 没打标签的票", 1, true) ~= nil, "untyped line")
+	eq(vars.assigned, "（无）")
+	ok(string.find(vars.blocked, "等 #10,#3", 1, true) ~= nil, "blockers listed")
+	eq(vars.maps, "- #1 地图一")
+
+	-- 超过 12 张要收尾，别把整块板塞进提示词
+	local many = {}
+	for i = 1, 14 do
+		many[i] = { number = i, title = "t" .. i, type = "task", blockedBy = {} }
+	end
+	local v2 = templates.nextStepVars("r", { claimable = many, assigned = {}, blocked = {} }, {})
+	ok(string.find(v2.claimable, "还有 2 张", 1, true) ~= nil, "truncated")
+	eq(v2.maps, "（无）")
+end)
+
+test("lanes 每条泳道都指路", function()
+	for _, l in ipairs(lanes.LANES) do
+		ok(l.hint ~= nil and l.hint ~= "", l.id .. " has hint")
+	end
+end)
+
+test("util.textWidth 把 CJK 算成两列", function()
+	eq(util.textWidth("刷新"), 4)
+	eq(util.textWidth("repo"), 4)
+end)
+
+test("util.packRows 装不下就换行且不丢按钮", function()
+	local widths = { 6, 6, 6, 6, 6, 14 }
+	local wide = util.packRows(widths, 100, 1)
+	eq(#wide, 1, "wide panel keeps one row")
+	eq(#wide[1], 6, "all buttons in that row")
+
+	local narrow = util.packRows(widths, 12, 1)
+	ok(#narrow > 1, "narrow panel wraps")
+	local seen: { [number]: boolean } = {}
+	for _, row in ipairs(narrow) do
+		for _, idx in ipairs(row) do
+			ok(not seen[idx], "index " .. idx .. " appears once")
+			seen[idx] = true
+		end
+	end
+	eq(#narrow[1], 1, "first row holds the first button only")
+	eq(narrow[1][1], 1, "order kept")
+
+	-- 单项比整行还宽：独占一行，宁可溢出也不丢
+	local huge = util.packRows({ 40, 6 }, 10, 1)
+	eq(#huge, 2, "oversized button gets its own row")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

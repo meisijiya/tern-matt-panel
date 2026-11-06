@@ -32,12 +32,18 @@ end
 --- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
 local COOLDOWN_SEC = 60
 
+--- 自动刷新的最短间隔：窗口获得焦点时才考虑拉，且两次拉取之间至少隔这么久。
+--- 焦点事件很频繁（切 pane 就触发），真正省配额的是这道闸。
+local AUTO_REFRESH_SEC = 60
+
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
 -- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
+-- 窗口半边要知道往哪个 pane 戳「可以刷了吗」：宿主开块时把自己的 pane 记在这里。
+local PANEL_KEY = "panel"
 local BLOCK_ID = "matt"
 
 type View = "skills" | "board" | "map" | "ticket"
@@ -66,6 +72,8 @@ type State = {
 	bodyLoading: number?,
 	-- 上次拉取失败后到这个时刻之前不再发请求
 	cooldownUntil: number?,
+	-- 上次真正发出拉取的时刻；自动刷新按它节流
+	lastLoadAt: number?,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
@@ -97,6 +105,7 @@ local function blank(): State
 		ticketBody = nil,
 		bodyLoading = nil,
 		cooldownUntil = nil,
+		lastLoadAt = nil,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
@@ -275,6 +284,8 @@ end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
+	-- 记下发出时刻：自动刷新用它节流，成功失败都算一次请求。
+	state.lastLoadAt = nowSec()
 	-- 刻意不拉 body：列表一次 400 点，5000 点/小时只够刷十来次。
 	-- body 是成本大头，改成点开某张票时用 REST 单独取（REST 不占 GraphQL 配额）。
 	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
@@ -386,6 +397,17 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
 	state.message = "提交中：" .. name
+end
+
+--- 「问下一步」的注入正文：把任务板快照摊成模板占位符。
+--- 面板不做判断，判断留给会话里的 /skill:ask-matt。
+local function nextStepBody(state: State): string
+	local b = tracker.classify(state.tickets)
+	local maps: { { number: number, title: string } } = {}
+	for _, m in ipairs(state.maps) do
+		table.insert(maps, { number = m.number, title = m.title })
+	end
+	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo or "（还没识别到仓库）", b :: any, maps))
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -520,7 +542,10 @@ local function skillsView(state: State, cx: BlockCx): Node
 		lp.empty = { ui.span("空", "muted") }
 		lp.max = { lines = rows }
 		list.p = lp
-		table.insert(main, ui.card(ui.span(lane.title, "strong"), { list }, {
+		table.insert(main, ui.card(ui.span(lane.title, "strong"), {
+			ui.text(ui.span(lane.hint, "muted")),
+			list,
+		}, {
 			icon = "sparkle",
 			meta = ui.span(string.format("%d 个", n), "muted"),
 		}))
@@ -949,60 +974,74 @@ local function ticketView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 工具条按钮的排版预算：图标 2 列 + 图标与文字间 1 列 + 左右内边距 2 列。
+--- 只用于决定换行，宁可估宽一点。
+local BUTTON_CHROME = 5
+local BUTTON_GAP = 1
+
+type ToolButton = {
+	label: string,
+	icon: string,
+	variant: string?,
+	key: string?,
+	click: string,
+}
+
 --- 顶部工具条：鼠标能点的视图切换与常用操作。
-local function toolbar(state: State): Node
-	local buttons: { Node } = {
-		ui.button("技能", {
-			icon = "sparkle",
-			size = "sm",
-			variant = if state.view == "skills" then "primary" else "default",
-			actions = { click = "view-skills" },
-		}),
-		ui.button("任务板", {
-			icon = "map",
-			size = "sm",
-			variant = if state.view == "board" then "primary" else "default",
-			actions = { click = "view-board" },
-		}),
-		ui.button("刷新", {
-			icon = "refresh",
-			size = "sm",
-			-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
-			-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
-			key = "refresh",
-			-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
-			-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
-			actions = { click = "reload" },
-		}),
-		ui.button("换仓库", {
-			icon = "repo",
-			size = "sm",
-			actions = { click = "pick-repo" },
-		}),
-		ui.button(if state.showHidden then "隐藏实验技能" else "显示实验技能", {
-			icon = "eye",
-			size = "sm",
-			actions = { click = "toggle-hidden" },
-		}),
+--- 面板宽度不一，按钮装不进一行就换行 —— 任何宽度下都不许把按钮裁掉。
+local function toolbar(state: State, cx: BlockCx): Node
+	local buttons: { ToolButton } = {
+		{ label = "技能", icon = "sparkle", click = "view-skills",
+			variant = if state.view == "skills" then "primary" else "default" },
+		{ label = "任务板", icon = "map", click = "view-board",
+			variant = if state.view == "board" then "primary" else "default" },
+		-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
+		-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
+		-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
+		-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
+		{ label = "刷新", icon = "refresh", key = "refresh", click = "reload" },
+		{ label = "换仓库", icon = "repo", click = "pick-repo" },
+		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
-	-- 任务板视图下多一个排序开关：票按创建时间排，默认最新在上。
+	-- 任务板视图下多两个按钮：问下一步（把票装进信封交给会话排序）、排序开关。
 	if state.view == "board" then
-		table.insert(buttons, ui.button(if state.sortNewest then "最新在上" else "最早在上", {
+		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
+		table.insert(buttons, {
+			label = if state.sortNewest then "最新在上" else "最早在上",
 			icon = "refresh",
-			size = "sm",
-			actions = { click = "toggle-sort" },
-		}))
+			click = "toggle-sort",
+		})
 	end
 	-- 技能视图下多一个注入按钮：技能侧的注入也要有鼠标入口（不只是键盘 i）。
 	if state.view == "skills" then
-		table.insert(buttons, ui.button("注入技能", {
-			icon = "send",
-			size = "sm",
-			variant = "primary",
-			actions = { click = "inject-skill" },
-		}))
+		table.insert(buttons, { label = "注入技能", icon = "send", variant = "primary", click = "inject-skill" })
 	end
-	return ui.row(buttons)
+
+	local widths: { number } = {}
+	for _, b in ipairs(buttons) do
+		table.insert(widths, util.textWidth(b.label) + BUTTON_CHROME)
+	end
+	local rows: { Node } = {}
+	for _, group in ipairs(util.packRows(widths, cx.cols, BUTTON_GAP)) do
+		local nodes: { Node } = {}
+		for _, idx in ipairs(group) do
+			local b = buttons[idx]
+			local props: { [string]: any } = {
+				icon = b.icon,
+				size = "sm",
+				actions = { click = b.click },
+			}
+			if b.variant then
+				props.variant = b.variant
+			end
+			if b.key then
+				props.key = b.key
+			end
+			table.insert(nodes, ui.button(b.label, props))
+		end
+		table.insert(rows, ui.row(nodes))
+	end
+	return ui.col(rows)
 end
 
 --- 底部提示条：键位说明。
@@ -1076,6 +1115,9 @@ end
 tern.block.define(BLOCK_ID, {
 	init = function(cx: BlockCx, _args: { string }, saved: any): State
 		local state = blank()
+		-- 记下自己的 pane：窗口半边聚焦时只知道「某个窗口亮了」，
+		-- 要靠这个键找到该戳哪个面板。
+		pcall(tern.kv.set, PANEL_KEY, { pane = cx.pane })
 		if type(saved) == "table" then
 			state.view = (saved.view :: View) or "skills"
 			state.showHidden = saved.showHidden == true
@@ -1101,13 +1143,13 @@ tern.block.define(BLOCK_ID, {
 		readResult(state)
 		local main: Node
 		if state.view == "skills" then
-			main = ui.col({ toolbar(state), skillsView(state, cx) })
+			main = ui.col({ toolbar(state, cx), skillsView(state, cx) })
 		elseif state.view == "board" then
-			main = ui.col({ toolbar(state), boardView(state, cx) })
+			main = ui.col({ toolbar(state, cx), boardView(state, cx) })
 		elseif state.view == "map" then
-			main = ui.col({ toolbar(state), mapView(state, cx) })
+			main = ui.col({ toolbar(state, cx), mapView(state, cx) })
 		else
-			main = ui.col({ toolbar(state), ticketView(state, cx) })
+			main = ui.col({ toolbar(state, cx), ticketView(state, cx) })
 		end
 		return { main = main, dock = dockView(state) }
 	end,
@@ -1439,6 +1481,30 @@ tern.block.define(BLOCK_ID, {
 		if act == "toggle-sort" then
 			state.sortNewest = not state.sortNewest
 			state.message = if state.sortNewest then "最新在上" else "最早在上"
+			return
+		end
+		if act == "next-step" then
+			if not state.repo then
+				state.message = "先识别到仓库与票，再问下一步"
+				return
+			end
+			inject(state, cx, nextStepBody(state), "问下一步")
+			return
+		end
+		if act == "auto-reload" then
+			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
+			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 60 秒。
+			local now = nowSec()
+			if state.loading then
+				return
+			end
+			if now and state.cooldownUntil and now < state.cooldownUntil then
+				return
+			end
+			if now and state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
+				return
+			end
+			loadBoard(state, cx)
 			return
 		end
 		if act == "reload" then

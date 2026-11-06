@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # 真机端到端测试：起一个受控 tern 窗口，驱动插件交互，读回渲染树做断言。
 #
-#   test/e2e.sh [选项]
+# 窗口与面板都复用：默认接上已经开着的受控 tern 窗口，不自己起（一个窗口就是一份
+# GPU 与内存开销）；只有 --launch 才起窗口，且只在 --launch 起的窗口上做关闭。
+# 里面已经开着的面板也不再开第二个；跑完不留窗口堆。
+#
+#   test/e2e.sh [--port N] [--launch] [--keep]
 #
 # 选项：
-#   --keep        跑完不关窗口（默认跑完关掉）
-#   --port N      控制端口（默认 17311，被占用则自动 +1）
+#   --port N      接哪个控制端口（默认依次试 17311–17315 与上次记下的端口）
+#   --launch      自己起一个受控窗口（默认不；没有可接的窗口就 SKIP）
+#   --keep        --launch 起的窗口跑完不关
 #
 # 依赖：tern（能起 --control 窗口）、gh（已登录）、本机已装中文技能包。
 # 缺任一项 → 该用例记为 SKIP 并说明原因，不算失败。
@@ -114,42 +119,62 @@ fi
 
 # ---- 参数 ----
 keep=0
-port=17311
+launch=0
+port=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--keep) keep=1; shift ;;
+	--launch) launch=1; shift ;;
 	--port) port="$2"; shift 2 ;;
 	*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
 
-# ---- 起窗口 ----
-log="$here/.e2e.log"
+# ---- 找控制端点 ----
+# 默认不自己起 tern：一个窗口就是一份 GPU 与内存开销，连跑几轮会把机器拖垮。
+# 先接已开的受控窗口：--port、上次记下的端口、17311 起的五个端口。
+portfile="$here/.e2e.port"
 pidfile="$here/.e2e.pid"
+log="$here/.e2e.log"
 : > "$log"
-
-# 上次跑到一半被杀（或 Ctrl-C）会留下窗口和用例进程 ——
-# 不清理的话每跑一次叠一层，窗口越堆越多。
-if [ -f "$pidfile" ]; then
-	old_pid="$(cat "$pidfile" 2>/dev/null || true)"
-	if [ -n "$old_pid" ]; then
-		echo "e2e: 清理上次残留的窗口（pid $old_pid）"
-		kill "$old_pid" 2>/dev/null || true
-	fi
-	rm -f "$pidfile"
-fi
-
-# 端口占用则顺延
-while netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$port" '$0 ~ p && /LISTENING/ {found=1} END {exit found?0:1}'; do
-	port=$((port + 1))
-done
-
-# --dir 要 Windows 路径（Windows 的 exe 不认 /d/...）
 repo_win="$(cygpath -w "$repo" 2>/dev/null || echo "$repo")"
 
-"$tern_bin" --control "$port" --dir "$repo_win" > "$log" 2>&1 &
-tern_pid=$!
-echo "$tern_pid" > "$pidfile"
+probe() { "$tern_bin" ctl --control "$1" state >/dev/null 2>&1; }
+
+found=""
+for cand in $port $(cat "$portfile" 2>/dev/null || true) 17311 17312 17313 17314 17315; do
+	if [ -n "$cand" ] && probe "$cand"; then
+		found="$cand"
+		break
+	fi
+done
+
+owned=0
+tern_pid=""
+if [ -n "$found" ]; then
+	port="$found"
+	echo "e2e: 接上已开的窗口（控制端口 $port）"
+elif [ "$launch" -eq 1 ]; then
+	port="${port:-17311}"
+	# 端口占用则顺延
+	while netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$port" '$0 ~ p && /LISTENING/ {found=1} END {exit found?0:1}'; do
+		port=$((port + 1))
+	done
+	"$tern_bin" --control "$port" --dir "$repo_win" > "$log" 2>&1 &
+	tern_pid=$!
+	owned=1
+	echo "$tern_pid" > "$pidfile"
+	echo "$port" > "$portfile"
+	echo "e2e: 起了窗口（控制端口 $port）"
+else
+	cat >&2 <<EOF
+SKIP: 没有可接的受控 tern 窗口（只有 --launch 才自己起）。
+  先在 Tern 里手动开一个受控窗口：
+    "$tern_bin" --control 17311 --dir "$repo_win"
+  再跑本脚本；端口不是 17311 就用 --port 指定。
+EOF
+	exit 0
+fi
 
 cases_pid=""
 cleanup() {
@@ -159,22 +184,24 @@ cleanup() {
 		kill "$cases_pid" 2>/dev/null || true
 		wait "$cases_pid" 2>/dev/null || true
 	fi
-	if [ "$keep" -eq 0 ]; then
+	if [ "$keep" -eq 0 ] && [ "$owned" -eq 1 ]; then
 		# 先走优雅退出：只有窗口正常关闭 daemon 才记账。
 		# 直接 kill 会被记成「未关闭会话」，下次 tern 启动全部恢复 ——
 		# 跑几次 e2e 就攒出一堆窗口，把 GPU 和内存拖垮。
 		"$tern_bin" ctl --control "$port" quit >/dev/null 2>&1 || true
 		for _ in $(seq 1 20); do
-			if ! kill -0 "$tern_pid" 2>/dev/null; then
+			if [ -z "$tern_pid" ] || ! kill -0 "$tern_pid" 2>/dev/null; then
 				break
 			fi
 			sleep 0.25
 		done
 		# 优雅退出没生效才硬杀兜底。
-		kill "$tern_pid" 2>/dev/null || true
-		wait "$tern_pid" 2>/dev/null || true
+		if [ -n "$tern_pid" ]; then
+			kill "$tern_pid" 2>/dev/null || true
+			wait "$tern_pid" 2>/dev/null || true
+		fi
 	fi
-	rm -f "$log" "$pidfile"
+	rm -f "$log" "$pidfile" "$portfile"
 }
 # INT/TERM 必须一起 trap：`timeout 200 bash test/e2e.sh` 发的是 TERM，
 # 只 trap EXIT 的话窗口和用例进程都会变成孤儿。
