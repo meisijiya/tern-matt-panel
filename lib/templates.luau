@@ -45,7 +45,8 @@ M.NEXT_STEP = {
 	body = table.concat({
 		"/skill:ask-matt",
 		"项目 {repo} 的任务板快照，{rootLabel}：{root}",
-		"抓取时间：{fetchedAt}。这是某一刻的快照，不是实时状态：任何票的状态、依赖、正文若与 GitHub 不一致，一律以 gh 的实时结果为准。",
+		"{freshness}",
+		"这是某一刻的快照，不是实时状态：任何票的状态、依赖、正文若与 GitHub 不一致，一律以 gh 的实时结果为准。",
 		"",
 		"判断前先读这几处；文件不存在就跳过，不用报告缺失，也不要凭空引用：",
 		"- 领域词汇：{root}/GLOSSARY.md",
@@ -64,6 +65,8 @@ M.NEXT_STEP = {
 		"地图：",
 		"{maps}",
 		"",
+		"已关闭：{closedLine}",
+		"",
 		"规格（含已关闭的，to-spec 的产物与其工单进度）：",
 		"{specs}",
 		"",
@@ -73,7 +76,7 @@ M.NEXT_STEP = {
 		"1. 解锁下游多者优先（票行里的「被 #N 等待」就是下游）；",
 		"2. 同档按阶段：grilling > research > prototype > task；",
 		"3. 仍同档，创建时间旧者优先。",
-		"快照只有标题、类型、标签、认领人、依赖方向、创建时间与 spec 进度；正文、迷雾、范围外、spec 细节都在 issue 里，需要就用 gh 读。不要编造票号、标题、标签或依赖。若某张票的标签或标题里带「TEST」这类标记，先判断它是不是演练数据，再决定要不要做。",
+		"快照载有标题、类型、标签、认领人、创建/抓取时间、依赖方向（含反向）、已关闭数量与 spec 状态；正文、迷雾、范围外、spec 细节不在其中，需要就用 gh 读。不要编造票号、标题、标签或依赖。若某张票的标签或标题里带「TEST」这类标记，先判断它是不是演练数据，再决定要不要做。",
 		"",
 		"输出（最多 3 张，不要复述整份快照）：",
 		"| 票 | 为什么是现在 | 技能命令 | 第一步动作 |",
@@ -115,6 +118,12 @@ export type NextStepExtra = {
 	specs: { SpecBrief }?,
 	-- 抓取时刻（本地时间字符串）；缺省时如实写「未知」
 	fetchedAt: string?,
+	-- 距抓取过了多少分钟；用来判定是不是该先 gh 核对
+	ageMinutes: number?,
+	-- 这份数据是不是失败后回退的缓存
+	fromCache: boolean?,
+	-- 已关闭的票（只取数量与最近几张的标题）
+	closed: { TicketBrief }?,
 }
 
 local function ticketLine(t: TicketBrief, waitedBy: { string }): string
@@ -168,6 +177,37 @@ local function waitedIndex(all: { TicketBrief }): { [number]: { string } }
 	return out
 end
 
+--- 已关闭只给数量与最近几张标题：判断「这个阶段收没收尾」用它，不必把整组搬进来。
+local CLOSED_MAX = 5
+local function closedText(items: { TicketBrief }): string
+	if #items == 0 then
+		return "0 张"
+	end
+	local titles: { string } = {}
+	for i, t in ipairs(items) do
+		if i > CLOSED_MAX then
+			break
+		end
+		table.insert(titles, string.format("#%d %s", t.number, t.title))
+	end
+	local tail = if #items > CLOSED_MAX then string.format("，另有 %d 张", #items - CLOSED_MAX) else ""
+	return string.format("%d 张（最近：%s%s）", #items, table.concat(titles, "；"), tail)
+end
+
+--- 新鲜度一句话：缓存 > 过期 > 正常。接收方据此决定要不要先 gh 核对。
+local STALE_MINUTES = 10
+local function freshnessLine(extra: NextStepExtra?): string
+	local at = if extra and extra.fetchedAt then extra.fetchedAt else "未知"
+	if extra and extra.fromCache then
+		return string.format("抓取时间：%s，且这是缓存数据（上次拉取失败后的回退），可能与 GitHub 不一致：排序前先用 gh 核对。", at)
+	end
+	local age = extra and extra.ageMinutes
+	if age and age >= STALE_MINUTES then
+		return string.format("抓取时间：%s（约 %d 分钟前，已过时）：排序前先用 gh 核对。", at, age)
+	end
+	return string.format("抓取时间：%s。", at)
+end
+
 local function bucketText(items: { TicketBrief }, waited: { [number]: { string } }): string
 	if #items == 0 then
 		return "（无）"
@@ -200,19 +240,23 @@ function M.nextStepVars(
 	local specLines: { string } = {}
 	for _, s in ipairs(if extra and extra.specs then extra.specs else {}) do
 		local state = if s.state == "CLOSED" then "已关闭" else "进行中"
+		local progress = if s.total == 0
+			then "未拆工单"
+			else string.format("未完成 %d 张，共 %d 张", s.open, s.total)
 		table.insert(specLines, string.format(
-			"- #%d %s · %s · 工单 %d/%d 未完成",
+			"- #%d %s · %s · %s",
 			s.number,
 			s.title,
 			state,
-			s.open,
-			s.total
+			progress
 		))
 	end
 
 	return {
 		repo = repo,
 		fetchedAt = if extra and extra.fetchedAt then extra.fetchedAt else "未知",
+		freshness = freshnessLine(extra),
+		closedLine = closedText(extra and extra.closed or {}),
 		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
 		rootLabel = if extra and extra.rootIsRepo then "仓库根目录" else "当前工作目录",
 		claimableCount = tostring(#buckets.claimable),

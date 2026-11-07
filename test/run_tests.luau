@@ -603,9 +603,9 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	ok(string.find(vars.blocked, "等 #12,#3", 1, true) ~= nil, "blockers listed")
 	eq(vars.maps, "- #1 地图一")
 	eq(vars.fetchedAt, "2026-11-07 10:51")
-	ok(string.find(vars.specs, "- #14 规格十四 · 进行中 · 工单 1/2 未完成", 1, true) ~= nil, "open spec")
+	ok(string.find(vars.specs, "- #14 规格十四 · 进行中 · 未完成 1 张，共 2 张", 1, true) ~= nil, "open spec")
 	-- 已关闭的 spec 必须与进行中的区分开：并列会让接收方以为 v1 还没做完
-	ok(string.find(vars.specs, "- #11 规格十一 · 已关闭 · 工单 0/0 未完成", 1, true) ~= nil, "closed spec")
+	ok(string.find(vars.specs, "- #11 规格十一 · 已关闭 · 未拆工单", 1, true) ~= nil, "closed spec")
 	-- 非 wayfinder 标签是「这是不是真活」的唯一信号，必须进快照
 	ok(string.find(vars.blocked, "标签 test", 1, true) ~= nil, "extra labels kept")
 	ok(string.find(vars.blocked, "wayfinder:research", 1, true) ~= nil, "type kept separately")
@@ -724,6 +724,34 @@ test("窗口半边把 inject 交给空闲 agent 并回写成功", function()
 	eq(res.seq, 5, "seq echoed")
 end)
 
+test("剪贴板写不进去时不许谎报已复制", function()
+	local winPane = 42
+	local cx: any = {
+		pane = winPane,
+		copy = function()
+			error("clipboard busy")
+		end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		-- 没有可用 agent：必然走剪贴板兜底
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = { seq = 9, kind = "inject", pane = winPane, body = "hi", name = "测试" }
+	pollTick(cx)
+
+	local res = kvStore["inject_result"]
+	ok(type(res) == "table", "result written")
+	eq(res.ok, false, "reported failure")
+	ok(string.find(tostring(res.error), "剪贴板也写不进去", 1, true) ~= nil, "names the copy failure")
+	ok(string.find(tostring(res.error), "正文已复制", 1, true) == nil, "does not claim success")
+end)
+
 --- 收一棵节点树里的按钮文字。
 local function buttonTexts(node: any, out: { string }): { string }
 	out = out or {}
@@ -769,6 +797,18 @@ test("问下一步注入真实票清单", function()
 			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
 			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
 	}
+	-- 接线断言：这些字段是 host 透传的，漏传过一次（cwd）就真机才炸
+	st.fetchedAt = "2026-11-07 10:51"
+	st.fetchedAtSec = nil
+	st.fromCache = false
+	st.tickets = {
+		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
+			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
+			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
+		{ number = 99, title = "已完成", body = "", state = "CLOSED", url = "u99",
+			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
+			parent = nil, isSpec = false, createdAt = "2026-10-01T00:00:00Z" },
+	}
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
 
 	local action = kvStore["action"]
@@ -779,7 +819,50 @@ test("问下一步注入真实票清单", function()
 	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "填了仓库")
 	ok(string.find(body, "- #1 地图一", 1, true) ~= nil, "列了地图")
+	ok(string.find(body, "抓取时间：2026-11-07 10:51", 1, true) ~= nil, "带了抓取时刻")
+	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
+	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
 	eq(st.pendingSeq, action.seq, "记为提交中")
+end)
+
+test("新鲜度与缓存口径", function()
+	local buckets = { claimable = {}, assigned = {}, blocked = {} }
+	local base = { root = "D:/r", all = {}, specs = {} }
+
+	local fresh = templates.nextStepVars("o/r", buckets, {}, {
+		root = base.root, all = {}, specs = {},
+		fetchedAt = "2026-11-07 10:51", ageMinutes = 2,
+	})
+	ok(string.find(fresh.freshness, "抓取时间：2026-11-07 10:51", 1, true) ~= nil, "fresh line keeps time")
+	ok(string.find(fresh.freshness, "过时", 1, true) == nil, "fresh is not stale")
+
+	-- 超过阈值：必须提醒先核对，否则接收方会把旧票单当真
+	local stale = templates.nextStepVars("o/r", buckets, {}, {
+		root = base.root, all = {}, specs = {},
+		fetchedAt = "2026-11-07 09:00", ageMinutes = 75,
+	})
+	ok(string.find(stale.freshness, "已过时", 1, true) ~= nil, "stale flagged")
+	ok(string.find(stale.freshness, "gh 核对", 1, true) ~= nil, "stale asks to verify")
+
+	-- 缓存回退：比「过时」更强的一句话
+	local cached = templates.nextStepVars("o/r", buckets, {}, {
+		root = base.root, all = {}, specs = {},
+		fetchedAt = "2026-11-07 09:00", ageMinutes = 75, fromCache = true,
+	})
+	ok(string.find(cached.freshness, "缓存数据", 1, true) ~= nil, "cache flagged")
+end)
+
+test("已关闭组只给数量与最近标题", function()
+	local closed = {}
+	for i = 1, 8 do
+		closed[i] = { number = i, title = "收尾票" .. i, blockedBy = {} }
+	end
+	local vars = templates.nextStepVars("o/r", { claimable = {}, assigned = {}, blocked = {} }, {}, {
+		root = "D:/r", all = {}, specs = {}, closed = closed,
+	})
+	ok(string.find(vars.closedLine, "8 张", 1, true) ~= nil, "count")
+	ok(string.find(vars.closedLine, "#1 收尾票1", 1, true) ~= nil, "recent listed")
+	ok(string.find(vars.closedLine, "另有 3 张", 1, true) ~= nil, "overflow noted")
 end)
 
 -- -------------------------------------------------------------- report ----

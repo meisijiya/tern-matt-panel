@@ -91,6 +91,10 @@ type State = {
 	lastLoadAt: number?,
 	-- 上次拉取成功的人类可读时刻：提示词要靠它声明「这是几点的快照」
 	fetchedAt: string?,
+	-- 同一时刻的秒数：用来自动判新鲜度（字符串没法算差）
+	fetchedAtSec: number?,
+	-- 当前显示的是不是失败后回退的缓存
+	fromCache: boolean,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
@@ -126,6 +130,8 @@ local function blank(): State
 		cooldownUntil = nil,
 		lastLoadAt = nil,
 		fetchedAt = nil,
+		fetchedAtSec = nil,
+		fromCache = false,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
@@ -201,6 +207,8 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
 	state.fetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
+	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
+	state.fromCache = true
 	return true
 end
 
@@ -287,6 +295,9 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.mapSel = nil
 			state.ticketSel = nil
 			state.setupHint = reason or "当前目录没识别到 git remote"
+			state.fetchedAt = nil
+			state.fetchedAtSec = nil
+			state.fromCache = false
 			state.message = nil
 			cx:render()
 			return
@@ -300,6 +311,9 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketBody = nil
 			state.mapSel = nil
 			state.ticketSel = nil
+			state.fetchedAt = nil
+			state.fetchedAtSec = nil
+			state.fromCache = false
 		end
 		state.repo = repo
 		state.repoManual = manual
@@ -385,7 +399,14 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		-- 会把它当实时状态，据此做出已经过期的判断。
 		local now2 = nowSec()
 		state.fetchedAt = fmtTime(now2)
-		pcall(tern.kv.set, ISSUES_CACHE_KEY, { repo = repo, issues = issues, fetchedAt = state.fetchedAt })
+		state.fetchedAtSec = now2
+		state.fromCache = false
+		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
+			repo = repo,
+			issues = issues,
+			fetchedAt = state.fetchedAt,
+			fetchedAtSec = state.fetchedAtSec,
+		})
 		cx:render()
 	end)
 end
@@ -458,6 +479,10 @@ local function nextStepBody(state: State, cx: BlockCx): string
 			table.insert(open, t)
 		end
 	end
+	local closed: { any } = {}
+	for _, t in ipairs(tracker.sortByCreated(b.closed :: any, true)) do
+		table.insert(closed, { number = t.number, title = t.title, type = t.type, blockedBy = t.blockedBy })
+	end
 	-- 标签与认领人是「这张票是不是真活」的关键信号，单靠标题读不出来。
 	local brief: { any } = {}
 	for _, t in ipairs(open) do
@@ -494,6 +519,9 @@ local function nextStepBody(state: State, cx: BlockCx): string
 		all = brief :: any,
 		specs = specs,
 		fetchedAt = state.fetchedAt,
+		ageMinutes = if state.fetchedAtSec and nowSec() then (nowSec() :: number) - state.fetchedAtSec else nil,
+		fromCache = state.fromCache,
+		closed = closed :: any,
 	}
 	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))
 end
