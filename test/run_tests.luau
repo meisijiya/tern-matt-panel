@@ -588,7 +588,6 @@ test("templates.nextStepVars 摊出真实票清单", function()
 				{ number = 14, title = "规格十四", open = 1, total = 2, state = "OPEN" },
 				{ number = 11, title = "规格十一", open = 0, total = 0, state = "CLOSED" },
 			},
-			fetchedAt = "2026-11-07 10:51",
 			rootIsRepo = true,
 		}
 	)
@@ -602,7 +601,6 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	eq(vars.assigned, "（无）")
 	ok(string.find(vars.blocked, "等 #12,#3", 1, true) ~= nil, "blockers listed")
 	eq(vars.maps, "- #1 地图一")
-	eq(vars.fetchedAt, "2026-11-07 10:51")
 	ok(string.find(vars.specs, "- #14 规格十四 · 进行中 · 未完成 1 张，共 2 张", 1, true) ~= nil, "open spec")
 	-- 已关闭的 spec 必须与进行中的区分开：并列会让接收方以为 v1 还没做完
 	ok(string.find(vars.specs, "- #11 规格十一 · 已关闭 · 未拆工单", 1, true) ~= nil, "closed spec")
@@ -621,7 +619,6 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	eq(v2.specs, "（无）")
 	eq(v2.root, "（未知，按当前工作目录找）")
 	eq(v2.rootLabel, "当前工作目录")
-	eq(v2.fetchedAt, "未知")
 end)
 
 test("lanes 每条泳道都指路", function()
@@ -824,7 +821,6 @@ test("问下一步注入真实票清单", function()
 	-- 接线断言：这些字段是 host 透传的，漏传过一次（cwd）就真机才炸
 	-- 只给秒数：字符串由同一个值格式化，避免两个字段互相矛盾
 	st.fetchedAtSec = 1794055860
-	st.fromCache = false
 	st.tickets = {
 		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
 			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
@@ -844,6 +840,10 @@ test("问下一步注入真实票清单", function()
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "填了仓库")
 	ok(string.find(body, "- #1 地图一", 1, true) ~= nil, "列了地图")
 	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
+	-- 正文只放票面：任何时间/置信度措辞都属于越界
+	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "新鲜", "可能" }) do
+		ok(string.find(body, banned, 1, true) == nil, "正文不该出现：" .. banned)
+	end
 	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
 	eq(st.pendingSeq, action.seq, "记为提交中")
 end)

@@ -115,8 +115,6 @@ export type NextStepExtra = {
 	-- 全部未关闭的票：用来算「被谁等待」这个反向依赖
 	all: { TicketBrief }?,
 	specs: { SpecBrief }?,
-	-- 抓取时刻（本地时间字符串）；缺省时如实写「未知」
-	fetchedAt: string?,
 	-- 已关闭的票（只取数量与最近几张的标题）
 	closed: { TicketBrief }?,
 }
@@ -235,7 +233,6 @@ function M.nextStepVars(
 
 	return {
 		repo = repo,
-		fetchedAt = if extra and extra.fetchedAt then extra.fetchedAt else "未知",
 
 		closedLine = closedText(extra and extra.closed or {}),
 		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
