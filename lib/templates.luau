@@ -44,9 +44,9 @@ M.NEXT_STEP = {
 	title = "问下一步",
 	body = table.concat({
 		"/skill:ask-matt",
-		"项目 {repo} 的任务板快照，仓库根目录：{root}",
+		"项目 {repo} 的任务板快照，{rootLabel}：{root}",
 		"",
-		"判断前先读这几处（读不到就说读不到，不要猜）：",
+		"判断前先读这几处；文件不存在就跳过，不用报告缺失，也不要凭空引用：",
 		"- 领域词汇：{root}/GLOSSARY.md",
 		"- 已定决策：{root}/docs/adr/",
 		"- 规格：{root}/docs/spec/",
@@ -102,6 +102,8 @@ export type SpecBrief = {
 export type NextStepExtra = {
 	-- 仓库根目录：给 agent 指 GLOSSARY / ADR / spec 的去处
 	root: string?,
+	-- root 是真 git 仓库根（true），还是退化成了当前工作目录（nil/false）
+	rootIsRepo: boolean?,
 	-- 全部未关闭的票：用来算「被谁等待」这个反向依赖
 	all: { TicketBrief }?,
 	specs: { SpecBrief }?,
@@ -188,6 +190,7 @@ function M.nextStepVars(
 	return {
 		repo = repo,
 		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
+		rootLabel = if extra and extra.rootIsRepo then "仓库根目录" else "当前工作目录",
 		claimableCount = tostring(#buckets.claimable),
 		assignedCount = tostring(#buckets.assigned),
 		blockedCount = tostring(#buckets.blocked),

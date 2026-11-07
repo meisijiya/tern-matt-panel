@@ -79,6 +79,8 @@ type State = {
 	pendingSeq: number?,
 	loading: boolean,
 	repo: string?,
+	-- git 的仓库根（cwd 可能只是仓库里的一层，也可能不在仓库里）
+	root: string?,
 	-- 仓库是目录自动识别来的，还是退到上次手动指定的
 	repoManual: boolean,
 	-- 没识别到仓库时给用户的下一步说明（含失败原因）
@@ -110,6 +112,7 @@ local function blank(): State
 		pendingSeq = nil,
 		loading = false,
 		repo = nil,
+		root = nil,
 		repoManual = false,
 		setupHint = nil,
 		skillVersion = nil,
@@ -282,6 +285,15 @@ local function loadBoard(state: State, cx: BlockCx)
 		state.repo = repo
 		state.repoManual = manual
 		fetchIssues(state, cx, repo)
+		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
+		tern.process.run({ "git", "-C", cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
+			if result and result.status == 0 then
+				local root = util.trim(tostring(result.stdout or ""))
+				if root ~= "" then
+					state.root = root
+				end
+			end
+		end)
 	end)
 end
 
@@ -431,7 +443,8 @@ local function nextStepBody(state: State, cx: BlockCx): string
 		})
 	end
 	local extra: templates.NextStepExtra = {
-		root = if cx.cwd and cx.cwd ~= "" then cx.cwd else nil,
+		root = state.root or (if cx.cwd and cx.cwd ~= "" then cx.cwd else nil),
+		rootIsRepo = state.root ~= nil,
 		all = open :: any,
 		specs = specs,
 	}

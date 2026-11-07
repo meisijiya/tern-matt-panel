@@ -584,10 +584,12 @@ test("templates.nextStepVars 摊出真实票清单", function()
 			root = "D:/repo",
 			all = { buckets.claimable[1], buckets.claimable[2], blockedTicket },
 			specs = { { number = 14, title = "规格十四", open = 1, total = 2 } },
+			rootIsRepo = true,
 		}
 	)
 	eq(vars.repo, "me/repo")
 	eq(vars.root, "D:/repo")
+	eq(vars.rootLabel, "仓库根目录")
 	eq(vars.claimableCount, "2")
 	ok(string.find(vars.claimable, "- #12 wayfinder:task 修 X · 2026-11-01", 1, true) ~= nil, "claimable line")
 	ok(string.find(vars.claimable, "- #13 无类型 没打标签的票", 1, true) ~= nil, "untyped line")
@@ -607,6 +609,7 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	eq(v2.maps, "（无）")
 	eq(v2.specs, "（无）")
 	eq(v2.root, "（未知，按当前工作目录找）")
+	eq(v2.rootLabel, "当前工作目录")
 end)
 
 test("lanes 每条泳道都指路", function()
