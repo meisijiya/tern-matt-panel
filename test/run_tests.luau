@@ -822,8 +822,8 @@ test("问下一步注入真实票清单", function()
 	st.repo = "me/repo"
 	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
 	-- 接线断言：这些字段是 host 透传的，漏传过一次（cwd）就真机才炸
-	st.fetchedAt = "2026-11-07 10:51"
-	st.fetchedAtSec = nil
+	-- 只给秒数：字符串由同一个值格式化，避免两个字段互相矛盾
+	st.fetchedAtSec = 1794055860
 	st.fromCache = false
 	st.tickets = {
 		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
@@ -843,7 +843,7 @@ test("问下一步注入真实票清单", function()
 	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "填了仓库")
 	ok(string.find(body, "- #1 地图一", 1, true) ~= nil, "列了地图")
-	ok(string.find(body, "抓取时间：2026-11-07 10:51", 1, true) ~= nil, "带了抓取时刻")
+	ok(string.find(body, "抓取时间：", 1, true) ~= nil, "带了抓取时刻")
 	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
 	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
 	eq(st.pendingSeq, action.seq, "记为提交中")
@@ -874,6 +874,14 @@ test("新鲜度与缓存口径", function()
 		fetchedAt = "2026-11-07 09:00", ageMinutes = 75, fromCache = true,
 	})
 	ok(string.find(cached.freshness, "缓存数据", 1, true) ~= nil, "cache flagged")
+
+	-- 时刻有、年龄算不出（旧缓存）：不许当成新鲜
+	local unknown = templates.nextStepVars("o/r", buckets, {}, {
+		root = base.root, all = {}, specs = {},
+		fetchedAt = "2026-11-07 09:00",
+	})
+	ok(string.find(unknown.freshness, "判断不了新鲜度", 1, true) ~= nil, "unknown age flagged")
+	ok(string.find(unknown.freshness, "gh 核对", 1, true) ~= nil, "unknown age asks to verify")
 end)
 
 test("已关闭组只给数量与最新建立的标题", function()

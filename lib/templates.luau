@@ -202,7 +202,12 @@ local function freshnessLine(extra: NextStepExtra?): string
 		return string.format("抓取时间：%s，且这是缓存数据（上次拉取失败后的回退），可能与 GitHub 不一致：排序前先用 gh 核对。", at)
 	end
 	local age = extra and extra.ageMinutes
-	if age and age >= STALE_MINUTES then
+	if not age then
+		-- 时刻有、年龄算不出来（旧缓存没有秒数，或沙箱时钟缺失）：
+		-- 不知道新不新鲜，就不能当新鲜。
+		return string.format("抓取时间：%s（判断不了新鲜度）：排序前先用 gh 核对。", at)
+	end
+	if age >= STALE_MINUTES then
 		return string.format("抓取时间：%s（约 %d 分钟前，已过时）：排序前先用 gh 核对。", at, age)
 	end
 	return string.format("抓取时间：%s。", at)

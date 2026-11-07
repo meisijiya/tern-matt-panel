@@ -89,10 +89,12 @@ type State = {
 	cooldownUntil: number?,
 	-- 上次真正发出拉取的时刻；自动刷新按它节流
 	lastLoadAt: number?,
-	-- 上次拉取成功的人类可读时刻：提示词要靠它声明「这是几点的快照」
-	fetchedAt: string?,
-	-- 同一时刻的秒数：用来自动判新鲜度（字符串没法算差）
+	-- 抓取时刻的唯一真源：秒数。显示用的字符串每次都从它格式化，
+	-- 不再另存一份 —— 两个字段并存时真机出现过「时间字符串」与「年龄」
+	-- 互相矛盾（同一对数据却给出 4.8 分钟和 254 分钟两个答案）。
 	fetchedAtSec: number?,
+	-- 旧缓存里只有字符串、没有秒数：只能显示，算不出年龄
+	legacyFetchedAt: string?,
 	-- 当前显示的是不是失败后回退的缓存
 	fromCache: boolean,
 	-- 通用
@@ -129,8 +131,8 @@ local function blank(): State
 		bodyLoading = nil,
 		cooldownUntil = nil,
 		lastLoadAt = nil,
-		fetchedAt = nil,
 		fetchedAtSec = nil,
+		legacyFetchedAt = nil,
 		fromCache = false,
 		message = nil,
 		pendingSeq = nil,
@@ -142,6 +144,11 @@ local function blank(): State
 		skillVersion = nil,
 		hasSkills = false,
 	}
+end
+
+--- 显示用的抓取时刻：始终从秒数格式化，旧缓存没有秒数时才退回它自己的字符串。
+local function fetchedLabel(state: State): string?
+	return fmtTime(state.fetchedAtSec) or state.legacyFetchedAt
 end
 
 --- 按泳道顺序排平的技能表，上下移动与选中都用它。
@@ -206,8 +213,8 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	end
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
-	state.fetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
 	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
+	state.legacyFetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
 	state.fromCache = true
 	return true
 end
@@ -295,8 +302,8 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.mapSel = nil
 			state.ticketSel = nil
 			state.setupHint = reason or "当前目录没识别到 git remote"
-			state.fetchedAt = nil
 			state.fetchedAtSec = nil
+			state.legacyFetchedAt = nil
 			state.fromCache = false
 			state.message = nil
 			cx:render()
@@ -311,8 +318,8 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketBody = nil
 			state.mapSel = nil
 			state.ticketSel = nil
-			state.fetchedAt = nil
 			state.fetchedAtSec = nil
+			state.legacyFetchedAt = nil
 			state.fromCache = false
 		end
 		state.repo = repo
@@ -361,7 +368,7 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
 				state.message = state.message
 					.. "（显示上次拉到的数据"
-					.. (if state.fetchedAt then "，" .. state.fetchedAt else "")
+					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
 					.. "）"
 			end
 			cx:render()
@@ -375,7 +382,7 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
 				state.message = state.message
 					.. "（显示上次拉到的数据"
-					.. (if state.fetchedAt then "，" .. state.fetchedAt else "")
+					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
 					.. "）"
 			end
 			cx:render()
@@ -398,13 +405,12 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
 		-- 会把它当实时状态，据此做出已经过期的判断。
 		local now2 = nowSec()
-		state.fetchedAt = fmtTime(now2)
 		state.fetchedAtSec = now2
+		state.legacyFetchedAt = nil
 		state.fromCache = false
 		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
 			repo = repo,
 			issues = issues,
-			fetchedAt = state.fetchedAt,
 			fetchedAtSec = state.fetchedAtSec,
 		})
 		cx:render()
@@ -527,7 +533,7 @@ local function nextStepBody(state: State, cx: BlockCx): string
 		rootIsRepo = state.root ~= nil,
 		all = brief :: any,
 		specs = specs,
-		fetchedAt = state.fetchedAt,
+		fetchedAt = fetchedLabel(state),
 		ageMinutes = ageMinutesOf(state),
 		fromCache = state.fromCache,
 		closed = closed :: any,
