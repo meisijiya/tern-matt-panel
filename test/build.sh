@@ -27,6 +27,21 @@ for src in host.luau window.luau; do
 	done
 done
 
+# 未定义全局：写错作用域（用了别处的局部变量）只有 luau-analyze 抓得到，
+# 真机上表现为 "attempt to call a nil value"，定位代价极高。
+# 只查这一类，不管类型告警 —— 存量类型告警太多，混在一起就没人看了。
+analyze="$(command -v luau-analyze || dirname "${1:-${TERNS_LUAU:-}}" 2>/dev/null)/luau-analyze.exe"
+if [ -x "$analyze" ] || [ -f "$analyze" ]; then
+	if bad="$(cd "$repo" && "$analyze" --formatter=plain host.luau window.luau 2>&1 \
+		| grep "Unknown global" | grep -v "'tern'")"; then
+		if [ -n "$bad" ]; then
+			echo "未定义全局（不是 tern API，是真 bug）：" >&2
+			echo "$bad" >&2
+			exit 1
+		fi
+	fi
+fi
+
 luau="${1:-${TERNS_LUAU:-}}"
 if [[ -z "$luau" ]]; then
 	if command -v luau >/dev/null 2>&1; then

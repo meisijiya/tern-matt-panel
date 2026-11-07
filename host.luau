@@ -286,7 +286,7 @@ local function loadBoard(state: State, cx: BlockCx)
 		state.repoManual = manual
 		fetchIssues(state, cx, repo)
 		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
-		tern.process.run({ "git", "-C", cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
+		tern.process.run({ "git", "-C", cx.cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
 			if result and result.status == 0 then
 				local root = util.trim(tostring(result.stdout or ""))
 				if root ~= "" then
