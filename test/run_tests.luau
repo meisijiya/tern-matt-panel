@@ -880,13 +880,17 @@ test("问下一步交给独立进程，正文仍只含票面", function()
 
 	local call
 	for _, c in ipairs(processCalls) do
-		if table.concat(c.argv, " ") == "omp -p --no-session" then
+		if c.argv[1] == "omp" then
 			call = c
 		end
 	end
-	ok(call ~= nil, "起了 omp -p 进程")
+	ok(call ~= nil, "起了 omp 进程")
+	eq(call.argv[2], "-p")
+	eq(call.argv[3], "--no-session")
 	ok(call.opts ~= nil and call.opts.timeout_ms == 300000, "带超时")
-	local body = tostring(call.opts.stdin)
+	-- 正文走 argv：真机上走 stdin 会卡住不返回
+	local body = tostring(call.argv[4])
+	ok(call.opts.stdin == nil, "短正文不塞 stdin")
 	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "调用 ask-matt")
 	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
 	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")

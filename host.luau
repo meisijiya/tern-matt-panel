@@ -588,10 +588,17 @@ local function runNextStep(state: State, cx: BlockCx)
 	end
 	local body = nextStepBody(state, cx)
 	local model = nextStepModel()
+	-- 正文走 argv，不走 stdin：真机上 omp 从 stdin 读时一直等不到 EOF
+	-- （CPU 几乎为零、卡到超时），传成位置参数就正常。
+	-- Windows 命令行上限约 32k，正文通常在 2k 以内；超长时仍然退 stdin。
 	local argv: { string } = { "omp", "-p", "--no-session" }
 	if model then
 		table.insert(argv, "--model")
 		table.insert(argv, model)
+	end
+	local viaStdin = #body > 8000
+	if not viaStdin then
+		table.insert(argv, body)
 	end
 	local startedAt = nowSec()
 	state.nextStep = {
@@ -602,16 +609,33 @@ local function runNextStep(state: State, cx: BlockCx)
 	}
 	state.message = "正在问下一步（约 1 分钟）"
 
+	local settled = false
+	-- 看门狗：超时不一定会真的杀掉子进程（真机验过 300 秒后仍在跑），
+	-- 但界面必须先说实话，不能让卡片永远转圈。
+	tern.timer(NEXT_STEP_TIMEOUT_MS + 5000, function()
+		local pending = state.nextStep
+		if settled or not pending or pending.phase ~= "running" then
+			return
+		end
+		settled = true
+		pending.phase = "error"
+		pending.err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
+		state.message = "问下一步超时"
+		cx:render()
+	end)
+
 	tern.process.run(argv, {
 		cwd = state.root or cx.cwd,
-		stdin = body,
+		stdin = if viaStdin then body else nil,
 		timeout_ms = NEXT_STEP_TIMEOUT_MS,
 	}):next(function(result: any)
 		local pending = state.nextStep
-		-- 结果回来时可能已经换了仓库、或这次请求已被新的覆盖：旧答案一律丢弃。
-		if not pending or pending.phase ~= "running" or pending.repo ~= state.repo then
+		-- 结果回来时可能已经换了仓库、被看门狗判超时、或已被新的请求覆盖：
+		-- 旧答案一律丢弃。
+		if settled or not pending or pending.phase ~= "running" or pending.repo ~= state.repo then
 			return
 		end
+		settled = true
 		local out = util.trim(tostring(result and result.stdout or ""))
 		local errTail = tailLines(tostring(result and result.stderr or ""), 5)
 		local elapsed = if nowSec() and startedAt then (nowSec() :: number) - startedAt else nil
