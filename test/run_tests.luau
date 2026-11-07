@@ -752,6 +752,35 @@ test("剪贴板写不进去时不许谎报已复制", function()
 	ok(string.find(tostring(res.error), "正文已复制", 1, true) == nil, "does not claim success")
 end)
 
+test("compose 复制失败不许报已复制", function()
+	local winPane = 42
+	local cx: any = {
+		pane = winPane,
+		copy = function() error("clipboard busy") end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	local said: { any } = {}
+	cx.toast = function(...)
+		table.insert(said, { ... })
+	end
+	kvStore["action"] = { seq = 21, kind = "compose", pane = winPane, body = "x", name = "技能" }
+	pollTick(cx)
+
+	-- cx:toast 是冒号调用，实参表第一个是 cx 自己
+	eq(#said, 1, "one toast")
+	eq(said[1][2], "error", "reported as error")
+	ok(string.find(tostring(said[1][3]), "复制失败", 1, true) ~= nil, "names the failure")
+	ok(string.find(tostring(said[1][3]), "已复制", 1, true) == nil, "does not claim success")
+end)
+
 --- 收一棵节点树里的按钮文字。
 local function buttonTexts(node: any, out: { string }): { string }
 	out = out or {}
@@ -792,11 +821,6 @@ test("问下一步注入真实票清单", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = "me/repo"
 	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
-	st.tickets = {
-		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
-			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
-			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
-	}
 	-- 接线断言：这些字段是 host 透传的，漏传过一次（cwd）就真机才炸
 	st.fetchedAt = "2026-11-07 10:51"
 	st.fetchedAtSec = nil
@@ -852,7 +876,7 @@ test("新鲜度与缓存口径", function()
 	ok(string.find(cached.freshness, "缓存数据", 1, true) ~= nil, "cache flagged")
 end)
 
-test("已关闭组只给数量与最近标题", function()
+test("已关闭组只给数量与最新建立的标题", function()
 	local closed = {}
 	for i = 1, 8 do
 		closed[i] = { number = i, title = "收尾票" .. i, blockedBy = {} }

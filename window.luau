@@ -171,6 +171,20 @@ local function readSummary()
 	end
 end
 
+--- 写剪贴板：cx:copy 不返回值，只能区分「抛错」与「没抛错」。
+--- 返回错误说明；nil 表示没报错（不保证内容真进去了）。
+--- 真机上出现过复制静默失败，所以任何「已复制」的提示都必须经过这里，
+--- 抛错时要如实说出来，不能一律报成功。
+local function copyOrErr(cx: WindowCx, body: string): string?
+	local ok, err = pcall(function()
+		cx:copy(body)
+	end)
+	if ok then
+		return nil
+	end
+	return tostring(err)
+end
+
 --- 执行宿主半边发来的请求。
 ---
 --- kv 是全局的（所有窗口共享），所以要用 pane 归属来区分是哪个窗口的请求：
@@ -223,7 +237,11 @@ local function handleAction(cx: WindowCx)
 	-- tern 没有「只填输入框不发送」的接口（agents:ask 一定提交），
 	-- 复制到剪贴板是唯一不替用户做决定的做法。
 	if action.kind == "compose" then
-		cx:copy(action.body)
+		local err = copyOrErr(cx, action.body)
+		if err then
+			cx:toast("error", "复制失败：" .. tostring(action.name or ""), err)
+			return
+		end
 		cx:toast("info", "已复制：" .. tostring(action.name or ""), "粘到输入框再决定发不发。")
 		return
 	end
@@ -251,22 +269,10 @@ local function handleAction(cx: WindowCx)
 		end)
 	end
 
-	-- 复制到剪贴板算兜底：cx:copy 不返回值，会话忙时真机上出现过复制没生效
-	-- 而提示照旧说「已复制」。至少把抛错的情况区分出来，别把失败说成成功。
-	local function copyOrSay(body: string): string?
-		local okCopy, copyErr = pcall(function()
-			cx:copy(body)
-		end)
-		if okCopy then
-			return nil
-		end
-		return tostring(copyErr)
-	end
-
 	local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
 	if not agent then
 		-- 没有 agent 就退到剪贴板，别让用户白点一次。
-		local copyErr = copyOrSay(action.body)
+		local copyErr = copyOrErr(cx, action.body)
 		local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
 		cx:toast("info", "没有可用的 agent", tail)
 		report(false, "没有可用的 agent（" .. tail .. "）")
@@ -274,7 +280,7 @@ local function handleAction(cx: WindowCx)
 	end
 	local err = sendToAgent(cx, agent, pasteText(action.body))
 	if err then
-		local copyErr = copyOrSay(action.body)
+		local copyErr = copyOrErr(cx, action.body)
 		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
 		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（" .. tail .. "）")
 		report(false, err .. "（" .. tail .. "）")
@@ -340,9 +346,13 @@ tern.command({
 			if not item or not cx then
 				return
 			end
-			cx:copy(item.body)
+			local copyErr = copyOrErr(cx, item.body)
 			local agent = lastAgent or agentPaneOf(cx)
 			if not agent then
+				if copyErr then
+					cx:toast("error", "没有聚焦的 agent", "剪贴板也写不进去：" .. copyErr)
+					return
+				end
 				cx:toast("info", "已复制：" .. item.label, "没有聚焦的 agent")
 				return
 			end

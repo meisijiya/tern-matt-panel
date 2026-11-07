@@ -191,7 +191,7 @@ local function closedText(items: { TicketBrief }): string
 		table.insert(titles, string.format("#%d %s", t.number, t.title))
 	end
 	local tail = if #items > CLOSED_MAX then string.format("，另有 %d 张", #items - CLOSED_MAX) else ""
-	return string.format("%d 张（最近：%s%s）", #items, table.concat(titles, "；"), tail)
+	return string.format("%d 张（最新建立的：%s%s）", #items, table.concat(titles, "；"), tail)
 end
 
 --- 新鲜度一句话：缓存 > 过期 > 正常。接收方据此决定要不要先 gh 核对。

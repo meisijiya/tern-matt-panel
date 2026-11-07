@@ -464,6 +464,15 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	state.message = "提交中：" .. name
 end
 
+--- 距上次成功抓取过了多少分钟；时钟或时刻缺失时返回 nil（不假装新鲜）。
+local function ageMinutesOf(state: State): number?
+	local now = nowSec()
+	if not now or not state.fetchedAtSec then
+		return nil
+	end
+	return now - state.fetchedAtSec
+end
+
 --- 「问下一步」的注入正文：把任务板快照摊成模板占位符。
 --- 面板不做判断，判断留给会话里的 /skill:ask-matt；这里只保证事实够它判断。
 local function nextStepBody(state: State, cx: BlockCx): string
@@ -519,7 +528,7 @@ local function nextStepBody(state: State, cx: BlockCx): string
 		all = brief :: any,
 		specs = specs,
 		fetchedAt = state.fetchedAt,
-		ageMinutes = if state.fetchedAtSec and nowSec() then (nowSec() :: number) - state.fetchedAtSec else nil,
+		ageMinutes = ageMinutesOf(state),
 		fromCache = state.fromCache,
 		closed = closed :: any,
 	}
