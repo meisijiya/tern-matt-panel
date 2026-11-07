@@ -567,21 +567,35 @@ test("templates.render 缺的占位符留原样", function()
 end)
 
 test("templates.nextStepVars 摊出真实票清单", function()
+	local blockedTicket = { number = 15, title = "等前置", type = "research", blockedBy = { 12, 3 }, createdAt = "2026-10-30T08:00:00Z" }
 	local buckets = {
 		claimable = {
-			{ number = 12, title = "修 X", type = "task", blockedBy = {} },
+			{ number = 12, title = "修 X", type = "task", blockedBy = {}, createdAt = "2026-11-01T00:00:00Z" },
 			{ number = 13, title = "没打标签的票", type = nil, blockedBy = {} },
 		},
 		assigned = {},
-		blocked = { { number = 15, title = "等前置", type = "research", blockedBy = { 10, 3 } } },
+		blocked = { blockedTicket },
 	}
-	local vars = templates.nextStepVars("me/repo", buckets, { { number = 1, title = "地图一" } })
+	local vars = templates.nextStepVars(
+		"me/repo",
+		buckets,
+		{ { number = 1, title = "地图一" } },
+		{
+			root = "D:/repo",
+			all = { buckets.claimable[1], buckets.claimable[2], blockedTicket },
+			specs = { { number = 14, title = "规格十四", open = 1, total = 2 } },
+		}
+	)
 	eq(vars.repo, "me/repo")
-	ok(string.find(vars.claimable, "- #12 wayfinder:task 修 X", 1, true) ~= nil, "claimable line")
+	eq(vars.root, "D:/repo")
+	eq(vars.claimableCount, "2")
+	ok(string.find(vars.claimable, "- #12 wayfinder:task 修 X · 2026-11-01", 1, true) ~= nil, "claimable line")
 	ok(string.find(vars.claimable, "- #13 无类型 没打标签的票", 1, true) ~= nil, "untyped line")
+	ok(string.find(vars.claimable, "被 #15 等待", 1, true) ~= nil, "reverse dep: 12 unlocks 15")
 	eq(vars.assigned, "（无）")
-	ok(string.find(vars.blocked, "等 #10,#3", 1, true) ~= nil, "blockers listed")
+	ok(string.find(vars.blocked, "等 #12,#3", 1, true) ~= nil, "blockers listed")
 	eq(vars.maps, "- #1 地图一")
+	ok(string.find(vars.specs, "- #14 规格十四 · 2 工单 · 1 未完成", 1, true) ~= nil, "spec progress")
 
 	-- 超过 12 张要收尾，别把整块板塞进提示词
 	local many = {}
@@ -591,6 +605,8 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	local v2 = templates.nextStepVars("r", { claimable = many, assigned = {}, blocked = {} }, {})
 	ok(string.find(v2.claimable, "还有 2 张", 1, true) ~= nil, "truncated")
 	eq(v2.maps, "（无）")
+	eq(v2.specs, "（无）")
+	eq(v2.root, "（未知，按当前工作目录找）")
 end)
 
 test("lanes 每条泳道都指路", function()

@@ -401,14 +401,41 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 end
 
 --- 「问下一步」的注入正文：把任务板快照摊成模板占位符。
---- 面板不做判断，判断留给会话里的 /skill:ask-matt。
-local function nextStepBody(state: State): string
+--- 面板不做判断，判断留给会话里的 /skill:ask-matt；这里只保证事实够它判断。
+local function nextStepBody(state: State, cx: BlockCx): string
 	local b = tracker.classify(state.tickets)
 	local maps: { { number: number, title: string } } = {}
 	for _, m in ipairs(state.maps) do
 		table.insert(maps, { number = m.number, title = m.title })
 	end
-	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps))
+	-- 反向依赖要跨整板算，所以要全量未关闭的票，不只是某一桶。
+	local open: { tracker.Ticket } = {}
+	for _, t in ipairs(state.tickets) do
+		if t.state == "OPEN" then
+			table.insert(open, t)
+		end
+	end
+	local specs: { any } = {}
+	for _, entry in ipairs(tracker.groupBySpec(state.tickets)) do
+		local unfinished = 0
+		for _, kid in ipairs(entry.tickets) do
+			if kid.state == "OPEN" then
+				unfinished += 1
+			end
+		end
+		table.insert(specs, {
+			number = entry.spec.number,
+			title = entry.spec.title,
+			open = unfinished,
+			total = #entry.tickets,
+		})
+	end
+	local extra: templates.NextStepExtra = {
+		root = if cx.cwd and cx.cwd ~= "" then cx.cwd else nil,
+		all = open :: any,
+		specs = specs,
+	}
+	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -1489,7 +1516,7 @@ tern.block.define(BLOCK_ID, {
 				state.message = "先识别到仓库与票，再问下一步"
 				return
 			end
-			inject(state, cx, nextStepBody(state), "问下一步")
+			inject(state, cx, nextStepBody(state, cx), "问下一步")
 			return
 		end
 		if act == "auto-reload" then

@@ -37,30 +37,46 @@ local TEMPLATES: { Template } = {
 M.TEMPLATES = TEMPLATES
 
 --- 「问下一步」：把任务板快照装进信封，交给会话里的 /skill:ask-matt 排序。
---- 面板自己不做判断，只负责把票、地图、流程链摆全，省掉用户复述上下文。
---- 与票动作模板同机制：随插件分发，用户可覆盖。
+--- 面板自己不做判断：它只提供可核对的事实（票、依赖方向、规格进度、文档锚点）
+--- 和排序判据。缺事实时要求 agent 自己用 gh 核实，而不是顺着快照猜。
 M.NEXT_STEP = {
 	id = "next-step",
 	title = "问下一步",
 	body = table.concat({
 		"/skill:ask-matt",
-		"项目 {repo}（tern 面板插件）的任务板快照。",
+		"项目 {repo} 的任务板快照，仓库根目录：{root}",
 		"",
-		"可领（未关闭、未认领、无 OPEN 阻塞）：",
+		"判断前先读这几处（读不到就说读不到，不要猜）：",
+		"- 领域词汇：{root}/GLOSSARY.md",
+		"- 已定决策：{root}/docs/adr/",
+		"- 规格：{root}/docs/spec/",
+		"",
+		"可领（未关闭、未认领、无 OPEN 阻塞）共 {claimableCount} 张：",
 		"{claimable}",
 		"",
-		"已认领：",
+		"已认领共 {assignedCount} 张：",
 		"{assigned}",
 		"",
-		"被阻塞：",
+		"被阻塞共 {blockedCount} 张：",
 		"{blocked}",
 		"",
 		"地图：",
 		"{maps}",
 		"",
+		"规格：",
+		"{specs}",
+		"",
 		"流程链：/skill:ask-matt 定位 → /skill:grill-with-docs 盘问（写 GLOSSARY/ADR）→ /skill:to-spec → /skill:to-tickets 拆票 → /skill:implement 逐票实施（小改在同一上下文直接 /skill:implement）→ /skill:tdd → /skill:code-review → /skill:pr。大而模糊才用 /skill:wayfinder；坏了用 /skill:diagnosing-bugs。",
 		"",
-		"请按「解锁最多下游 + 一次会话可交付」给 1~3 张现在该做的票：逐条说明理由、要用的技能命令，并列出「你不确定我掌握什么」的假设。",
+		"排序判据，按序比较：",
+		"1. 解锁下游多者优先（票行里的「被 #N 等待」就是下游）；",
+		"2. 同档按阶段：grilling > research > prototype > task；",
+		"3. 仍同档，创建时间旧者优先。",
+		"快照只有标题、类型、依赖方向与时间；正文、迷雾、范围外、spec 细节都在 issue 里，需要就用 gh 读。不要编造票号、标题或依赖。",
+		"",
+		"输出（最多 3 张，不要复述整份快照）：",
+		"| 票 | 为什么是现在 | 技能命令 | 第一步动作 |",
+		"每张票下面一行「依据：…」写你实际读过的票号或文件；最后用 1~3 句说明你不确定我掌握什么、以及你缺哪条信息才能更准。",
 	}, "\n"),
 }
 
@@ -72,14 +88,64 @@ export type TicketBrief = {
 	title: string,
 	type: string?,
 	blockedBy: { number },
+	parent: number?,
+	createdAt: string?,
 }
 
-local function ticketLine(t: TicketBrief): string
+export type SpecBrief = {
+	number: number,
+	title: string,
+	open: number,
+	total: number,
+}
+
+export type NextStepExtra = {
+	-- 仓库根目录：给 agent 指 GLOSSARY / ADR / spec 的去处
+	root: string?,
+	-- 全部未关闭的票：用来算「被谁等待」这个反向依赖
+	all: { TicketBrief }?,
+	specs: { SpecBrief }?,
+}
+
+local function ticketLine(t: TicketBrief, waitedBy: { string }): string
 	local kind = if t.type then "wayfinder:" .. t.type else "无类型"
-	return string.format("- #%d %s %s", t.number, kind, t.title)
+	local line = string.format("- #%d %s %s", t.number, kind, t.title)
+	if t.createdAt and #t.createdAt >= 10 then
+		line = line .. " · " .. string.sub(t.createdAt, 1, 10)
+	end
+	if t.parent then
+		line = line .. string.format(" · 父 #%d", t.parent)
+	end
+	if #t.blockedBy > 0 then
+		local nums: { string } = {}
+		for _, n in ipairs(t.blockedBy) do
+			table.insert(nums, "#" .. tostring(n))
+		end
+		line = line .. " · 等 " .. table.concat(nums, ",")
+	end
+	if #waitedBy > 0 then
+		line = line .. " · 被 " .. table.concat(waitedBy, ",") .. " 等待"
+	end
+	return line
 end
 
-local function bucketText(items: { TicketBrief }, extra: (TicketBrief) -> string?): string
+--- 反向依赖：哪些票的 blockedBy 里出现了这张票。
+local function waitedIndex(all: { TicketBrief }): { [number]: { string } }
+	local out: { [number]: { string } } = {}
+	for _, t in ipairs(all) do
+		for _, b in ipairs(t.blockedBy) do
+			local list = out[b]
+			if not list then
+				list = {}
+				out[b] = list
+			end
+			table.insert(list, "#" .. tostring(t.number))
+		end
+	end
+	return out
+end
+
+local function bucketText(items: { TicketBrief }, waited: { [number]: { string } }): string
 	if #items == 0 then
 		return "（无）"
 	end
@@ -89,12 +155,7 @@ local function bucketText(items: { TicketBrief }, extra: (TicketBrief) -> string
 			table.insert(out, string.format("- …还有 %d 张", #items - BRIEF_MAX))
 			break
 		end
-		local line = ticketLine(t)
-		local tail = if extra then extra(t) else nil
-		if tail then
-			line = line .. "（" .. tail .. "）"
-		end
-		table.insert(out, line)
+		table.insert(out, ticketLine(t, waited[t.number] or {}))
 	end
 	return table.concat(out, "\n")
 end
@@ -103,27 +164,38 @@ end
 function M.nextStepVars(
 	repo: string,
 	buckets: { claimable: { TicketBrief }, assigned: { TicketBrief }, blocked: { TicketBrief } },
-	maps: { { number: number, title: string } }
+	maps: { { number: number, title: string } },
+	extra: NextStepExtra?
 ): { [string]: string }
+	local waitList = if extra and extra.all then waitedIndex(extra.all) else {}
+
 	local mapLines: { string } = {}
 	for _, m in ipairs(maps) do
 		table.insert(mapLines, string.format("- #%d %s", m.number, m.title))
 	end
+
+	local specLines: { string } = {}
+	for _, s in ipairs(if extra and extra.specs then extra.specs else {}) do
+		table.insert(specLines, string.format(
+			"- #%d %s · %d 工单 · %d 未完成",
+			s.number,
+			s.title,
+			s.total,
+			s.open
+		))
+	end
+
 	return {
 		repo = repo,
-		claimable = bucketText(buckets.claimable, nil),
-		assigned = bucketText(buckets.assigned, nil),
-		blocked = bucketText(buckets.blocked, function(t)
-			if #t.blockedBy == 0 then
-				return nil
-			end
-			local nums: { string } = {}
-			for _, n in ipairs(t.blockedBy) do
-				table.insert(nums, "#" .. tostring(n))
-			end
-			return "等 " .. table.concat(nums, ",")
-		end),
+		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
+		claimableCount = tostring(#buckets.claimable),
+		assignedCount = tostring(#buckets.assigned),
+		blockedCount = tostring(#buckets.blocked),
+		claimable = bucketText(buckets.claimable, waitList),
+		assigned = bucketText(buckets.assigned, waitList),
+		blocked = bucketText(buckets.blocked, waitList),
 		maps = if #mapLines > 0 then table.concat(mapLines, "\n") else "（无）",
+		specs = if #specLines > 0 then table.concat(specLines, "\n") else "（无）",
 	}
 end
 
