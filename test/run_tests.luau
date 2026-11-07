@@ -44,8 +44,45 @@ end
 
 local ternStub: any
 
+-- 按 argv 前缀路由的桩结果表：测试可注入 `omp -p` 的成功/失败/超时输出，
+-- 其余命令（git、gh）照旧返回空成功，不影响既有用例。
+local processFixtures: { { match: string, result: any, defer: boolean? } } = {}
+local processCalls: { { argv: { string }, opts: any } } = {}
+-- defer 的调用把回调挂在这里，测试用 flushProcess() 手动放行，
+-- 这样才能造出「结果还没回来时又点了一次」这种时序。
+local pendingFlush: { any } = {}
+
+local function flushProcess()
+	local queued = pendingFlush
+	pendingFlush = {}
+	for _, fn in ipairs(queued) do
+		fn()
+	end
+end
+
+local function fixtureFor(argv: { string }): any
+	local joined = table.concat(argv, " ")
+	for _, f in ipairs(processFixtures) do
+		if string.find(joined, f.match, 1, true) then
+			return f
+		end
+	end
+	return nil
+end
+
 local function runProcess(argv: { string }, optsOrCb: any, cb: any): any
-	local result = { status = 0, stdout = "", stderr = "", timed_out = false }
+	table.insert(processCalls, { argv = argv, opts = if type(optsOrCb) == "table" then optsOrCb else nil })
+	local fixture = fixtureFor(argv)
+	local result = (fixture and fixture.result) or { status = 0, stdout = "", stderr = "", timed_out = false }
+	if fixture and fixture.defer then
+		local deferred: any = {}
+		function deferred:next(fn: (any, any, any) -> ())
+			table.insert(pendingFlush, function()
+				fn(result, nil, nil)
+			end)
+		end
+		return deferred
+	end
 	local callback: ((any, any) -> ())? = nil
 	if type(optsOrCb) == "function" then
 		callback = optsOrCb
@@ -196,6 +233,9 @@ local function reset()
 	chromeRefreshes = 0
 	asked = {}
 	typed = {}
+	processFixtures = {}
+	processCalls = {}
+	pendingFlush = {}
 end
 
 reset()
@@ -814,13 +854,11 @@ test("工具条在宽窄面板都露出全部按钮", function()
 	ok(#tight.main.c[1].c > 1, "narrow: 工具条换行")
 end)
 
-test("问下一步注入真实票清单", function()
+--- 造一份带仓库/票/地图的 state，供「问下一步」的几个用例共用。
+local function nextStepState()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = "me/repo"
 	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
-	-- 接线断言：这些字段是 host 透传的，漏传过一次（cwd）就真机才炸
-	-- 只给秒数：字符串由同一个值格式化，避免两个字段互相矛盾
-	st.fetchedAtSec = 1794055860
 	st.tickets = {
 		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
 			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
@@ -829,23 +867,86 @@ test("问下一步注入真实票清单", function()
 			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
 			parent = nil, isSpec = false, createdAt = "2026-10-01T00:00:00Z" },
 	}
+	return st
+end
+
+test("问下一步交给独立进程，正文仍只含票面", function()
+	processFixtures = { { match = "omp -p", result = { status = 0, stdout = "| 票 | 建议 |\n", stderr = "warn: mcp", timed_out = false } } }
+	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
 
-	local action = kvStore["action"]
-	ok(type(action) == "table", "写了注入请求")
-	eq(action.kind, "inject")
-	local body = action.body
+	-- 不再往会话里灌：没有任何注入请求
+	ok(kvStore["action"] == nil, "不写注入请求")
+
+	local call
+	for _, c in ipairs(processCalls) do
+		if table.concat(c.argv, " ") == "omp -p --no-session" then
+			call = c
+		end
+	end
+	ok(call ~= nil, "起了 omp -p 进程")
+	ok(call.opts ~= nil and call.opts.timeout_ms == 300000, "带超时")
+	local body = tostring(call.opts.stdin)
 	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "调用 ask-matt")
 	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
-	ok(string.find(body, "me/repo", 1, true) ~= nil, "填了仓库")
-	ok(string.find(body, "- #1 地图一", 1, true) ~= nil, "列了地图")
 	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
-	-- 正文只放票面：任何时间/置信度措辞都属于越界
+	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
 	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "新鲜", "可能" }) do
 		ok(string.find(body, banned, 1, true) == nil, "正文不该出现：" .. banned)
 	end
-	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
-	eq(st.pendingSeq, action.seq, "记为提交中")
+
+	eq(st.nextStep.phase, "done", "拿到结果")
+	ok(string.find(st.nextStep.text, "建议", 1, true) ~= nil, "保留 stdout")
+	ok(st.nextStep.warn ~= nil, "stderr 有内容时作为提示保留")
+end)
+
+test("问下一步失败与超时都保留已拿到的部分输出", function()
+	processFixtures = { { match = "omp -p", result = { status = 1, stdout = "半截", stderr = "boom\nB", timed_out = false } } }
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(st.nextStep.phase, "error")
+	eq(st.nextStep.text, "半截", "保留部分输出")
+	ok(string.find(st.nextStep.err, "退出码 1", 1, true) ~= nil, "说清退出码")
+	ok(string.find(st.nextStep.err, "B", 1, true) ~= nil, "带 stderr 尾部")
+
+	processFixtures = { { match = "omp -p", result = { status = -1, stdout = "半截", stderr = "", timed_out = true } } }
+	local st2 = nextStepState()
+	panel.event(st2, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(st2.nextStep.phase, "error")
+	ok(string.find(st2.nextStep.err, "超时", 1, true) ~= nil, "标超时")
+	eq(st2.nextStep.text, "半截", "超时也保留部分输出")
+end)
+
+test("问下一步跑着时再点不叠第二次调用", function()
+	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "答案", stderr = "", timed_out = false } } }
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(st.nextStep.phase, "running", "第一次在跑")
+	local before = #processCalls
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(#processCalls, before, "第二次不再起进程")
+	ok(string.find(tostring(st.message), "上一次还在问", 1, true) ~= nil, "给出明确提示")
+end)
+
+test("切了仓库，旧答案不许盖到新仓库上", function()
+	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "旧仓库的答案", stderr = "", timed_out = false } } }
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(st.nextStep.phase, "running")
+
+	-- 结果还没回来就换了仓库：放行后必须丢弃，不许写进新仓库的视图
+	st.repo = "other/repo"
+	flushProcess()
+	eq(st.nextStep.phase, "running", "旧请求的结果被丢掉，状态不再前进")
+	eq(st.nextStep.text, "", "没把旧答案写进来")
+
+	-- 反证：仓库没变时同一份结果会被采用
+	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "答案", stderr = "", timed_out = false } } }
+	local st2 = nextStepState()
+	panel.event(st2, { ev = "action", act = "next-step" }, mkCx(120))
+	flushProcess()
+	eq(st2.nextStep.phase, "done", "仓库没变则采用")
+	eq(st2.nextStep.text, "答案")
 end)
 
 test("已关闭组只给数量与最新建立的标题", function()

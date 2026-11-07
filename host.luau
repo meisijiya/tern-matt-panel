@@ -51,6 +51,12 @@ local COOLDOWN_SEC = 60
 --- 焦点事件很频繁（切 pane 就触发），真正省配额的是这道闸。
 local AUTO_REFRESH_SEC = 60
 
+--- 一次「问下一步」最多等多久。omp -p 实测 51 秒（含读 gh 与文档），
+--- 给到 5 分钟是为了容纳慢网络；超时后仍把已拿到的部分输出显示出来。
+local NEXT_STEP_TIMEOUT_MS = 300000
+-- 模型由用户配置：留空就用 omp 自己的默认，面板不替用户选模型。
+local NEXT_STEP_MODEL_KEY = "nextStepModel"
+
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
 -- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
@@ -62,6 +68,19 @@ local PANEL_KEY = "panel"
 local BLOCK_ID = "matt"
 
 type View = "skills" | "board" | "map" | "ticket"
+
+--- 一次「问下一步」的状态。独立进程跑完才有结论，中间态要能渲染。
+type NextStep = {
+	phase: "running" | "done" | "error",
+	-- 该结果属于哪个仓库：切仓库后旧答案不许盖到新仓库上
+	repo: string?,
+	text: string,
+	err: string?,
+	-- 非致命提示（例如 omp 警告 MCP 连不上），成功时也可能有
+	warn: string?,
+	model: string?,
+	seconds: number?,
+}
 
 type State = {
 	view: View,
@@ -89,6 +108,8 @@ type State = {
 	cooldownUntil: number?,
 	-- 上次真正发出拉取的时刻；自动刷新按它节流
 	lastLoadAt: number?,
+	-- 「问下一步」的一次性结果（独立进程，不碰任何会话）
+	nextStep: NextStep?,
 	-- 抓取时刻的唯一真源：秒数。显示用的字符串每次都从它格式化，
 	-- 不再另存一份 —— 两个字段并存时真机出现过「时间字符串」与「年龄」
 	-- 互相矛盾（同一对数据却给出 4.8 分钟和 254 分钟两个答案）。
@@ -129,6 +150,7 @@ local function blank(): State
 		bodyLoading = nil,
 		cooldownUntil = nil,
 		lastLoadAt = nil,
+		nextStep = nil,
 		fetchedAtSec = nil,
 		legacyFetchedAt = nil,
 		message = nil,
@@ -522,6 +544,107 @@ local function nextStepBody(state: State, cx: BlockCx): string
 	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))
 end
 
+
+--- stderr 只留尾部几行：omp 的告警很长，全塞进面板没人看。
+local function tailLines(text: string, n: number): string
+	local all: { string } = {}
+	for line in (text or ""):gmatch("[^\r\n]+") do
+		if util.trim(line) ~= "" then
+			table.insert(all, line)
+		end
+	end
+	if #all == 0 then
+		return ""
+	end
+	local from = math.max(1, #all - n + 1)
+	local out: { string } = {}
+	for i = from, #all do
+		table.insert(out, all[i])
+	end
+	return table.concat(out, "\n")
+end
+
+--- 面板不替用户选模型：kv 里有就用，没有就让 omp 用自己的默认。
+local function nextStepModel(): string?
+	local ok, v = pcall(tern.kv.get, NEXT_STEP_MODEL_KEY)
+	if ok and type(v) == "string" and util.trim(v) ~= "" then
+		return util.trim(v)
+	end
+	return nil
+end
+
+--- 「问下一步」：起一次独立进程拿建议，不往任何会话里灌东西。
+--- 独立上下文是这里唯一的理由 —— 结果与主会话互不污染，输出可直接观测、便于调提示词。
+local function runNextStep(state: State, cx: BlockCx)
+	-- 一次点击就是一次真实模型调用（实测约 1 分钟）：正在跑时再点必须拒，
+	-- 否则两个结果按到达顺序互相覆盖，用户看到的是旧答案。
+	if state.nextStep and state.nextStep.phase == "running" then
+		state.message = "上一次还在问，等它回来"
+		return
+	end
+	if not state.repo then
+		state.message = "先识别到仓库与票，再问下一步"
+		return
+	end
+	local body = nextStepBody(state, cx)
+	local model = nextStepModel()
+	local argv: { string } = { "omp", "-p", "--no-session" }
+	if model then
+		table.insert(argv, "--model")
+		table.insert(argv, model)
+	end
+	local startedAt = nowSec()
+	state.nextStep = {
+		phase = "running",
+		repo = state.repo,
+		text = "",
+		model = model,
+	}
+	state.message = "正在问下一步（约 1 分钟）"
+
+	tern.process.run(argv, {
+		cwd = state.root or cx.cwd,
+		stdin = body,
+		timeout_ms = NEXT_STEP_TIMEOUT_MS,
+	}):next(function(result: any)
+		local pending = state.nextStep
+		-- 结果回来时可能已经换了仓库、或这次请求已被新的覆盖：旧答案一律丢弃。
+		if not pending or pending.phase ~= "running" or pending.repo ~= state.repo then
+			return
+		end
+		local out = util.trim(tostring(result and result.stdout or ""))
+		local errTail = tailLines(tostring(result and result.stderr or ""), 5)
+		local elapsed = if nowSec() and startedAt then (nowSec() :: number) - startedAt else nil
+		local warn = if result and result.status == 0 and errTail ~= "" then errTail else nil
+
+		local err: string? = nil
+		if result == nil then
+			err = "没拿到进程结果"
+		elseif result.timed_out then
+			err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
+		elseif result.status ~= 0 then
+			err = "退出码 " .. tostring(result.status)
+		elseif out == "" then
+			err = "没有输出"
+		end
+		if err and errTail ~= "" then
+			err = err .. "：" .. errTail
+		end
+
+		state.nextStep = {
+			phase = if err then "error" else "done",
+			repo = state.repo,
+			-- 失败和超时都保留已拿到的部分输出：半截答案也好过空面板
+			text = out,
+			err = err,
+			warn = warn,
+			model = model,
+			seconds = elapsed,
+		}
+		state.message = if err then "问下一步失败" else "问下一步完成"
+	end)
+end
+
 --- 读窗口半边写回的结果，更新提示。
 --- 结果里的 seq 与请求的 seq 对得上才算这次请求的结论。
 local function readResult(state: State)
@@ -672,12 +795,77 @@ local function skillsView(state: State, cx: BlockCx): Node
 end
 
 --- 任务板区：地图列表与前沿票列表，都是可点的。
+--- 「问下一步」的结果卡。三种状态：跑着 / 有答案 / 失败（可能带半截答案）。
+local function nextStepCard(state: State): Node
+	local ns = state.nextStep :: NextStep
+	local meta: { Node } = {}
+	if ns.model then
+		table.insert(meta, ui.span(ns.model, "muted"))
+	end
+	if ns.seconds then
+		table.insert(meta, ui.span(string.format("  %.1fs", ns.seconds), "muted"))
+	end
+
+	local body: { Node } = {}
+	if #meta > 0 then
+		table.insert(body, ui.text(meta))
+	end
+	if ns.phase == "running" then
+		table.insert(body, ui.text(ui.span("正在问（独立进程，约 1 分钟）…", "muted")))
+	else
+		if ns.err then
+			table.insert(body, ui.text(ui.span(ns.err, "warning")))
+		end
+		if ns.text ~= "" then
+			table.insert(body, ui.md(ns.text))
+		elseif not ns.err then
+			table.insert(body, ui.text(ui.span("没有内容", "muted")))
+		end
+		if ns.warn then
+			table.insert(body, ui.text(ui.span("omp 提示：" .. ns.warn, "muted")))
+		end
+	end
+
+	local acts: { Node } = {}
+	if ns.phase ~= "running" then
+		table.insert(acts, ui.button("重新问", {
+			icon = "refresh",
+			size = "sm",
+			actions = { click = "next-step" },
+		}))
+		if ns.text ~= "" then
+			table.insert(acts, ui.button("注入到会话", {
+				icon = "send",
+				size = "sm",
+				actions = { click = "next-step-inject" },
+			}))
+			table.insert(acts, ui.button("复制", {
+				icon = "copy",
+				size = "sm",
+				actions = { click = "next-step-copy" },
+			}))
+		end
+	end
+	table.insert(acts, ui.button("收起", {
+		icon = "x",
+		size = "sm",
+		actions = { click = "next-step-clear" },
+	}))
+
+	table.insert(body, ui.row(acts))
+	return ui.card(ui.span("下一步建议", "strong"), body)
+end
+
 local function boardView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
 	if state.loading then
 		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
 		return ui.col(main)
+	end
+	-- 「问下一步」的结果挂在这里：跑在独立进程里，不碰任何会话。
+	if state.nextStep then
+		table.insert(main, nextStepCard(state))
 	end
 	if state.repo then
 		table.insert(main, ui.text({
@@ -1600,7 +1788,29 @@ tern.block.define(BLOCK_ID, {
 				state.message = "先识别到仓库与票，再问下一步"
 				return
 			end
-			inject(state, cx, nextStepBody(state, cx), "问下一步")
+			runNextStep(state, cx)
+			return
+		end
+		if act == "next-step-inject" then
+			local ns = state.nextStep
+			if ns and ns.text ~= "" then
+				inject(state, cx, ns.text, "下一步建议")
+			end
+			return
+		end
+		if act == "next-step-copy" then
+			local ns = state.nextStep
+			if ns and ns.text ~= "" then
+				local okCopy, copyErr = pcall(function()
+					cx:copy(ns.text)
+				end)
+				state.message = if okCopy then "建议已复制" else ("复制失败：" .. tostring(copyErr))
+			end
+			return
+		end
+		if act == "next-step-clear" then
+			state.nextStep = nil
+			state.message = nil
 			return
 		end
 		if act == "auto-reload" then
