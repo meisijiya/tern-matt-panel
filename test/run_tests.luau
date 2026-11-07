@@ -170,6 +170,15 @@ ternStub = {
 		rule = function(label: any): any
 			return { k = "rule", p = { label = label } }
 		end,
+		card = function(head: any, children: { any }, props: any?): any
+			return { k = "card", head = head, p = props or {}, c = children }
+		end,
+		link = function(t: string, href: string, tone: string?): any
+			return { k = "link", p = { t = t, href = href, tone = tone } }
+		end,
+		code = function(text: string, syntax: string?): any
+			return { k = "code", p = { text = text, syntax = syntax } }
+		end,
 	},
 	process = {
 		run = runProcess,
@@ -616,6 +625,79 @@ test("util.packRows 装不下就换行且不丢按钮", function()
 	-- 单项比整行还宽：独占一行，宁可溢出也不丢
 	local huge = util.packRows({ 40, 6 }, 10, 1)
 	eq(#huge, 2, "oversized button gets its own row")
+end)
+
+-- ------------------------------------------------------ host 渲染与事件 ----
+
+--- 最小 BlockCx：面板只用到这几个字段。
+local function mkCx(cols: number): any
+	return {
+		pane = 7,
+		cwd = "C:/repo",
+		rows = 40,
+		cols = cols,
+		render = function() end,
+		copy = function() end,
+		open = function() end,
+	}
+end
+
+--- 收一棵节点树里的按钮文字。
+local function buttonTexts(node: any, out: { string }): { string }
+	out = out or {}
+	if type(node) ~= "table" then
+		return out
+	end
+	if node.k == "button" and type(node.p) == "table" and type(node.p.t) == "string" then
+		table.insert(out, node.p.t)
+	end
+	for _, kid in ipairs(node.c or {}) do
+		buttonTexts(kid, out)
+	end
+	return out
+end
+
+local panel = blockDefs["matt"]
+
+test("工具条在宽窄面板都露出全部按钮", function()
+	local broad = panel.init(mkCx(120), {}, nil)
+	broad.view = "board"
+	local wide = panel.view(broad, mkCx(120))
+	local wideTexts = buttonTexts(wide.main, {})
+	eq(#wide.main.c[1].c, 1, "broad: 一行装得下")
+	ok(util.contains(wideTexts, "问下一步"), "broad: 有问下一步")
+	ok(util.contains(wideTexts, "刷新"), "broad: 有刷新")
+
+	local narrow = panel.init(mkCx(24), {}, nil)
+	narrow.view = "board"
+	local tight = panel.view(narrow, mkCx(24))
+	local tightTexts = buttonTexts(tight.main, {})
+	eq(#tightTexts, #wideTexts, "narrow: 按钮一个不少")
+	ok(util.contains(tightTexts, "问下一步"), "narrow: 保留问下一步")
+	ok(util.contains(tightTexts, "换仓库"), "narrow: 保留换仓库")
+	ok(#tight.main.c[1].c > 1, "narrow: 工具条换行")
+end)
+
+test("问下一步注入真实票清单", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.tickets = {
+		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
+			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
+			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
+	}
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject")
+	local body = action.body
+	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "调用 ask-matt")
+	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
+	ok(string.find(body, "me/repo", 1, true) ~= nil, "填了仓库")
+	ok(string.find(body, "- #1 地图一", 1, true) ~= nil, "列了地图")
+	eq(st.pendingSeq, action.seq, "记为提交中")
 end)
 
 -- -------------------------------------------------------------- report ----
