@@ -95,8 +95,6 @@ type State = {
 	fetchedAtSec: number?,
 	-- 旧缓存里只有字符串、没有秒数：只能显示，算不出年龄
 	legacyFetchedAt: string?,
-	-- 当前显示的是不是失败后回退的缓存
-	fromCache: boolean,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
@@ -133,7 +131,6 @@ local function blank(): State
 		lastLoadAt = nil,
 		fetchedAtSec = nil,
 		legacyFetchedAt = nil,
-		fromCache = false,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
@@ -215,7 +212,6 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	state.maps = tracker.groupByMap(value.issues)
 	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
 	state.legacyFetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
-	state.fromCache = true
 	return true
 end
 
@@ -304,7 +300,6 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.setupHint = reason or "当前目录没识别到 git remote"
 			state.fetchedAtSec = nil
 			state.legacyFetchedAt = nil
-			state.fromCache = false
 			state.message = nil
 			cx:render()
 			return
@@ -320,7 +315,6 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketSel = nil
 			state.fetchedAtSec = nil
 			state.legacyFetchedAt = nil
-			state.fromCache = false
 		end
 		state.repo = repo
 		state.repoManual = manual
@@ -407,7 +401,6 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		local now2 = nowSec()
 		state.fetchedAtSec = now2
 		state.legacyFetchedAt = nil
-		state.fromCache = false
 		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
 			repo = repo,
 			issues = issues,
@@ -470,15 +463,6 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	state.message = "提交中：" .. name
 end
 
---- 距上次成功抓取过了多少分钟；时钟或时刻缺失时返回 nil（不假装新鲜）。
-local function ageMinutesOf(state: State): number?
-	local now = nowSec()
-	if not now or not state.fetchedAtSec then
-		return nil
-	end
-	return now - state.fetchedAtSec
-end
-
 --- 「问下一步」的注入正文：把任务板快照摊成模板占位符。
 --- 面板不做判断，判断留给会话里的 /skill:ask-matt；这里只保证事实够它判断。
 local function nextStepBody(state: State, cx: BlockCx): string
@@ -533,9 +517,6 @@ local function nextStepBody(state: State, cx: BlockCx): string
 		rootIsRepo = state.root ~= nil,
 		all = brief :: any,
 		specs = specs,
-		fetchedAt = fetchedLabel(state),
-		ageMinutes = ageMinutesOf(state),
-		fromCache = state.fromCache,
 		closed = closed :: any,
 	}
 	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))

@@ -44,9 +44,8 @@ M.NEXT_STEP = {
 	title = "问下一步",
 	body = table.concat({
 		"/skill:ask-matt",
-		"项目 {repo} 的任务板快照，{rootLabel}：{root}",
-		"{freshness}",
-		"这是某一刻的快照，不是实时状态：任何票的状态、依赖、正文若与 GitHub 不一致，一律以 gh 的实时结果为准。",
+		"项目 {repo} 的任务板，{rootLabel}：{root}",
+		"数据源：GitHub issue（gh issue list）；不一致时以 gh 的结果为准。",
 		"",
 		"判断前先读这几处；文件不存在就跳过，不用报告缺失，也不要凭空引用：",
 		"- 领域词汇：{root}/GLOSSARY.md",
@@ -76,11 +75,11 @@ M.NEXT_STEP = {
 		"1. 解锁下游多者优先（票行里的「被 #N 等待」就是下游）；",
 		"2. 同档按阶段：grilling > research > prototype > task；",
 		"3. 仍同档，创建时间旧者优先。",
-		"快照载有标题、类型、标签、认领人、创建/抓取时间、依赖方向（含反向）、已关闭数量与 spec 状态；正文、迷雾、范围外、spec 细节不在其中，需要就用 gh 读。不要编造票号、标题、标签或依赖。若某张票的标签或标题里带「TEST」这类标记，先判断它是不是演练数据，再决定要不要做。",
+		"以上字段全部来自 gh，不含正文、迷雾、范围外与 spec 细节；需要就用 gh 读。不要编造票号、标题、标签或依赖。",
 		"",
 		"输出（最多 3 张，不要复述整份快照）：",
 		"| 票 | 为什么是现在 | 技能命令 | 第一步动作 |",
-		"每张票下面一行「依据：…」写你实际读过的票号或文件；最后用 1~3 句说明你不确定我掌握什么、以及你缺哪条信息才能更准。",
+		"每张票下面一行「依据：…」写你实际读过的票号或文件。",
 	}, "\n"),
 }
 
@@ -118,10 +117,6 @@ export type NextStepExtra = {
 	specs: { SpecBrief }?,
 	-- 抓取时刻（本地时间字符串）；缺省时如实写「未知」
 	fetchedAt: string?,
-	-- 距抓取过了多少分钟；用来判定是不是该先 gh 核对
-	ageMinutes: number?,
-	-- 这份数据是不是失败后回退的缓存
-	fromCache: boolean?,
 	-- 已关闭的票（只取数量与最近几张的标题）
 	closed: { TicketBrief }?,
 }
@@ -194,25 +189,6 @@ local function closedText(items: { TicketBrief }): string
 	return string.format("%d 张（最新建立的：%s%s）", #items, table.concat(titles, "；"), tail)
 end
 
---- 新鲜度一句话：缓存 > 过期 > 正常。接收方据此决定要不要先 gh 核对。
-local STALE_MINUTES = 10
-local function freshnessLine(extra: NextStepExtra?): string
-	local at = if extra and extra.fetchedAt then extra.fetchedAt else "未知"
-	if extra and extra.fromCache then
-		return string.format("抓取时间：%s，且这是缓存数据（上次拉取失败后的回退），可能与 GitHub 不一致：排序前先用 gh 核对。", at)
-	end
-	local age = extra and extra.ageMinutes
-	if not age then
-		-- 时刻有、年龄算不出来（旧缓存没有秒数，或沙箱时钟缺失）：
-		-- 不知道新不新鲜，就不能当新鲜。
-		return string.format("抓取时间：%s（判断不了新鲜度）：排序前先用 gh 核对。", at)
-	end
-	if age >= STALE_MINUTES then
-		return string.format("抓取时间：%s（约 %d 分钟前，已过时）：排序前先用 gh 核对。", at, age)
-	end
-	return string.format("抓取时间：%s。", at)
-end
-
 local function bucketText(items: { TicketBrief }, waited: { [number]: { string } }): string
 	if #items == 0 then
 		return "（无）"
@@ -260,7 +236,7 @@ function M.nextStepVars(
 	return {
 		repo = repo,
 		fetchedAt = if extra and extra.fetchedAt then extra.fetchedAt else "未知",
-		freshness = freshnessLine(extra),
+
 		closedLine = closedText(extra and extra.closed or {}),
 		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
 		rootLabel = if extra and extra.rootIsRepo then "仓库根目录" else "当前工作目录",
