@@ -234,6 +234,9 @@ local function loadBoard(state: State, cx: BlockCx)
 		cx:render()
 		return
 	end
+	-- 记下发出时刻：自动刷新用它节流。放在所有早退之前，
+	-- 否则「识别不到仓库」这种稳态会让节流永远不生效。
+	state.lastLoadAt = nowSec()
 	state.loading = true
 	-- 目录优先：面板跟着窗口所在项目走。
 	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
@@ -284,8 +287,6 @@ end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	-- 记下发出时刻：自动刷新用它节流，成功失败都算一次请求。
-	state.lastLoadAt = nowSec()
 	-- 刻意不拉 body：列表一次 400 点，5000 点/小时只够刷十来次。
 	-- body 是成本大头，改成点开某张票时用 REST 单独取（REST 不占 GraphQL 配额）。
 	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
@@ -407,7 +408,7 @@ local function nextStepBody(state: State): string
 	for _, m in ipairs(state.maps) do
 		table.insert(maps, { number = m.number, title = m.title })
 	end
-	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo or "（还没识别到仓库）", b :: any, maps))
+	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps))
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -1494,14 +1495,18 @@ tern.block.define(BLOCK_ID, {
 		if act == "auto-reload" then
 			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
 			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 60 秒。
+			-- 时钟拿不到就不刷：宁可少刷一次，也不能把节流闸整个绕过。
 			local now = nowSec()
+			if not now then
+				return
+			end
 			if state.loading then
 				return
 			end
-			if now and state.cooldownUntil and now < state.cooldownUntil then
+			if state.cooldownUntil and now < state.cooldownUntil then
 				return
 			end
-			if now and state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
+			if state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
 				return
 			end
 			loadBoard(state, cx)

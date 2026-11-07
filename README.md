@@ -85,9 +85,13 @@ bash test/build.sh <luau 路径>     # 纯逻辑单测
 真机验证：
 
 ```bash
-tern --control <PORT> --dir <插件目录>
-tern ctl --control <PORT> --file scenario.sc
+tern --control <PORT> --dir <插件目录>     # 手动开一个受控窗口
+bash test/e2e.sh --port <PORT>            # 默认接这个窗口，不自己起
+bash test/all.sh                          # 单测 + e2e 全跑（e2e 没窗口就按环境不可用计）
 ```
+
+e2e 默认只接已开的受控窗口：起窗口就是一份 GPU 与内存开销，连跑几轮会把机器拖垮。
+`--launch` 才会自己起，且跑完只关闭自己起的那个。
 
 ## 规格与依据
 

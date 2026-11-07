@@ -234,12 +234,15 @@ try:
 except Exception:
     print(0)
     sys.exit(0)
-ys = set()
-for n in d.get("nodes", []):
-    r = n.get("rect")
-    if r and r[2] > 0 and r[3] > 0:
-        ys.add(round(r[1]))
-print(len(ys))
+ys = sorted({round(n["rect"][1]) for n in d.get("nodes", []) if n.get("rect") and n["rect"][2] > 0 and n["rect"][3] > 0})
+rows = 0
+last = None
+for y in ys:
+    # 同一行的按钮 y 可能有 1~2px 抖动，按容差归并，避免把一行数成两行
+    if last is None or y - last > 3:
+        rows += 1
+        last = y
+print(rows)
 ' 2>/dev/null || echo 0)"
 	if [ "${rows:-0}" -ge "$want" ]; then
 		return 0
@@ -349,7 +352,8 @@ trap 'rm -rf "$TMP"' EXIT
 # ---------------------------------------------------------------- 准备 ----
 # 面板只开一次。窗口可能被复用，里面已经开着面板了 —— 那就别叠第二个：
 # 每个 panel 都是一块真 UI，叠起来 GPU 与内存一路涨。
-if ctl tree 2>/dev/null | grep -qF '点行看内容'; then
+# 判据用工具条按钮（面板的标志性控件），别用说明文字：文案会改，按钮不会消失。
+if ctl tree '.sf-button' 2>/dev/null | grep -qF '刷新'; then
 	echo "e2e: 复用已开的面板"
 else
 	cat > "$TMP/open.sc" <<EOF
