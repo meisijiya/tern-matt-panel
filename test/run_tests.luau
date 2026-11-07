@@ -980,6 +980,47 @@ test("块被重建时结果保留，正在跑的标成中断", function()
 	ok(string.find(tostring(st2.nextStep.err), "中断", 1, true) ~= nil, "说清为什么停")
 end)
 
+test("换仓库清掉旧建议，同仓库刷新不动它", function()
+	local st = nextStepState()
+	st.nextStep = { phase = "done", repo = "me/repo", text = "旧建议" }
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	ok(st.nextStep ~= nil, "别的动作不会清")
+
+	-- 同仓库重新拉取：建议还在
+	st.repo = "me/repo"
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	ok(st.nextStep ~= nil, "同仓库刷新不清")
+
+	-- 换成另一个仓库：旧建议必须消失，否则会拿 A 的建议指导 B
+	processFixtures = {
+		{ match = "remote get-url", result = { status = 0, stdout = "git@github.com:other/repo.git\n", stderr = "", timed_out = false } },
+	}
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	eq(st.repo, "other/repo", "仓库确实换了")
+	ok(st.nextStep == nil, "换仓库后不展示旧仓库建议")
+end)
+
+test("结果写进 kv，块重建后能从 kv 读回来", function()
+	processFixtures = { { match = "omp -p", result = { status = 0, stdout = "答案正文", stderr = "", timed_out = false } } }
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	eq(st.nextStep.phase, "done")
+	-- 结果同时落 kv：这是块被重建时唯一还活着的地方
+	local savedKv = kvStore["nextStepResult"]
+	ok(type(savedKv) == "table", "写了 kv")
+	eq(savedKv.text, "答案正文")
+
+	-- 新块没有任何 saved.nextStep，只能靠 kv 恢复
+	local fresh = panel.init(mkCx(120), {}, { view = "board", repo = "me/repo" })
+	ok(fresh.nextStep ~= nil, "从 kv 恢复")
+	eq(fresh.nextStep.text, "答案正文")
+
+	-- 收起要把 kv 也置空，否则下次打开又冒出来
+	panel.event(fresh, { ev = "action", act = "next-step-clear" }, mkCx(120))
+	ok(fresh.nextStep == nil, "收起后清空")
+	eq(kvStore["nextStepResult"].phase, "none", "kv 也标记为空")
+end)
+
 test("已关闭组只给数量与最新建立的标题", function()
 	local closed = {}
 	for i = 1, 8 do

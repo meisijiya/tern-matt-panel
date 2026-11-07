@@ -11,7 +11,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 runner="$here/run_tests.luau"
 # 拼接结果放在仓库里：Windows 的 luau.exe 读不了 WSL 的 /tmp。
-out="$here/.bundle.luau"
+# 拼好的 bundle 放插件目录外：插件目录里任何文件变动都会触发 Tern 热重载，
+# 而热重载会把正在跑的「问下一步」打断。放临时目录就彻底躲开这个副作用。
+# 放仓库的上一级：既在插件目录之外（不触发热重载），又和仓库同一磁盘，
+# 不会被 WSL 与 Windows 的 /tmp 路径差异绊住。
+out="$(cd "$here/../.." && pwd)/.tern-matt-panel.bundle.luau"
 trap 'rm -f "$out"' EXIT
 
 # 拼接会把所有模块先定义好，于是「host 里忘了 require 某个模块」这种错
@@ -107,6 +111,7 @@ for name in ("host", "window"):
 	parts.append("do -- %s.luau\n%s\nend\n" % (name, body))
 parts.append(tail)
 
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
 with io.open(out_path, "w", encoding="utf-8", newline="\n") as fh:
 	fh.write("".join(parts))
 print(out_path)

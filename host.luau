@@ -56,6 +56,9 @@ local AUTO_REFRESH_SEC = 60
 local NEXT_STEP_TIMEOUT_MS = 300000
 -- 模型由用户配置：留空就用 omp 自己的默认，面板不替用户选模型。
 local NEXT_STEP_MODEL_KEY = "nextStepModel"
+-- 结果另存一份到 kv：块被重建（插件热重载/窗口重排）时 state 会整个换掉，
+-- 只存内存的话一分钟的答案就没了。
+local NEXT_STEP_KEY = "nextStepResult"
 
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
@@ -271,7 +274,11 @@ end
 
 --- 把 gh 的 JSON 输出解码成表。解码失败返回 nil。
 local function decodeIssues(text: string): { any }?
-	local ok, value = pcall(tern.json.decode, text)
+	-- 取属性也要包进 pcall：tern.json 不存在时 `tern.json.decode` 本身就抛，
+	-- 那样会把整个拉取流程带崩，而不是走「解析失败」这条正常退路。
+	local ok, value = pcall(function()
+		return tern.json.decode(text)
+	end)
 	if not ok or type(value) ~= "table" then
 		return nil
 	end
@@ -337,6 +344,9 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketSel = nil
 			state.fetchedAtSec = nil
 			state.legacyFetchedAt = nil
+			-- 走到这里就说明仓库变了：旧建议必须跟着走，否则拿 A 的建议指导 B。
+			-- 同一仓库重新拉取不会进这个分支，建议自然保留。
+			state.nextStep = nil
 		end
 		state.repo = repo
 		state.repoManual = manual
@@ -633,6 +643,11 @@ local function runNextStep(state: State, cx: BlockCx)
 		-- 结果回来时可能已经换了仓库、被看门狗判超时、或已被新的请求覆盖：
 		-- 旧答案一律丢弃。
 		if settled or not pending or pending.phase ~= "running" or pending.repo ~= state.repo then
+			-- 静默丢弃会让用户「点了、等了、什么都没发生」：说一句。
+			if state.repo ~= nil and pending and pending.repo ~= nil and pending.repo ~= state.repo then
+				state.message = "换了仓库，上一次的询问结果已丢弃"
+				cx:render()
+			end
 			return
 		end
 		settled = true
@@ -666,6 +681,7 @@ local function runNextStep(state: State, cx: BlockCx)
 			seconds = elapsed,
 		}
 		state.message = if err then "问下一步失败" else "问下一步完成"
+		pcall(tern.kv.set, NEXT_STEP_KEY, state.nextStep)
 		-- 宿主半边的异步回调不会自动重画：不显式画一次，卡片会一直停在「正在问」。
 		cx:render()
 	end)
@@ -1449,8 +1465,15 @@ tern.block.define(BLOCK_ID, {
 			state.showHidden = saved.showHidden == true
 			state.repo = if type(saved.repo) == "string" then saved.repo else nil
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
-			if type(saved.nextStep) == "table" then
-				local ns = saved.nextStep
+			local restored: any = saved.nextStep
+			if type(restored) ~= "table" then
+				local okKv, fromKv = pcall(tern.kv.get, NEXT_STEP_KEY)
+				if okKv and type(fromKv) == "table" and fromKv.phase ~= "none" then
+					restored = fromKv
+				end
+			end
+			if type(restored) == "table" then
+				local ns = restored
 				state.nextStep = {
 					-- 旧块里那个进程已经跟着没了：留着「正在跑」只会一直转圈
 					phase = if ns.phase == "running" then "error" else (ns.phase or "error"),
@@ -1849,6 +1872,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "next-step-clear" then
 			state.nextStep = nil
+			pcall(tern.kv.set, NEXT_STEP_KEY, { phase = "none" })
 			state.message = nil
 			return
 		end

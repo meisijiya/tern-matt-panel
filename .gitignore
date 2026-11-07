@@ -1,6 +1,3 @@
-test/.bundle.luau
-test/.e2e.log
-test/.e2e.pid
 test/.e2e.port
 .tmp_probe/
 *.tmp
