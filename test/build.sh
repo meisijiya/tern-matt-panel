@@ -27,21 +27,6 @@ for src in host.luau window.luau; do
 	done
 done
 
-# 未定义全局：写错作用域（用了别处的局部变量）只有 luau-analyze 抓得到，
-# 真机上表现为 "attempt to call a nil value"，定位代价极高。
-# 只查这一类，不管类型告警 —— 存量类型告警太多，混在一起就没人看了。
-analyze="$(command -v luau-analyze || dirname "${1:-${TERNS_LUAU:-}}" 2>/dev/null)/luau-analyze.exe"
-if [ -x "$analyze" ] || [ -f "$analyze" ]; then
-	if bad="$(cd "$repo" && "$analyze" --formatter=plain host.luau window.luau 2>&1 \
-		| grep "Unknown global" | grep -v "'tern'")"; then
-		if [ -n "$bad" ]; then
-			echo "未定义全局（不是 tern API，是真 bug）：" >&2
-			echo "$bad" >&2
-			exit 1
-		fi
-	fi
-fi
-
 luau="${1:-${TERNS_LUAU:-}}"
 if [[ -z "$luau" ]]; then
 	if command -v luau >/dev/null 2>&1; then
@@ -61,6 +46,32 @@ case "$luau" in
 	fi
 	;;
 esac
+
+# 未定义全局：写错作用域（把别处的局部变量当全局用）只有 luau-analyze 抓得到，
+# 真机上表现为 "attempt to call a nil value"，定位代价极高。实测漏过一个
+# `git -C cwd`（cwd 只存在于别的函数里）。
+# 只查 Unknown global 这一类并排除 tern：存量类型告警上百条，混进来就没人看了。
+# 分析器必须从 luau 同目录找 —— 它不在 PATH 上；找不到就大声说出来，别静默跳过。
+analyze=""
+for cand in "$(dirname "$luau")/luau-analyze" "$(dirname "$luau")/luau-analyze.exe" \
+	"$(dirname "$luau")/luau-analyze"; do
+	if [ -f "$cand" ] || [ -x "$cand" ]; then
+		analyze="$cand"
+		break
+	fi
+done
+if [ -z "$analyze" ]; then
+	echo "未跑未定义全局检查：$(dirname "$luau") 下没有 luau-analyze（同 luau releases）" >&2
+else
+	bad="$(cd "$repo" && "$analyze" --formatter=plain host.luau window.luau 2>&1 \
+		| grep "Unknown global" | grep -v "'tern'" || true)"
+	if [ -n "$bad" ]; then
+		echo "未定义全局（不是 tern API，是真 bug）：" >&2
+		echo "$bad" >&2
+		exit 1
+	fi
+fi
+
 
 python_cmd="$(command -v python3 || command -v python)"
 "$python_cmd" - "$runner" "$repo" "$out" <<'PY'
