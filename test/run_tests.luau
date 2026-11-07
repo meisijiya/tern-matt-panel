@@ -661,6 +661,57 @@ local function mkCx(cols: number): any
 	}
 end
 
+--- 窗口半边的投递通道：agent 空闲时 inject 应当真的送出去，并回写成功。
+--- 这条路径以前只靠真机点，现在用桩把「空闲 agent」这个前提直接造出来。
+test("窗口半边把 inject 交给空闲 agent 并回写成功", function()
+	local winPane = 42
+	local asks: { { pane: number, text: string } } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number)
+				if id == winPane then
+					return { id = id }
+				end
+				return nil
+			end,
+			focused = function()
+				return winPane
+			end,
+			tab_of = function()
+				return 1
+			end,
+			layout = function()
+				return { root = { pane = winPane } }
+			end,
+			event = function() end,
+		},
+		agents = {
+			list = function()
+				return { { pane = winPane, state = "idle" } }
+			end,
+			ask = function(_self: any, pane: number, text: string)
+				table.insert(asks, { pane = pane, text = text })
+			end,
+		},
+	}
+	-- 宿主写进去的注入请求
+	kvStore["action"] = { seq = 5, kind = "inject", pane = winPane, body = "hello", name = "测试" }
+	-- 轮询回调在加载时就注册了，reset() 会清空 timers 表，所以用加载时抓的那一份
+	ok(pollTick ~= nil, "window registered a poll timer")
+	pollTick(cx)
+
+	eq(#asks, 1, "agent asked once")
+	eq(asks[1].pane, winPane)
+	ok(string.find(asks[1].text, "hello", 1, true) ~= nil, "body delivered")
+	local res = kvStore["inject_result"]
+	ok(type(res) == "table", "result written back")
+	eq(res.ok, true, "reported success")
+	eq(res.seq, 5, "seq echoed")
+end)
+
 --- 收一棵节点树里的按钮文字。
 local function buttonTexts(node: any, out: { string }): { string }
 	out = out or {}
