@@ -29,6 +29,21 @@ local function nowSec(): number?
 	return nil
 end
 
+--- 把时间戳格式化成「2026-11-07 10:51」。沙箱没暴露 os.date 时退化成原始秒数：
+--- 提示词里写个时间戳总比写「刚刚」强，用户能据此判断该不该重新拉。
+local function fmtTime(t: number?): string?
+	if not t then
+		return nil
+	end
+	local ok, v = pcall(function()
+		return os.date("%Y-%m-%d %H:%M", t)
+	end)
+	if ok and type(v) == "string" then
+		return v
+	end
+	return string.format("epoch %d", t)
+end
+
 --- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
 local COOLDOWN_SEC = 60
 
@@ -74,6 +89,8 @@ type State = {
 	cooldownUntil: number?,
 	-- 上次真正发出拉取的时刻；自动刷新按它节流
 	lastLoadAt: number?,
+	-- 上次拉取成功的人类可读时刻：提示词要靠它声明「这是几点的快照」
+	fetchedAt: string?,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
@@ -108,6 +125,7 @@ local function blank(): State
 		bodyLoading = nil,
 		cooldownUntil = nil,
 		lastLoadAt = nil,
+		fetchedAt = nil,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
@@ -182,6 +200,7 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	end
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
+	state.fetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
 	return true
 end
 
@@ -325,7 +344,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
 			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
 			if applyCachedIssues(state, repo) then
-				state.message = state.message .. "（显示上次拉到的数据）"
+				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
+				state.message = state.message
+					.. "（显示上次拉到的数据"
+					.. (if state.fetchedAt then "，" .. state.fetchedAt else "")
+					.. "）"
 			end
 			cx:render()
 			return
@@ -335,7 +358,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			state.loading = false
 			state.message = "gh 输出解析失败"
 			if applyCachedIssues(state, repo) then
-				state.message = state.message .. "（显示上次拉到的数据）"
+				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
+				state.message = state.message
+					.. "（显示上次拉到的数据"
+					.. (if state.fetchedAt then "，" .. state.fetchedAt else "")
+					.. "）"
 			end
 			cx:render()
 			return
@@ -354,7 +381,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			version = state.skillVersion or "—",
 		})
 		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
-		pcall(tern.kv.set, ISSUES_CACHE_KEY, { repo = repo, issues = issues })
+		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
+		-- 会把它当实时状态，据此做出已经过期的判断。
+		local now2 = nowSec()
+		state.fetchedAt = fmtTime(now2)
+		pcall(tern.kv.set, ISSUES_CACHE_KEY, { repo = repo, issues = issues, fetchedAt = state.fetchedAt })
 		cx:render()
 	end)
 end
@@ -427,6 +458,20 @@ local function nextStepBody(state: State, cx: BlockCx): string
 			table.insert(open, t)
 		end
 	end
+	-- 标签与认领人是「这张票是不是真活」的关键信号，单靠标题读不出来。
+	local brief: { any } = {}
+	for _, t in ipairs(open) do
+		table.insert(brief, {
+			number = t.number,
+			title = t.title,
+			type = t.type,
+			blockedBy = t.blockedBy,
+			parent = t.parent,
+			createdAt = t.createdAt,
+			labels = t.labels,
+			assignees = t.assignees,
+		})
+	end
 	local specs: { any } = {}
 	for _, entry in ipairs(tracker.groupBySpec(state.tickets)) do
 		local unfinished = 0
@@ -440,13 +485,15 @@ local function nextStepBody(state: State, cx: BlockCx): string
 			title = entry.spec.title,
 			open = unfinished,
 			total = #entry.tickets,
+			state = entry.spec.state,
 		})
 	end
 	local extra: templates.NextStepExtra = {
 		root = state.root or (if cx.cwd and cx.cwd ~= "" then cx.cwd else nil),
 		rootIsRepo = state.root ~= nil,
-		all = open :: any,
+		all = brief :: any,
 		specs = specs,
+		fetchedAt = state.fetchedAt,
 	}
 	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))
 end

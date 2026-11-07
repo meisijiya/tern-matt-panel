@@ -45,6 +45,7 @@ M.NEXT_STEP = {
 	body = table.concat({
 		"/skill:ask-matt",
 		"项目 {repo} 的任务板快照，{rootLabel}：{root}",
+		"抓取时间：{fetchedAt}。这是某一刻的快照，不是实时状态：任何票的状态、依赖、正文若与 GitHub 不一致，一律以 gh 的实时结果为准。",
 		"",
 		"判断前先读这几处；文件不存在就跳过，不用报告缺失，也不要凭空引用：",
 		"- 领域词汇：{root}/GLOSSARY.md",
@@ -63,7 +64,7 @@ M.NEXT_STEP = {
 		"地图：",
 		"{maps}",
 		"",
-		"规格：",
+		"规格（含已关闭的，to-spec 的产物与其工单进度）：",
 		"{specs}",
 		"",
 		"流程链：/skill:ask-matt 定位 → /skill:grill-with-docs 盘问（写 GLOSSARY/ADR）→ /skill:to-spec → /skill:to-tickets 拆票 → /skill:implement 逐票实施（小改在同一上下文直接 /skill:implement）→ /skill:tdd → /skill:code-review → /skill:pr。大而模糊才用 /skill:wayfinder；坏了用 /skill:diagnosing-bugs。",
@@ -72,7 +73,7 @@ M.NEXT_STEP = {
 		"1. 解锁下游多者优先（票行里的「被 #N 等待」就是下游）；",
 		"2. 同档按阶段：grilling > research > prototype > task；",
 		"3. 仍同档，创建时间旧者优先。",
-		"快照只有标题、类型、依赖方向与时间；正文、迷雾、范围外、spec 细节都在 issue 里，需要就用 gh 读。不要编造票号、标题或依赖。",
+		"快照只有标题、类型、标签、认领人、依赖方向、创建时间与 spec 进度；正文、迷雾、范围外、spec 细节都在 issue 里，需要就用 gh 读。不要编造票号、标题、标签或依赖。若某张票的标签或标题里带「TEST」这类标记，先判断它是不是演练数据，再决定要不要做。",
 		"",
 		"输出（最多 3 张，不要复述整份快照）：",
 		"| 票 | 为什么是现在 | 技能命令 | 第一步动作 |",
@@ -90,6 +91,9 @@ export type TicketBrief = {
 	blockedBy: { number },
 	parent: number?,
 	createdAt: string?,
+	-- 非 wayfinder:* 的标签：测试数据、优先级这类信号都在这里
+	labels: { string }?,
+	assignees: { string }?,
 }
 
 export type SpecBrief = {
@@ -97,6 +101,8 @@ export type SpecBrief = {
 	title: string,
 	open: number,
 	total: number,
+	-- "OPEN" / "CLOSED"：已关闭的 spec 和进行中的不是一回事，别并列
+	state: string?,
 }
 
 export type NextStepExtra = {
@@ -107,6 +113,8 @@ export type NextStepExtra = {
 	-- 全部未关闭的票：用来算「被谁等待」这个反向依赖
 	all: { TicketBrief }?,
 	specs: { SpecBrief }?,
+	-- 抓取时刻（本地时间字符串）；缺省时如实写「未知」
+	fetchedAt: string?,
 }
 
 local function ticketLine(t: TicketBrief, waitedBy: { string }): string
@@ -127,6 +135,19 @@ local function ticketLine(t: TicketBrief, waitedBy: { string }): string
 	end
 	if #waitedBy > 0 then
 		line = line .. " · 被 " .. table.concat(waitedBy, ",") .. " 等待"
+	end
+	if t.assignees and #t.assignees > 0 then
+		line = line .. " · @" .. table.concat(t.assignees, ",@")
+	end
+	-- wayfinder:* 已经用类型表达过了，剩下的标签才是额外信息（测试数据、优先级…）
+	local extra: { string } = {}
+	for _, label in ipairs(t.labels or {}) do
+		if not string.find(label, ":", 1, true) then
+			table.insert(extra, label)
+		end
+	end
+	if #extra > 0 then
+		line = line .. " · 标签 " .. table.concat(extra, ",")
 	end
 	return line
 end
@@ -178,17 +199,20 @@ function M.nextStepVars(
 
 	local specLines: { string } = {}
 	for _, s in ipairs(if extra and extra.specs then extra.specs else {}) do
+		local state = if s.state == "CLOSED" then "已关闭" else "进行中"
 		table.insert(specLines, string.format(
-			"- #%d %s · %d 工单 · %d 未完成",
+			"- #%d %s · %s · 工单 %d/%d 未完成",
 			s.number,
 			s.title,
-			s.total,
-			s.open
+			state,
+			s.open,
+			s.total
 		))
 	end
 
 	return {
 		repo = repo,
+		fetchedAt = if extra and extra.fetchedAt then extra.fetchedAt else "未知",
 		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
 		rootLabel = if extra and extra.rootIsRepo then "仓库根目录" else "当前工作目录",
 		claimableCount = tostring(#buckets.claimable),

@@ -251,19 +251,33 @@ local function handleAction(cx: WindowCx)
 		end)
 	end
 
+	-- 复制到剪贴板算兜底：cx:copy 不返回值，会话忙时真机上出现过复制没生效
+	-- 而提示照旧说「已复制」。至少把抛错的情况区分出来，别把失败说成成功。
+	local function copyOrSay(body: string): string?
+		local okCopy, copyErr = pcall(function()
+			cx:copy(body)
+		end)
+		if okCopy then
+			return nil
+		end
+		return tostring(copyErr)
+	end
+
 	local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
 	if not agent then
 		-- 没有 agent 就退到剪贴板，别让用户白点一次。
-		cx:copy(action.body)
-		cx:toast("info", "没有可用的 agent", "正文已复制到剪贴板。")
-		report(false, "没有可用的 agent（正文已复制到剪贴板）")
+		local copyErr = copyOrSay(action.body)
+		local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
+		cx:toast("info", "没有可用的 agent", tail)
+		report(false, "没有可用的 agent（" .. tail .. "）")
 		return
 	end
 	local err = sendToAgent(cx, agent, pasteText(action.body))
 	if err then
-		cx:copy(action.body)
-		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（正文已复制）")
-		report(false, err)
+		local copyErr = copyOrSay(action.body)
+		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
+		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（" .. tail .. "）")
+		report(false, err .. "（" .. tail .. "）")
 		return
 	end
 	cx:toast("success", "已提交：" .. tostring(action.name or ""))

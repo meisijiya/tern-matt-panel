@@ -567,7 +567,8 @@ test("templates.render 缺的占位符留原样", function()
 end)
 
 test("templates.nextStepVars 摊出真实票清单", function()
-	local blockedTicket = { number = 15, title = "等前置", type = "research", blockedBy = { 12, 3 }, createdAt = "2026-10-30T08:00:00Z" }
+	local blockedTicket = { number = 15, title = "等前置", type = "research", blockedBy = { 12, 3 }, createdAt = "2026-10-30T08:00:00Z",
+		labels = { "wayfinder:research", "test" }, assignees = {} }
 	local buckets = {
 		claimable = {
 			{ number = 12, title = "修 X", type = "task", blockedBy = {}, createdAt = "2026-11-01T00:00:00Z" },
@@ -583,7 +584,11 @@ test("templates.nextStepVars 摊出真实票清单", function()
 		{
 			root = "D:/repo",
 			all = { buckets.claimable[1], buckets.claimable[2], blockedTicket },
-			specs = { { number = 14, title = "规格十四", open = 1, total = 2 } },
+			specs = {
+				{ number = 14, title = "规格十四", open = 1, total = 2, state = "OPEN" },
+				{ number = 11, title = "规格十一", open = 0, total = 0, state = "CLOSED" },
+			},
+			fetchedAt = "2026-11-07 10:51",
 			rootIsRepo = true,
 		}
 	)
@@ -597,7 +602,13 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	eq(vars.assigned, "（无）")
 	ok(string.find(vars.blocked, "等 #12,#3", 1, true) ~= nil, "blockers listed")
 	eq(vars.maps, "- #1 地图一")
-	ok(string.find(vars.specs, "- #14 规格十四 · 2 工单 · 1 未完成", 1, true) ~= nil, "spec progress")
+	eq(vars.fetchedAt, "2026-11-07 10:51")
+	ok(string.find(vars.specs, "- #14 规格十四 · 进行中 · 工单 1/2 未完成", 1, true) ~= nil, "open spec")
+	-- 已关闭的 spec 必须与进行中的区分开：并列会让接收方以为 v1 还没做完
+	ok(string.find(vars.specs, "- #11 规格十一 · 已关闭 · 工单 0/0 未完成", 1, true) ~= nil, "closed spec")
+	-- 非 wayfinder 标签是「这是不是真活」的唯一信号，必须进快照
+	ok(string.find(vars.blocked, "标签 test", 1, true) ~= nil, "extra labels kept")
+	ok(string.find(vars.blocked, "wayfinder:research", 1, true) ~= nil, "type kept separately")
 
 	-- 超过 12 张要收尾，别把整块板塞进提示词
 	local many = {}
@@ -610,6 +621,7 @@ test("templates.nextStepVars 摊出真实票清单", function()
 	eq(v2.specs, "（无）")
 	eq(v2.root, "（未知，按当前工作目录找）")
 	eq(v2.rootLabel, "当前工作目录")
+	eq(v2.fetchedAt, "未知")
 end)
 
 test("lanes 每条泳道都指路", function()
