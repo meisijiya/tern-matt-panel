@@ -1423,6 +1423,19 @@ tern.block.define(BLOCK_ID, {
 			state.showHidden = saved.showHidden == true
 			state.repo = if type(saved.repo) == "string" then saved.repo else nil
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
+			if type(saved.nextStep) == "table" then
+				local ns = saved.nextStep
+				state.nextStep = {
+					-- 旧块里那个进程已经跟着没了：留着「正在跑」只会一直转圈
+					phase = if ns.phase == "running" then "error" else (ns.phase or "error"),
+					repo = if type(ns.repo) == "string" then ns.repo else nil,
+					text = if type(ns.text) == "string" then ns.text else "",
+					err = if ns.phase == "running" then "块被重建，这次询问中断了" else ns.err,
+					warn = ns.warn,
+					model = ns.model,
+					seconds = ns.seconds,
+				}
+			end
 		end
 		loadSkills(state)
 		loadBoard(state, cx)
@@ -1897,6 +1910,9 @@ tern.block.define(BLOCK_ID, {
 			showHidden = state.showHidden,
 			repo = state.repo,
 			skillSel = state.skillSel,
+			-- 一次问下一步要跑约一分钟，块被重建（插件重载/窗口重排）时
+			-- 不能把结果连同「正在跑」一起吞掉
+			nextStep = state.nextStep,
 		}
 	end,
 })

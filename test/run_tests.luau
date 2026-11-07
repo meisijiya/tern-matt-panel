@@ -949,6 +949,27 @@ test("切了仓库，旧答案不许盖到新仓库上", function()
 	eq(st2.nextStep.text, "答案")
 end)
 
+test("块被重建时结果保留，正在跑的标成中断", function()
+	-- 结果存在的块：重建后卡片还在，不用再问一次
+	local saved = {
+		view = "board", showHidden = false, repo = "me/repo", skillSel = nil,
+		nextStep = { phase = "done", repo = "me/repo", text = "| 票 | 建议 |", model = "m", seconds = 51 },
+	}
+	local st = panel.init(mkCx(120), {}, saved)
+	eq(st.nextStep.phase, "done", "done 保留")
+	eq(st.nextStep.text, "| 票 | 建议 |")
+	eq(st.nextStep.seconds, 51)
+
+	-- 正在跑的块：进程已随旧块消失，必须标成中断而不是一直转圈
+	local saved2 = {
+		view = "board", repo = "me/repo",
+		nextStep = { phase = "running", repo = "me/repo", text = "" },
+	}
+	local st2 = panel.init(mkCx(120), {}, saved2)
+	eq(st2.nextStep.phase, "error", "running 降级为中断")
+	ok(string.find(tostring(st2.nextStep.err), "中断", 1, true) ~= nil, "说清为什么停")
+end)
+
 test("已关闭组只给数量与最新建立的标题", function()
 	local closed = {}
 	for i = 1, 8 do
