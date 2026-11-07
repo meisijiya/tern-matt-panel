@@ -50,6 +50,10 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 
 工具条按面板宽度换行：面板拖窄后按钮折到下一行，不会被裁掉。
 
+「问下一步」起一个**独立进程**（`omp -p --no-session`）拿建议，结果落在任务板顶部的卡片里：不往任何会话注入，主会话上下文不受影响。一次点击约 1 分钟，跑着时不能重复点。模型读 kv `nextStepModel`，留空用 omp 默认。
+
+注意：插件目录里的任何文件变动都会触发 Tern 热重载，正在跑的询问会被标成「块被重建，这次询问中断了」——改代码/跑 `test/build.sh` 期间别指望一次问到底。
+
 ## 与参考实现的关系
 
 本插件是 [dsh-mattpocock-skills-deck](https://github.com/FeatherHunter/dsh-mattpocock-skills-deck) 的 tern 适配版：功能形态尽量对齐，落在 tern 能力边界内的部分换成等价实现。逐项对照（对得上 / 简化 / 范围外 / 因平台约束改造）见 [`docs/spec/对照参考实现.md`](docs/spec/对照参考实现.md)。
