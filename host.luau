@@ -666,6 +666,8 @@ local function runNextStep(state: State, cx: BlockCx)
 			seconds = elapsed,
 		}
 		state.message = if err then "问下一步失败" else "问下一步完成"
+		-- 宿主半边的异步回调不会自动重画：不显式画一次，卡片会一直停在「正在问」。
+		cx:render()
 	end)
 end
 

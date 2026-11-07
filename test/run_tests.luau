@@ -871,9 +871,12 @@ local function nextStepState()
 end
 
 test("问下一步交给独立进程，正文仍只含票面", function()
+	local renders = 0
+	local rawCx = mkCx(120)
+	rawCx.render = function() renders += 1 end
 	processFixtures = { { match = "omp -p", result = { status = 0, stdout = "| 票 | 建议 |\n", stderr = "warn: mcp", timed_out = false } } }
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	panel.event(st, { ev = "action", act = "next-step" }, rawCx)
 
 	-- 不再往会话里灌：没有任何注入请求
 	ok(kvStore["action"] == nil, "不写注入请求")
@@ -898,6 +901,9 @@ test("问下一步交给独立进程，正文仍只含票面", function()
 	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "新鲜", "可能" }) do
 		ok(string.find(body, banned, 1, true) == nil, "正文不该出现：" .. banned)
 	end
+
+	-- 异步回调必须自己重画：漏掉这一步，卡片会永远停在「正在问」
+	ok(renders > 0, "回调里重画了面板")
 
 	eq(st.nextStep.phase, "done", "拿到结果")
 	ok(string.find(st.nextStep.text, "建议", 1, true) ~= nil, "保留 stdout")
