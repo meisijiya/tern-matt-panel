@@ -222,6 +222,35 @@ wait_for() {
 skip=0
 SKIPPED_NAMES=""
 
+# 断言：工具条按钮占了几行（按 rect 的 y 去重）。窄面板下换行生效、按钮没被挤掉。
+assert_toolbar_rows() {
+	local want="$1"
+	local out rows
+	out="$(ctl tree '.sf-button' 2>/dev/null || true)"
+	rows="$(printf '%s' "$out" | python -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    sys.exit(0)
+ys = sorted({round(n["rect"][1]) for n in d.get("nodes", []) if n.get("rect") and n["rect"][2] > 0 and n["rect"][3] > 0})
+rows = 0
+last = None
+for y in ys:
+    # 同一行的按钮 y 可能有 1~2px 抖动，按容差归并，避免把一行数成两行
+    if last is None or y - last > 3:
+        rows += 1
+        last = y
+print(rows)
+' 2>/dev/null || echo 0)"
+	if [ "${rows:-0}" -ge "$want" ]; then
+		return 0
+	fi
+	echo "  FAIL 工具条只有 ${rows:-0} 行，期望至少 $want 行（按钮被裁或没换行）"
+	return 1
+}
+
 # 一个用例：名字 + 场景文件 + 断言序列
 case_run() {
 	local name="$1"
@@ -248,6 +277,7 @@ case_run() {
 			fi
 			;;
 		has:*) assert_has "${a#has:}" "$name" || ok=0 ;;
+		toolbar-rows:*) assert_toolbar_rows "${a#toolbar-rows:}" || ok=0 ;;
 		lacks:*) assert_lacks "${a#lacks:}" "$name" || ok=0 ;;
 		click:*) click_text "${a#click:}" || ok=0 ;;
 		click-item:*)
@@ -320,14 +350,20 @@ trap 'rm -rf "$TMP"' EXIT
 : > "$TMP/noop.sc"
 
 # ---------------------------------------------------------------- 准备 ----
-# 面板只开一次。
-cat > "$TMP/open.sc" <<EOF
+# 面板只开一次。窗口可能被复用，里面已经开着面板了 —— 那就别叠第二个：
+# 每个 panel 都是一块真 UI，叠起来 GPU 与内存一路涨。
+# 判据用工具条按钮（面板的标志性控件），别用说明文字：文案会改，按钮不会消失。
+if ctl tree '.sf-button' 2>/dev/null | grep -qF '刷新'; then
+	echo "e2e: 复用已开的面板"
+else
+	cat > "$TMP/open.sc" <<EOF
 palette "Matt 面板"
 wait 1500
 key return
 wait 10000
 EOF
-scen "$TMP/open.sc"
+	scen "$TMP/open.sc"
+fi
 
 # ---------------------------------------------------------------- 用例 ----
 
@@ -411,17 +447,17 @@ case_run "技能注入有鼠标入口" "$TMP/back_skills.sc" \
 	"click-btn-until:技能:ask-matt:15000" \
 	"has:注入技能"
 
-# 8. 注入后提示从"提交中"变成结果（结果回写通道）
-# 断言"不再是提交中"而不是断言具体成功失败 —— 测试环境里可能没有邻近 agent，
+# 8. 注入后提示从"填入中"变成结果（结果回写通道）
+# 断言"不再是填入中"而不是断言具体成功失败 —— 测试环境里可能没有邻近 agent，
 # 成功与否取决于环境，回写通道本身才是被测对象。
 cat > "$TMP/inject.sc" <<EOF
 wait 100
 EOF
 case_run "注入结果回写" "$TMP/inject.sc" \
 	"click-sel-until:.sf-item:sf-md:20000" \
-	"click-btn-until:注入技能:提交中:10000" \
-	"wait-for:提交失败:20000" \
-	"lacks:提交中"
+	"click-btn-until:注入技能:填入中:10000" \
+	"wait-for:填入失败:20000" \
+	"lacks:填入中"
 
 # 9. 「刷新」按钮重新拉数据（它的动作名与窗口戳宿主用的 refresh 刻意分开）
 cat > "$TMP/reload.sc" <<EOF
@@ -433,6 +469,24 @@ case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
 	"click-btn-until:任务板:点行选中:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-btn-until:刷新:已刷新:20000"
+
+# 10. 面板变窄时工具条换行：按钮不许被裁掉（裁掉就是点不到）
+cat > "$TMP/narrow.sc" <<EOF
+wait 100
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+resize-pane left
+wait 500
+EOF
+case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
+	"click-btn-until:任务板:点行选中:20000" \
+	"toolbar-rows:2" \
+	"has:换仓库" \
+	"has:问下一步" \
+	"has:刷新"
 
 # ---------------------------------------------------------------- 汇总 ----
 

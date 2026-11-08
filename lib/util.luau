@@ -78,6 +78,43 @@ function M.contains(list: { any }, needle: any): boolean
 	return false
 end
 
+--- 终端列宽：CJK / 全角 / 假名 / 韩文按 2 列，其余 1 列。
+--- 只用于排版预算，不追求 Unicode 完整性（组合字符、ZWJ 都不处理）。
+function M.textWidth(s: string): number
+	local w = 0
+	for _, code in utf8.codes(s) do
+		if code >= 0x1100 then
+			w += 2
+		else
+			w += 1
+		end
+	end
+	return w
+end
+
+--- 把一串宽度装进 cols 列：贪心换行，每项之间算 gap 列。
+--- 单项比 cols 还宽时也独占一行（宁可溢出，不能凭空丢按钮）。
+function M.packRows(widths: { number }, cols: number, gap: number): { { number } }
+	local rows: { { number } } = {}
+	local cur: { number } = {}
+	local used = 0
+	for i, w in ipairs(widths) do
+		local need = if #cur == 0 then w else used + gap + w
+		if #cur > 0 and need > cols then
+			table.insert(rows, cur)
+			cur = {}
+			used = 0
+			need = w
+		end
+		table.insert(cur, i)
+		used = need
+	end
+	if #cur > 0 then
+		table.insert(rows, cur)
+	end
+	return rows
+end
+
 --- 从 git remote 的 URL 里取 owner/repo。
 --- 认这些形状：git@github.com:o/r.git、https://github.com/o/r.git、
 --- ssh://git@host/o/r、以及不带 .git 后缀的网页地址。

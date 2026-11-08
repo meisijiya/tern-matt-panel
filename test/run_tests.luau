@@ -44,8 +44,45 @@ end
 
 local ternStub: any
 
+-- 按 argv 前缀路由的桩结果表：测试可注入 `omp -p` 的成功/失败/超时输出，
+-- 其余命令（git、gh）照旧返回空成功，不影响既有用例。
+local processFixtures: { { match: string, result: any, defer: boolean? } } = {}
+local processCalls: { { argv: { string }, opts: any } } = {}
+-- defer 的调用把回调挂在这里，测试用 flushProcess() 手动放行，
+-- 这样才能造出「结果还没回来时又点了一次」这种时序。
+local pendingFlush: { any } = {}
+
+local function flushProcess()
+	local queued = pendingFlush
+	pendingFlush = {}
+	for _, fn in ipairs(queued) do
+		fn()
+	end
+end
+
+local function fixtureFor(argv: { string }): any
+	local joined = table.concat(argv, " ")
+	for _, f in ipairs(processFixtures) do
+		if string.find(joined, f.match, 1, true) then
+			return f
+		end
+	end
+	return nil
+end
+
 local function runProcess(argv: { string }, optsOrCb: any, cb: any): any
-	local result = { status = 0, stdout = "", stderr = "", timed_out = false }
+	table.insert(processCalls, { argv = argv, opts = if type(optsOrCb) == "table" then optsOrCb else nil })
+	local fixture = fixtureFor(argv)
+	local result = (fixture and fixture.result) or { status = 0, stdout = "", stderr = "", timed_out = false }
+	if fixture and fixture.defer then
+		local deferred: any = {}
+		function deferred:next(fn: (any, any, any) -> ())
+			table.insert(pendingFlush, function()
+				fn(result, nil, nil)
+			end)
+		end
+		return deferred
+	end
 	local callback: ((any, any) -> ())? = nil
 	if type(optsOrCb) == "function" then
 		callback = optsOrCb
@@ -170,6 +207,15 @@ ternStub = {
 		rule = function(label: any): any
 			return { k = "rule", p = { label = label } }
 		end,
+		card = function(head: any, children: { any }, props: any?): any
+			return { k = "card", head = head, p = props or {}, c = children }
+		end,
+		link = function(t: string, href: string, tone: string?): any
+			return { k = "link", p = { t = t, href = href, tone = tone } }
+		end,
+		code = function(text: string, syntax: string?): any
+			return { k = "code", p = { text = text, syntax = syntax } }
+		end,
 	},
 	process = {
 		run = runProcess,
@@ -187,6 +233,9 @@ local function reset()
 	chromeRefreshes = 0
 	asked = {}
 	typed = {}
+	processFixtures = {}
+	processCalls = {}
+	pendingFlush = {}
 end
 
 reset()
@@ -549,6 +598,492 @@ test("commands.buildTicketCommand", function()
 	local out = commands.buildTicketCommand(ticket, tpl)
 	ok(string.find(out, "http://ticket", 1, true) ~= nil, "url in ticket cmd")
 	ok(string.find(out, "MyTask", 1, true) ~= nil, "title in ticket cmd")
+end)
+
+test("templates.render 缺的占位符留原样", function()
+	local tpl = { id = "x", title = "x", body = "repo={repo} 缺={nope}" }
+	local out = templates.render(tpl, { repo = "o/r" })
+	ok(string.find(out, "repo=o/r", 1, true) ~= nil, "repo substituted")
+	ok(string.find(out, "缺={nope}", 1, true) ~= nil, "missing placeholder kept")
+end)
+
+test("问下一步只调 ask-matt，不再搬任务板快照", function()
+	local out = templates.render(templates.NEXT_STEP, { repo = "me/repo" })
+	ok(string.find(out, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
+	ok(string.find(out, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(out, "只做分析", 1, true) ~= nil, "写明只读边界")
+	ok(string.find(out, "gh issue list", 1, true) ~= nil, "让它自己核事实")
+	ok(string.find(out, "#12 wayfinder:task", 1, true) == nil, "没有票行")
+	ok(string.find(out, "@me", 1, true) == nil, "没有认领人")
+	ok(string.find(out, "已关闭：", 1, true) == nil, "没有已关闭统计")
+	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "置信" }) do
+		ok(string.find(out, banned, 1, true) == nil, "正文不该出现：" .. banned)
+	end
+end)
+
+--- omp 只认 /skill: 前缀：注入正文里出现裸斜杠命令，会话就解析不到技能。
+local function outerSlashCmds(text: string): { string }
+	local out: { string } = {}
+	for word in string.gmatch(text, "%f[%S]/([%w%-]+)") do
+		table.insert(out, word)
+	end
+	return out
+end
+
+test("注入正文里的斜杠命令一律带 skill: 前缀", function()
+	local bodies = {
+		{ "问下一步", templates.render(templates.NEXT_STEP, { repo = "o/r" }) },
+		{ "提 BUG", templates.render(templates.NEW_BUG, { repo = "o/r" }) },
+		{ "体检", templates.render(templates.HEALTH_CHECK, { repo = "o/r" }) },
+	}
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(bodies, { e.title, templates.renderEntry(e, "o/r") })
+	end
+	for _, tpl in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { tpl.title, templates.render(tpl, { url = "u", title = "t" }) })
+	end
+	for _, item in ipairs(bodies) do
+		local name = item[1]
+		local text = item[2]
+		local cmds = outerSlashCmds(text)
+		for _, c in ipairs(cmds) do
+			ok(c == "skill" or string.sub(c, 1, 5) == "skill", name .. " 有不带 skill: 的斜杠命令：/" .. c)
+		end
+	end
+end)
+
+test("新增需求两条路、提 BUG、体检各调对技能", function()
+	local explore = templates.entryById("explore")
+	local implement = templates.entryById("implement")
+	ok(explore ~= nil and implement ~= nil, "两条路都在")
+	local e = templates.renderEntry(explore :: any, "me/repo")
+	ok(string.find(e, "/skill:wayfinder", 1, true) ~= nil, "探索走 wayfinder")
+	ok(string.find(e, "blockedBy", 1, true) ~= nil, "讲了并行与串行")
+	local i = templates.renderEntry(implement :: any, "me/repo")
+	ok(string.find(i, "/skill:grill-with-docs", 1, true) ~= nil, "实施走 grill-with-docs")
+	ok(string.find(i, "/skill:to-spec", 1, true) ~= nil, "收尾提醒 to-spec")
+
+	local bug = templates.render(templates.NEW_BUG, { repo = "me/repo" })
+	ok(string.find(bug, "/skill:wayfinder", 1, true) ~= nil, "提 BUG 调 wayfinder")
+	ok(string.find(bug, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(bug, "bug 标签", 1, true) ~= nil, "要求打 bug 标签")
+	ok(string.find(bug, "查重", 1, true) ~= nil, "建单前查重")
+	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "四项填空在")
+
+	local health = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" })
+	ok(string.find(health, "游离", 1, true) ~= nil, "说清什么算游离")
+	ok(string.find(health, "等人点头", 1, true) ~= nil, "先出清单再动手")
+	ok(string.find(health, "不关闭票", 1, true) ~= nil, "禁止越界写操作")
+end)
+
+test("lanes 每条泳道都指路", function()
+	for _, l in ipairs(lanes.LANES) do
+		ok(l.hint ~= nil and l.hint ~= "", l.id .. " has hint")
+	end
+end)
+
+test("util.textWidth 把 CJK 算成两列", function()
+	eq(util.textWidth("刷新"), 4)
+	eq(util.textWidth("repo"), 4)
+end)
+
+test("util.packRows 装不下就换行且不丢按钮", function()
+	local widths = { 6, 6, 6, 6, 6, 14 }
+	local wide = util.packRows(widths, 100, 1)
+	eq(#wide, 1, "wide panel keeps one row")
+	eq(#wide[1], 6, "all buttons in that row")
+
+	local narrow = util.packRows(widths, 12, 1)
+	ok(#narrow > 1, "narrow panel wraps")
+	local seen: { [number]: boolean } = {}
+	for _, row in ipairs(narrow) do
+		for _, idx in ipairs(row) do
+			ok(not seen[idx], "index " .. idx .. " appears once")
+			seen[idx] = true
+		end
+	end
+	eq(#narrow[1], 1, "first row holds the first button only")
+	eq(narrow[1][1], 1, "order kept")
+
+	-- 单项比整行还宽：独占一行，宁可溢出也不丢
+	local huge = util.packRows({ 40, 6 }, 10, 1)
+	eq(#huge, 2, "oversized button gets its own row")
+end)
+
+-- ------------------------------------------------------ host 渲染与事件 ----
+
+--- 最小 BlockCx：面板只用到这几个字段。
+local function mkCx(cols: number): any
+	return {
+		pane = 7,
+		cwd = "C:/repo",
+		rows = 40,
+		cols = cols,
+		render = function() end,
+		copy = function() end,
+		open = function() end,
+	}
+end
+
+--- 窗口半边的投递通道：agent 空闲时 inject 应当真的送出去，并回写成功。
+--- 这条路径以前只靠真机点，现在用桩把「空闲 agent」这个前提直接造出来。
+test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", function()
+	local winPane = 42
+	local typed: { { pane: number, text: string } } = {}
+	local cx: any = {
+		pane = winPane,
+		run = function(_self: any, pane: number, text: string)
+			table.insert(typed, { pane = pane, text = text })
+		end,
+		copy = function() end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number)
+				if id == winPane then
+					return { id = id }
+				end
+				return nil
+			end,
+			focused = function()
+				return winPane
+			end,
+			tab_of = function()
+				return 1
+			end,
+			layout = function()
+				return { root = { pane = winPane } }
+			end,
+			event = function() end,
+		},
+		agents = {
+			list = function()
+				return { { pane = winPane, state = "idle" } }
+			end,
+			-- 填输入框不走 ask：ask 一定会提交，用户就没有补内容的机会了
+			ask = function(_self: any, _pane: number, _text: string)
+				error("不该调用 agents:ask —— 提示词只能填进输入框")
+			end,
+		},
+	}
+	-- 宿主写进去的填入请求
+	kvStore["action"] = { seq = 5, kind = "inject", pane = winPane, body = "hello", name = "测试" }
+	-- 轮询回调在加载时就注册了，reset() 会清空 timers 表，所以用加载时抓的那一份
+	ok(pollTick ~= nil, "window registered a poll timer")
+	pollTick(cx)
+
+	eq(#typed, 1, "正文打进 pane 一次")
+	eq(typed[1].pane, winPane)
+	ok(string.find(typed[1].text, "hello", 1, true) ~= nil, "body delivered")
+	local res = kvStore["inject_result"]
+	ok(type(res) == "table", "result written back")
+	eq(res.ok, true, "reported success")
+	eq(res.seq, 5, "seq echoed")
+
+	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
+	-- 用户就没机会补内容了。
+	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = "第一行\n第二行", name = "多行" }
+	pollTick(cx)
+	eq(#typed, 2, "多行正文也打进 pane")
+	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "以括号粘贴开头")
+	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "以括号粘贴收尾")
+	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
+end)
+
+test("剪贴板写不进去时不许谎报已复制", function()
+	local winPane = 42
+	local cx: any = {
+		pane = winPane,
+		copy = function()
+			error("clipboard busy")
+		end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		-- 没有可用 agent：必然走剪贴板兜底
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = { seq = 9, kind = "inject", pane = winPane, body = "hi", name = "测试" }
+	pollTick(cx)
+
+	local res = kvStore["inject_result"]
+	ok(type(res) == "table", "result written")
+	eq(res.ok, false, "reported failure")
+	ok(string.find(tostring(res.error), "剪贴板也写不进去", 1, true) ~= nil, "names the copy failure")
+	ok(string.find(tostring(res.error), "正文已复制", 1, true) == nil, "does not claim success")
+end)
+
+test("compose 复制失败不许报已复制", function()
+	local winPane = 42
+	local cx: any = {
+		pane = winPane,
+		copy = function() error("clipboard busy") end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	local said: { any } = {}
+	cx.toast = function(...)
+		table.insert(said, { ... })
+	end
+	kvStore["action"] = { seq = 21, kind = "compose", pane = winPane, body = "x", name = "技能" }
+	pollTick(cx)
+
+	-- cx:toast 是冒号调用，实参表第一个是 cx 自己
+	eq(#said, 1, "one toast")
+	eq(said[1][2], "error", "reported as error")
+	ok(string.find(tostring(said[1][3]), "复制失败", 1, true) ~= nil, "names the failure")
+	ok(string.find(tostring(said[1][3]), "已复制", 1, true) == nil, "does not claim success")
+end)
+
+--- 收一棵节点树里的按钮文字。
+local function buttonTexts(node: any, out: { string }): { string }
+	out = out or {}
+	if type(node) ~= "table" then
+		return out
+	end
+	if node.k == "button" and type(node.p) == "table" and type(node.p.t) == "string" then
+		table.insert(out, node.p.t)
+	end
+	for _, kid in ipairs(node.c or {}) do
+		buttonTexts(kid, out)
+	end
+	return out
+end
+
+local panel = blockDefs["matt"]
+
+test("聚焦只戳当前 tab 里的面板，不惊动别的 tab", function()
+	local panelA, panelB, term = 101, 202, 303
+	local events: { { pane: number, act: string? } } = {}
+	local cx: any = {
+		pane = panelA,
+		session = {
+			focused = function() return term end,
+			panes = function()
+				return {
+					{ pane = panelA, tab = 1, program = "tern-matt-panel.matt" },
+					{ pane = panelB, tab = 2, program = "tern-matt-panel.matt" },
+					{ pane = term, tab = 2, program = "powershell.exe" },
+				}
+			end,
+			event = function(_self: any, pane: number, ev: any)
+				table.insert(events, { pane = pane, act = ev and ev.act })
+			end,
+		},
+		agents = { list = function() return {} end },
+	}
+
+	handlers["focus"]({ pane = term, tab = 2 }, cx)
+	eq(#events, 1, "tab 2 里只有一个面板该被戳")
+	eq(events[1].pane, panelB, "戳的是该 tab 里的面板")
+	eq(events[1].act, "auto-reload", "发的是自动刷新")
+
+	events = {}
+	handlers["focus"]({ pane = panelA, tab = 1 }, cx)
+	eq(#events, 1, "切到 tab 1 也只戳一个")
+	eq(events[1].pane, panelA, "戳 tab 1 的面板")
+end)
+
+test("工具条在宽窄面板都露出全部按钮", function()
+	local broad = panel.init(mkCx(120), {}, nil)
+	broad.view = "board"
+	local wide = panel.view(broad, mkCx(120))
+	local wideTexts = buttonTexts(wide.main, {})
+	ok(util.contains(wideTexts, "问下一步"), "broad: 有问下一步")
+	ok(util.contains(wideTexts, "刷新"), "broad: 有刷新")
+
+	local narrow = panel.init(mkCx(24), {}, nil)
+	narrow.view = "board"
+	local tight = panel.view(narrow, mkCx(24))
+	local tightTexts = buttonTexts(tight.main, {})
+	eq(#tightTexts, #wideTexts, "narrow: 按钮一个不少")
+	ok(util.contains(tightTexts, "问下一步"), "narrow: 保留问下一步")
+	ok(util.contains(tightTexts, "换仓库"), "narrow: 保留换仓库")
+	ok(#tight.main.c[1].c > 1, "narrow: 工具条换行")
+	ok(util.contains(wideTexts, "新增需求"), "broad: 新增需求常驻")
+	ok(util.contains(wideTexts, "提 BUG"), "broad: 提 BUG 常驻")
+	ok(util.contains(wideTexts, "体检"), "broad: 体检常驻")
+	ok(util.contains(tightTexts, "新增需求"), "narrow: 新增需求也在")
+end)
+
+--- 造一份带仓库/票的 state，供「问下一步」用。
+local function nextStepState()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.tickets = {
+		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
+			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
+			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
+	}
+	return st
+end
+
+test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject", "走普通注入，不起子代理")
+	local body = action.body
+	ok(string.find(body, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
+	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
+	ok(string.find(tostring(st.message), "填入中", 1, true) ~= nil, "提示填入中")
+end)
+
+--- 收一棵节点树里的全部文字（text 的 spans、button/badge 的 t、md 的 text）。
+local function allText(node: any, out: { string }): { string }
+	out = out or {}
+	if type(node) ~= "table" then
+		return out
+	end
+	local p = node.p
+	if type(p) == "table" then
+		local spans = p.spans
+		if type(spans) == "string" then
+			table.insert(out, spans)
+		elseif type(spans) == "table" then
+			if type(spans.t) == "string" then
+				-- 单个 span：ui.text(ui.span(...))
+				table.insert(out, spans.t)
+			else
+				for _, sp in ipairs(spans) do
+					if type(sp) == "string" then
+						table.insert(out, sp)
+					elseif type(sp) == "table" and type(sp.t) == "string" then
+						table.insert(out, sp.t)
+					end
+				end
+			end
+		end
+		if type(p.t) == "string" then
+			table.insert(out, p.t)
+		end
+		if type(p.text) == "string" then
+			table.insert(out, p.text)
+		end
+	end
+	for _, kid in ipairs(node.c or {}) do
+		allText(kid, out)
+	end
+	return out
+end
+
+--- 工具条上每个 click 值都必须在动作表里：删掉分支而按钮还在，
+--- 用户点下去就是没反应，且任何单测都不会红。
+local ACTION_CASES = {
+	{ act = "view-skills", want = function(st: any) return st.view == "skills" end },
+	{ act = "view-board", want = function(st: any) return st.view == "board" end },
+	{ act = "toggle-sort", want = function(st: any, before: any) return st.sortNewest ~= before.sortNewest end },
+	{ act = "reload", want = function(st: any) return st.message == "已刷新" end },
+	{ act = "pick-repo", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "pick-repo" end },
+	{ act = "toggle-hidden", want = function(st: any, before: any) return st.showHidden ~= before.showHidden end },
+	{ act = "next-step", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
+	{ act = "back-board", want = function(st: any) return st.view == "board" end },
+}
+
+test("工具条每个按钮都接上了动作分支", function()
+	for _, c in ipairs(ACTION_CASES) do
+		local st = nextStepState()
+		st.view = "board"
+		st.ticket = st.tickets[1]
+		st.view = "ticket"
+		local before = { sortNewest = st.sortNewest, showHidden = st.showHidden }
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = c.act }, mkCx(120))
+		ok(c.want(st, before, kvStore), "动作没反应：" .. c.act)
+	end
+end)
+
+test("工具条 click 值全部有分支覆盖", function()
+	local known: { [string]: boolean } = {}
+	for _, c in ipairs(ACTION_CASES) do
+		known[c.act] = true
+	end
+	-- 这几条需要真实票/技能，另有用例覆盖
+	known["inject-skill"] = true
+	known["copy-ticket"] = true
+	known["open-ticket"] = true
+	known["auto-reload"] = true
+
+	local st = nextStepState()
+	st.view = "board"
+	local clicks: { string } = {}
+	local function walk(n: any)
+		if type(n) ~= "table" then
+			return
+		end
+		local a = type(n.p) == "table" and n.p.actions or nil
+		if type(a) == "table" and type(a.click) == "string" then
+			table.insert(clicks, a.click)
+		end
+		for _, kid in ipairs(n.c or {}) do
+			walk(kid)
+		end
+	end
+	walk(panel.view(st, mkCx(120)).main)
+	ok(#clicks > 0, "工具条上有按钮")
+	for _, c in ipairs(clicks) do
+		if string.sub(c, 1, 4) == "new:" then
+			ok(templates.entryById(string.sub(c, 5)) ~= nil, "入口不存在：" .. c)
+		else
+			ok(known[c] == true, "按钮指向没有分支的动作：" .. c)
+		end
+	end
+end)
+
+test("底部显示数据时刻，且刷新中不清空已有内容", function()
+	local st = nextStepState()
+	st.view = "board"
+	st.fetchedAtSec = 1762000000
+	local dockText = table.concat(allText(panel.view(st, mkCx(120)).dock, {}), " | ")
+	ok(string.find(dockText, "数据 ", 1, true) ~= nil, "dock 显示数据时刻：" .. dockText)
+
+	-- 刷新中：已有票就继续显示，不许整块换成「正在拉取…」
+	st.loading = true
+	local mainText = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(mainText, "正在拉取", 1, true) == nil, "有数据时不显示占位")
+	ok(string.find(mainText, "me/repo", 1, true) ~= nil, "旧内容还在")
+end)
+
+test("没识别到仓库时不给问下一步", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	ok(kvStore["action"] == nil, "没有仓库就不注入")
+	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
+end)
+
+test("常驻三条：新增需求/提 BUG/体检", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	eq(kvStore["action"].kind, "inject")
+	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带四项填空")
+
+	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	ok(string.find(kvStore["action"].body, "游离", 1, true) ~= nil, "体检正文带游离判据")
+
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "new-demand" }, mkCx(120))
+	eq(st.view, "board", "切到任务板")
+	eq(st.newDemand, true, "叫出两条路")
+	ok(kvStore["action"] == nil, "选择前不注入")
 end)
 
 -- -------------------------------------------------------------- report ----

@@ -5,7 +5,7 @@
 -- docs/research/host-half-runtime.md）。异步回调里改 state 再 cx:render() 即可重画，
 -- 不必绕 kv（见 docs/research/host-async-render.md）。
 --
--- 需要窗口半边才能做的只有一件：把提示词注入邻近 agent（cx.agents:ask 是 window-only）。
+-- 需要窗口半边才能做的只有一件：把提示词填进邻近 agent 的输入框（cx:run 是 window-only）。
 -- 那一段走 tern.kv 传令：这里写 action 键，窗口半边轮询并执行。
 
 local ui = tern.ui
@@ -29,12 +29,32 @@ local function nowSec(): number?
 	return nil
 end
 
+--- 把时间戳格式化成「2026-11-07 10:51」。沙箱没暴露 os.date 时退化成原始秒数：
+--- 提示词里写个时间戳总比写「刚刚」强，用户能据此判断该不该重新拉。
+local function fmtTime(t: number?): string?
+	if not t then
+		return nil
+	end
+	local ok, v = pcall(function()
+		return os.date("%Y-%m-%d %H:%M", t)
+	end)
+	if ok and type(v) == "string" then
+		return v
+	end
+	return string.format("epoch %d", t)
+end
+
 --- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
 local COOLDOWN_SEC = 60
 
+--- 自动刷新的最短间隔：窗口获得焦点时才考虑拉，且两次拉取之间至少隔这么久。
+--- 焦点事件很频繁（切 pane、切 tab 都触发），而一次刷新要跑一趟 gh（实测 2.8 秒、
+--- 约 4 个 GraphQL 点）。60 秒的闸意味着频繁切 tab 时几乎每次都在拉，
+--- 面板跟着闪。5 分钟足够：票的变化来自用户自己刚做的操作，回来时会看到。
+--- 需要立刻看到最新就按「刷新」或 r。
+local AUTO_REFRESH_SEC = 300
+
 local ACTION_KEY = "action"
-local RESULT_KEY = "result"
--- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
@@ -42,6 +62,7 @@ local BLOCK_ID = "matt"
 
 type View = "skills" | "board" | "map" | "ticket"
 
+--- 一次「问下一步」的状态。独立进程跑完才有结论，中间态要能渲染。
 type State = {
 	view: View,
 	-- 技能面板
@@ -59,6 +80,8 @@ type State = {
 	ticketSel: number?,
 	-- 票按创建时间排：默认最新在上
 	sortNewest: boolean,
+	-- 工具条「新增需求」把两条路叫出来，选完或再按一次收起
+	newDemand: boolean,
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
@@ -66,11 +89,21 @@ type State = {
 	bodyLoading: number?,
 	-- 上次拉取失败后到这个时刻之前不再发请求
 	cooldownUntil: number?,
+	-- 上次真正发出拉取的时刻；自动刷新按它节流
+	lastLoadAt: number?,
+	-- 抓取时刻的唯一真源：秒数。显示用的字符串每次都从它格式化，
+	-- 不再另存一份 —— 两个字段并存时真机出现过「时间字符串」与「年龄」
+	-- 互相矛盾（同一对数据却给出 4.8 分钟和 254 分钟两个答案）。
+	fetchedAtSec: number?,
+	-- 旧缓存里只有字符串、没有秒数：只能显示，算不出年龄
+	legacyFetchedAt: string?,
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
 	loading: boolean,
 	repo: string?,
+	-- git 的仓库根（cwd 可能只是仓库里的一层，也可能不在仓库里）
+	root: string?,
 	-- 仓库是目录自动识别来的，还是退到上次手动指定的
 	repoManual: boolean,
 	-- 没识别到仓库时给用户的下一步说明（含失败原因）
@@ -84,6 +117,7 @@ local function blank(): State
 	return {
 		view = "skills",
 		sortNewest = true,
+		newDemand = false,
 		skills = {},
 		lanes = {},
 		skillSel = nil,
@@ -97,15 +131,24 @@ local function blank(): State
 		ticketBody = nil,
 		bodyLoading = nil,
 		cooldownUntil = nil,
+		lastLoadAt = nil,
+		fetchedAtSec = nil,
+		legacyFetchedAt = nil,
 		message = nil,
 		pendingSeq = nil,
 		loading = false,
 		repo = nil,
+		root = nil,
 		repoManual = false,
 		setupHint = nil,
 		skillVersion = nil,
 		hasSkills = false,
 	}
+end
+
+--- 显示用的抓取时刻：始终从秒数格式化，旧缓存没有秒数时才退回它自己的字符串。
+local function fetchedLabel(state: State): string?
+	return fmtTime(state.fetchedAtSec) or state.legacyFetchedAt
 end
 
 --- 按泳道顺序排平的技能表，上下移动与选中都用它。
@@ -170,6 +213,8 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	end
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
+	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
+	state.legacyFetchedAt = if type(value.fetchedAt) == "string" then value.fetchedAt else nil
 	return true
 end
 
@@ -207,7 +252,11 @@ end
 
 --- 把 gh 的 JSON 输出解码成表。解码失败返回 nil。
 local function decodeIssues(text: string): { any }?
-	local ok, value = pcall(tern.json.decode, text)
+	-- 取属性也要包进 pcall：tern.json 不存在时 `tern.json.decode` 本身就抛，
+	-- 那样会把整个拉取流程带崩，而不是走「解析失败」这条正常退路。
+	local ok, value = pcall(function()
+		return tern.json.decode(text)
+	end)
 	if not ok or type(value) ~= "table" then
 		return nil
 	end
@@ -225,6 +274,9 @@ local function loadBoard(state: State, cx: BlockCx)
 		cx:render()
 		return
 	end
+	-- 记下发出时刻：自动刷新用它节流。放在所有早退之前，
+	-- 否则「识别不到仓库」这种稳态会让节流永远不生效。
+	state.lastLoadAt = nowSec()
 	state.loading = true
 	-- 目录优先：面板跟着窗口所在项目走。
 	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
@@ -253,6 +305,8 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.mapSel = nil
 			state.ticketSel = nil
 			state.setupHint = reason or "当前目录没识别到 git remote"
+			state.fetchedAtSec = nil
+			state.legacyFetchedAt = nil
 			state.message = nil
 			cx:render()
 			return
@@ -266,17 +320,30 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketBody = nil
 			state.mapSel = nil
 			state.ticketSel = nil
+			state.fetchedAtSec = nil
+			state.legacyFetchedAt = nil
 		end
 		state.repo = repo
 		state.repoManual = manual
 		fetchIssues(state, cx, repo)
+		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
+		tern.process.run({ "git", "-C", cx.cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
+			if result and result.status == 0 then
+				local root = util.trim(tostring(result.stdout or ""))
+				if root ~= "" then
+					state.root = root
+				end
+			end
+		end)
 	end)
 end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	-- 刻意不拉 body：列表一次 400 点，5000 点/小时只够刷十来次。
-	-- body 是成本大头，改成点开某张票时用 REST 单独取（REST 不占 GraphQL 配额）。
+	-- 刻意不拉 body：body 是成本大头（带正文的列表查询约 400 点/次）。
+	-- 这份字段实测约 4 点/次（3 次共耗 13 点），所以刷新成本不在配额，
+	-- 而在每次 spawn 一个 gh 子进程（约 2.8 秒）。body 改成点开某张票时
+	-- 用 REST 单独取（REST 不占 GraphQL 配额）。
 	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
 	tern.process.run({
 		"gh",
@@ -301,7 +368,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
 			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
 			if applyCachedIssues(state, repo) then
-				state.message = state.message .. "（显示上次拉到的数据）"
+				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
+				state.message = state.message
+					.. "（显示上次拉到的数据"
+					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
+					.. "）"
 			end
 			cx:render()
 			return
@@ -311,7 +382,11 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			state.loading = false
 			state.message = "gh 输出解析失败"
 			if applyCachedIssues(state, repo) then
-				state.message = state.message .. "（显示上次拉到的数据）"
+				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
+				state.message = state.message
+					.. "（显示上次拉到的数据"
+					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
+					.. "）"
 			end
 			cx:render()
 			return
@@ -322,15 +397,17 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		if #state.tickets == 0 then
 			state.message = "这个仓库还没有 issue"
 		end
-		-- 状态栏胶囊要数字，写进 result 键给窗口半边读。
-		tern.kv.set(RESULT_KEY, {
-			-- 与任务板「可领」同口径：都要排除顶层 spec，
-			-- 否则面板写 4 张、状态栏写 5 张，用户以为哪里算错了。
-			frontier = #tracker.classify(state.tickets).claimable,
-			version = state.skillVersion or "—",
-		})
 		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
-		pcall(tern.kv.set, ISSUES_CACHE_KEY, { repo = repo, issues = issues })
+		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
+		-- 会把它当实时状态，据此做出已经过期的判断。
+		local now2 = nowSec()
+		state.fetchedAtSec = now2
+		state.legacyFetchedAt = nil
+		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
+			repo = repo,
+			issues = issues,
+			fetchedAtSec = state.fetchedAtSec,
+		})
 		cx:render()
 	end)
 end
@@ -353,6 +430,30 @@ local function nextSeq(): number
 	local seq = last + 1
 	tern.kv.set(SEQ_KEY, { n = seq })
 	return seq
+end
+
+--- 诊断：记下最近一次动作与派发正文长度。
+--- 真机上出现过「点了问下一步，实际发出的是技能注入」——光看代码分不清是谁写的，
+--- 所以留一条可读的痕迹，出问题看 kv 就知道。
+--- 最近 8 条，环形保留：刷新与聚焦会自动产生 refresh/auto-reload，
+--- 只存一条的话，等回来看时带信息的那条早被冲掉了。
+local TRACE_MAX = 8
+local function trace(kind: string, extra: string?)
+	if kind == "act" and (extra == "refresh" or extra == "auto-reload") then
+		return
+	end
+	local list: { any } = {}
+	local ok, old = pcall(tern.kv.get, "trace")
+	if ok and type(old) == "table" then
+		for _, item in ipairs(old) do
+			table.insert(list, item)
+		end
+	end
+	table.insert(list, { at = nowSec(), kind = kind, extra = extra or "" })
+	while #list > TRACE_MAX do
+		table.remove(list, 1)
+	end
+	pcall(tern.kv.set, "trace", list)
 end
 
 local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string): number
@@ -378,14 +479,15 @@ local function pickRepo(state: State, cx: BlockCx)
 	})
 end
 
---- 注入一段文本到邻近 agent（真正执行在窗口半边）。
+--- 把一段文本填进邻近 agent 的输入框（真正执行在窗口半边），不提交。
+--- 用户看过、补完自己的内容再按回车。
 ---
---- 宿主不能自己下"成功"的结论：注入可能失败（没 agent、agent 忙、投递出错）。
---- 所以这里只标"提交中"，等窗口半边把结果写回 RESULT_KEY 再改口。
+--- 宿主不能自己下"成功"的结论：填入可能失败（没 agent、写不进去）。
+--- 所以这里只标"填入中"，等窗口半边把结果写回 INJECT_RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
-	state.message = "提交中：" .. name
+	state.message = "填入中：" .. name
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -402,8 +504,8 @@ local function readResult(state: State)
 	state.pendingSeq = nil
 	local ok2 = value.ok == true
 	state.message = if ok2
-		then "已提交：" .. tostring(value.name or "")
-		else "提交失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
+		then "已填入：" .. tostring(value.name or "")
+		else "填入失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
 end
 
 --- 票的动作按钮：按票类型给出。
@@ -520,7 +622,10 @@ local function skillsView(state: State, cx: BlockCx): Node
 		lp.empty = { ui.span("空", "muted") }
 		lp.max = { lines = rows }
 		list.p = lp
-		table.insert(main, ui.card(ui.span(lane.title, "strong"), { list }, {
+		table.insert(main, ui.card(ui.span(lane.title, "strong"), {
+			ui.text(ui.span(lane.hint, "muted")),
+			list,
+		}, {
 			icon = "sparkle",
 			meta = ui.span(string.format("%d 个", n), "muted"),
 		}))
@@ -535,10 +640,35 @@ local function skillsView(state: State, cx: BlockCx): Node
 end
 
 --- 任务板区：地图列表与前沿票列表，都是可点的。
+--- 新增需求的两条路：需求还没摸清走 wayfinder 画地图；已经明确就直接 grill 收敛成 spec。
+--- 只甩一条 /wayfinder 会误导需求已经清楚的人。
+local function entryChooser(): Node
+	local col: { Node } = { ui.text(ui.span("新增需求 —— 先选一条路", "strong")) }
+	local row: { Node } = {}
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(row, ui.button(e.title, {
+			icon = if e.id == "explore" then "map" else "message",
+			size = "sm",
+			variant = "primary",
+			actions = { click = "new:" .. e.id },
+		}))
+	end
+	table.insert(col, ui.row(row))
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(col, ui.text({
+			ui.span("· " .. e.title .. "：", "muted"),
+			ui.span(e.hint, "muted"),
+		}))
+	end
+	return ui.col(col)
+end
+
 local function boardView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
-	if state.loading then
+	-- 已经有数据时刷新不清屏：清屏会让整块面板闪一下，
+	-- 而焦点切换本来就可能每分钟触发一次刷新。空板才给占位。
+	if state.loading and #state.tickets == 0 and #state.maps == 0 then
 		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
 		return ui.col(main)
 	end
@@ -570,27 +700,9 @@ local function boardView(state: State, cx: BlockCx): Node
 		}))
 	end
 
-	-- 空仓库给两条路，别只甩一条。
-	-- 只写「跑 /wayfinder」会误导需求已经明确的人：他不需要画地图，
-	-- 直接 grill 需求再 to-spec / to-tickets 更快。
-	if #state.tickets == 0 and state.repo then
-		table.insert(main, ui.text(ui.span("这个仓库还没有 issue —— 先选一条路", "strong")))
-		local entries: { Node } = {}
-		for _, e in ipairs(templates.ENTRIES) do
-			table.insert(entries, ui.button(e.title, {
-				icon = if e.id == "explore" then "map" else "message",
-				size = "sm",
-				variant = "primary",
-				actions = { click = "new:" .. e.id },
-			}))
-		end
-		table.insert(main, ui.row(entries))
-		for _, e in ipairs(templates.ENTRIES) do
-			table.insert(main, ui.text({
-				ui.span("· " .. e.title .. "：", "muted"),
-				ui.span(e.hint, "muted"),
-			}))
-		end
+	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。
+	if (#state.tickets == 0 and state.repo) or state.newDemand then
+		table.insert(main, entryChooser())
 	end
 
 	-- 地图
@@ -949,67 +1061,91 @@ local function ticketView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 工具条按钮的排版预算：图标 2 列 + 图标与文字间 1 列 + 左右内边距 2 列。
+--- 只用于决定换行，宁可估宽一点。
+local BUTTON_CHROME = 5
+local BUTTON_GAP = 1
+
+type ToolButton = {
+	label: string,
+	icon: string,
+	variant: string?,
+	key: string?,
+	click: string,
+}
+
 --- 顶部工具条：鼠标能点的视图切换与常用操作。
-local function toolbar(state: State): Node
-	local buttons: { Node } = {
-		ui.button("技能", {
-			icon = "sparkle",
-			size = "sm",
-			variant = if state.view == "skills" then "primary" else "default",
-			actions = { click = "view-skills" },
-		}),
-		ui.button("任务板", {
-			icon = "map",
-			size = "sm",
-			variant = if state.view == "board" then "primary" else "default",
-			actions = { click = "view-board" },
-		}),
-		ui.button("刷新", {
-			icon = "refresh",
-			size = "sm",
-			-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
-			-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
-			key = "refresh",
-			-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
-			-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
-			actions = { click = "reload" },
-		}),
-		ui.button("换仓库", {
-			icon = "repo",
-			size = "sm",
-			actions = { click = "pick-repo" },
-		}),
-		ui.button(if state.showHidden then "隐藏实验技能" else "显示实验技能", {
-			icon = "eye",
-			size = "sm",
-			actions = { click = "toggle-hidden" },
-		}),
+--- 面板宽度不一，按钮装不进一行就换行 —— 任何宽度下都不许把按钮裁掉。
+local function toolbar(state: State, cx: BlockCx): Node
+	local buttons: { ToolButton } = {
+		-- 常驻三条：参考实现里这两条路、提 BUG、体检是随时能按的
+		{ label = "新增需求", icon = "plus", click = "new-demand" },
+		{ label = "提 BUG", icon = "warning", click = "new-bug" },
+		{ label = "体检", icon = "check", click = "health-check" },
+		{ label = "技能", icon = "sparkle", click = "view-skills",
+			variant = if state.view == "skills" then "primary" else "default" },
+		{ label = "任务板", icon = "map", click = "view-board",
+			variant = if state.view == "board" then "primary" else "default" },
+		-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
+		-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
+		-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
+		-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
+		{ label = "刷新", icon = "refresh", key = "refresh", click = "reload" },
+		{ label = "换仓库", icon = "repo", click = "pick-repo" },
+		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
-	-- 任务板视图下多一个排序开关：票按创建时间排，默认最新在上。
+	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。
 	if state.view == "board" then
-		table.insert(buttons, ui.button(if state.sortNewest then "最新在上" else "最早在上", {
+		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
+		table.insert(buttons, {
+			label = if state.sortNewest then "最新在上" else "最早在上",
 			icon = "refresh",
-			size = "sm",
-			actions = { click = "toggle-sort" },
-		}))
+			click = "toggle-sort",
+		})
 	end
 	-- 技能视图下多一个注入按钮：技能侧的注入也要有鼠标入口（不只是键盘 i）。
 	if state.view == "skills" then
-		table.insert(buttons, ui.button("注入技能", {
-			icon = "send",
-			size = "sm",
-			variant = "primary",
-			actions = { click = "inject-skill" },
-		}))
+		table.insert(buttons, { label = "注入技能", icon = "send", variant = "primary", click = "inject-skill" })
 	end
-	return ui.row(buttons)
+
+	local widths: { number } = {}
+	for _, b in ipairs(buttons) do
+		table.insert(widths, util.textWidth(b.label) + BUTTON_CHROME)
+	end
+	local rows: { Node } = {}
+	for _, group in ipairs(util.packRows(widths, cx.cols, BUTTON_GAP)) do
+		local nodes: { Node } = {}
+		for _, idx in ipairs(group) do
+			local b = buttons[idx]
+			local props: { [string]: any } = {
+				icon = b.icon,
+				size = "sm",
+				actions = { click = b.click },
+			}
+			if b.variant then
+				props.variant = b.variant
+			end
+			if b.key then
+				props.key = b.key
+			end
+			table.insert(nodes, ui.button(b.label, props))
+		end
+		table.insert(rows, ui.row(nodes))
+	end
+	return ui.col(rows)
 end
 
---- 底部提示条：键位说明。
+--- 底部提示条：键位说明、数据时刻、最近一条提示。
+--- 自动刷新拉到 5 分钟后，光看面板分不清数据是刚拉的还是十分钟前的，
+--- 所以把拉取时刻直接摊在这里；要最新就按刷新。
 local function dockView(state: State): Node
 	local items: { Node } = {
 		ui.text(ui.span("点行看内容 · 点按钮操作", "muted")),
 	}
+	local at = fetchedLabel(state)
+	if at then
+		table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+	end
 	if state.message then
 		table.insert(items, ui.text(ui.span(state.message, "accent")))
 	end
@@ -1101,13 +1237,13 @@ tern.block.define(BLOCK_ID, {
 		readResult(state)
 		local main: Node
 		if state.view == "skills" then
-			main = ui.col({ toolbar(state), skillsView(state, cx) })
+			main = ui.col({ toolbar(state, cx), skillsView(state, cx) })
 		elseif state.view == "board" then
-			main = ui.col({ toolbar(state), boardView(state, cx) })
+			main = ui.col({ toolbar(state, cx), boardView(state, cx) })
 		elseif state.view == "map" then
-			main = ui.col({ toolbar(state), mapView(state, cx) })
+			main = ui.col({ toolbar(state, cx), mapView(state, cx) })
 		else
-			main = ui.col({ toolbar(state), ticketView(state, cx) })
+			main = ui.col({ toolbar(state, cx), ticketView(state, cx) })
 		end
 		return { main = main, dock = dockView(state) }
 	end,
@@ -1414,6 +1550,7 @@ tern.block.define(BLOCK_ID, {
 		end
 
 		local act = ev.act
+		trace("act", act)
 		-- 窗口半边执行完注入会戳一下，让宿主重画（读回写回的结果）。
 		if act == "refresh" then
 			readResult(state)
@@ -1439,6 +1576,48 @@ tern.block.define(BLOCK_ID, {
 		if act == "toggle-sort" then
 			state.sortNewest = not state.sortNewest
 			state.message = if state.sortNewest then "最新在上" else "最早在上"
+			return
+		end
+		if act == "next-step" then
+			if not state.repo then
+				state.message = "先识别到仓库，再问下一步"
+				return
+			end
+			inject(state, cx, templates.render(templates.NEXT_STEP, { repo = state.repo }), "问下一步")
+			return
+		end
+		if act == "new-demand" then
+			state.view = "board"
+			state.newDemand = not state.newDemand
+			state.message = nil
+			return
+		end
+		if act == "new-bug" then
+			inject(state, cx, templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" }), "提 BUG")
+			return
+		end
+		if act == "health-check" then
+			inject(state, cx, templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" }), "体检")
+			return
+		end
+		if act == "auto-reload" then
+			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
+			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 5 分钟。
+			-- 时钟拿不到就不刷：宁可少刷一次，也不能把节流闸整个绕过。
+			local now = nowSec()
+			if not now then
+				return
+			end
+			if state.loading then
+				return
+			end
+			if state.cooldownUntil and now < state.cooldownUntil then
+				return
+			end
+			if state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
+				return
+			end
+			loadBoard(state, cx)
 			return
 		end
 		if act == "reload" then
@@ -1505,6 +1684,7 @@ tern.block.define(BLOCK_ID, {
 			showHidden = state.showHidden,
 			repo = state.repo,
 			skillSel = state.skillSel,
+			newDemand = state.newDemand,
 		}
 	end,
 })

@@ -11,7 +11,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 runner="$here/run_tests.luau"
 # 拼接结果放在仓库里：Windows 的 luau.exe 读不了 WSL 的 /tmp。
-out="$here/.bundle.luau"
+# 拼好的 bundle 放插件目录外：插件目录里任何文件变动都会触发 Tern 热重载，
+# 而热重载会把正在跑的「问下一步」打断。放临时目录就彻底躲开这个副作用。
+# 放仓库的上一级：既在插件目录之外（不触发热重载），又和仓库同一磁盘，
+# 不会被 WSL 与 Windows 的 /tmp 路径差异绊住。
+out="$(cd "$here/../.." && pwd)/.tern-matt-panel.bundle.luau"
 trap 'rm -f "$out"' EXIT
 
 # 拼接会把所有模块先定义好，于是「host 里忘了 require 某个模块」这种错
@@ -47,6 +51,32 @@ case "$luau" in
 	;;
 esac
 
+# 未定义全局：写错作用域（把别处的局部变量当全局用）只有 luau-analyze 抓得到，
+# 真机上表现为 "attempt to call a nil value"，定位代价极高。实测漏过一个
+# `git -C cwd`（cwd 只存在于别的函数里）。
+# 只查 Unknown global 这一类并排除 tern：存量类型告警上百条，混进来就没人看了。
+# 分析器必须从 luau 同目录找 —— 它不在 PATH 上；找不到就大声说出来，别静默跳过。
+analyze=""
+for cand in "$(dirname "$luau")/luau-analyze" "$(dirname "$luau")/luau-analyze.exe" \
+	"$(dirname "$luau")/luau-analyze"; do
+	if [ -f "$cand" ] || [ -x "$cand" ]; then
+		analyze="$cand"
+		break
+	fi
+done
+if [ -z "$analyze" ]; then
+	echo "未跑未定义全局检查：$(dirname "$luau") 下没有 luau-analyze（同 luau releases）" >&2
+else
+	bad="$(cd "$repo" && "$analyze" --formatter=plain host.luau window.luau 2>&1 \
+		| grep "Unknown global" | grep -v "'tern'" || true)"
+	if [ -n "$bad" ]; then
+		echo "未定义全局（不是 tern API，是真 bug）：" >&2
+		echo "$bad" >&2
+		exit 1
+	fi
+fi
+
+
 python_cmd="$(command -v python3 || command -v python)"
 "$python_cmd" - "$runner" "$repo" "$out" <<'PY'
 import io
@@ -81,6 +111,7 @@ for name in ("host", "window"):
 	parts.append("do -- %s.luau\n%s\nend\n" % (name, body))
 parts.append(tail)
 
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
 with io.open(out_path, "w", encoding="utf-8", newline="\n") as fh:
 	fh.write("".join(parts))
 print(out_path)

@@ -4,7 +4,7 @@
 -- 面板本身在宿主半边（host.luau）。两个半边不共享 Lua 状态，
 -- 这里用 tern.kv 传令：宿主写 action 键，窗口轮询它并执行。
 --
--- cx.agents:ask 是 window-only，所以注入只能在这一侧完成。
+-- cx:run 是 window-only，所以「把提示词填进 agent 输入框」只能在这一侧完成。
 
 local commands = require("./lib/commands")
 local paths = require("./lib/paths")
@@ -13,8 +13,6 @@ local templates = require("./lib/templates")
 
 local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
-local RESULT_KEY = "result"
--- 注入结果单独一个键：RESULT_KEY 已被前沿/版本摘要占着。
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local POLL_MS = 300
@@ -54,7 +52,8 @@ local function openPanel(cx: WindowCx)
 	end
 end
 
---- 多行正文包成括号粘贴：agent 的输入框会整段粘进去，不会在第一个换行处提交。
+--- 多行正文包成括号粘贴：终端会当成一次粘贴整段塞进输入框，
+--- 不会在第一个换行处把消息提前发出去。
 local function pasteText(body: string): string
 	if string.find(body, "\n", 1, true) then
 		return "\27[200~" .. body .. "\27[201~"
@@ -123,50 +122,44 @@ local function agentFor(cx: WindowCx, panelPane: number): number?
 	return nil
 end
 
---- 把正文发给某个 agent。出错时返回错误说明。
-local function sendToAgent(cx: WindowCx, pane: number, body: string): string?
+--- 把正文填进某个 agent 的输入框，不提交。
+--- 用 cx:run 逐字打进 pane（多行包成括号粘贴），用户看过、补完再自己按回车。
+--- 出错时返回错误说明。
+local function fillAgent(cx: WindowCx, pane: number, body: string): string?
+	local isAgent = false
 	for _, agent in ipairs(cx.agents:list()) do
 		if agent.pane == pane then
-			if agent.state == "working" then
-				return "agent 正在忙，等它空闲再试"
-			end
+			isAgent = true
 			if agent.delivery_error then
 				return tostring(agent.delivery_error)
 			end
-			local ok, err = pcall(function()
-				cx.agents:ask(pane, body)
-			end)
-			if not ok then
-				return tostring(err)
-			end
-			return nil
+			break
 		end
 	end
-	return "找不到那个 agent"
+	if not isAgent then
+		return "找不到那个 agent"
+	end
+	local ok, err = pcall(function()
+		cx:run(pane, pasteText(body))
+	end)
+	if not ok then
+		return tostring(err)
+	end
+	return nil
 end
 
---- 状态栏用的数字：前沿票数与技能组版本。宿主半边算好后写在 result 键里。
-local summary = { frontier = 0, version = "—" }
-
-local function readSummary()
-	local ok, value = pcall(tern.kv.get, RESULT_KEY)
-	if not ok or type(value) ~= "table" then
-		return
+--- 写剪贴板：cx:copy 不返回值，只能区分「抛错」与「没抛错」。
+--- 返回错误说明；nil 表示没报错（不保证内容真进去了）。
+--- 真机上出现过复制静默失败，所以任何「已复制」的提示都必须经过这里，
+--- 抛错时要如实说出来，不能一律报成功。
+local function copyOrErr(cx: WindowCx, body: string): string?
+	local ok, err = pcall(function()
+		cx:copy(body)
+	end)
+	if ok then
+		return nil
 	end
-	local frontier = value.frontier
-	local version = value.version
-	local changed = false
-	if type(frontier) == "number" and frontier ~= summary.frontier then
-		summary.frontier = frontier
-		changed = true
-	end
-	if type(version) == "string" and version ~= summary.version then
-		summary.version = version
-		changed = true
-	end
-	if changed then
-		tern.chrome.refresh()
-	end
+	return tostring(err)
 end
 
 --- 执行宿主半边发来的请求。
@@ -217,11 +210,14 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
-	-- compose：把内容放进剪贴板，不提交。技能面板双击走这条 ——
-	-- tern 没有「只填输入框不发送」的接口（agents:ask 一定提交），
-	-- 复制到剪贴板是唯一不替用户做决定的做法。
+	-- compose：只把内容放进剪贴板，连输入框都不碰。
+	-- 技能面板双击走这条，用于「想换个地方贴」的场景。
 	if action.kind == "compose" then
-		cx:copy(action.body)
+		local err = copyOrErr(cx, action.body)
+		if err then
+			cx:toast("error", "复制失败：" .. tostring(action.name or ""), err)
+			return
+		end
 		cx:toast("info", "已复制：" .. tostring(action.name or ""), "粘到输入框再决定发不发。")
 		return
 	end
@@ -230,8 +226,8 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
-	-- 结果回写：宿主不能自己下"成功"的结论，注入可能失败。
-	-- 写回后戳宿主一下，让它重画（否则提示停在"提交中"）。
+	-- 结果回写：宿主不能自己下"成功"的结论，填入可能失败。
+	-- 写回后戳宿主一下，让它重画（否则提示停在"填入中"）。
 	local function report(ok: boolean, err: string?)
 		pcall(function()
 			tern.kv.set(INJECT_RESULT_KEY, {
@@ -243,7 +239,7 @@ local function handleAction(cx: WindowCx)
 		end)
 		-- 通知宿主重画：往 pane 发一个 action 事件，宿主的 event 处理里会读 kv。
 		-- id 必须指向真实节点 —— 宿主那边是工具条上的「刷新」按钮（key = "refresh"），
-		-- 节点 id 是 <区块>.<区域>.<按钮key>。用编造的 id 事件会被丢掉，提示会停在「提交中」。
+		-- 节点 id 是 <区块>.<区域>.<按钮key>。用编造的 id 事件会被丢掉，提示会停在「填入中」。
 		pcall(function()
 			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
 		end)
@@ -252,19 +248,21 @@ local function handleAction(cx: WindowCx)
 	local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
 	if not agent then
 		-- 没有 agent 就退到剪贴板，别让用户白点一次。
-		cx:copy(action.body)
-		cx:toast("info", "没有可用的 agent", "正文已复制到剪贴板。")
-		report(false, "没有可用的 agent（正文已复制到剪贴板）")
+		local copyErr = copyOrErr(cx, action.body)
+		local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
+		cx:toast("info", "没有可用的 agent", tail)
+		report(false, "没有可用的 agent（" .. tail .. "）")
 		return
 	end
-	local err = sendToAgent(cx, agent, pasteText(action.body))
+	local err = fillAgent(cx, agent, action.body)
 	if err then
-		cx:copy(action.body)
-		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（正文已复制）")
-		report(false, err)
+		local copyErr = copyOrErr(cx, action.body)
+		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
+		cx:toast("error", "填入失败：" .. tostring(action.name or ""), err .. "（" .. tail .. "）")
+		report(false, err .. "（" .. tail .. "）")
 		return
 	end
-	cx:toast("success", "已提交：" .. tostring(action.name or ""))
+	cx:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
 	report(true, nil)
 end
 
@@ -279,7 +277,6 @@ poll = function(cx)
 	if cx then
 		pcall(function()
 			handleAction(cx)
-			readSummary()
 		end)
 	end
 	tern.timer(POLL_MS, poll)
@@ -324,34 +321,62 @@ tern.command({
 			if not item or not cx then
 				return
 			end
-			cx:copy(item.body)
+			local copyErr = copyOrErr(cx, item.body)
 			local agent = lastAgent or agentPaneOf(cx)
 			if not agent then
+				if copyErr then
+					cx:toast("error", "没有聚焦的 agent", "剪贴板也写不进去：" .. copyErr)
+					return
+				end
 				cx:toast("info", "已复制：" .. item.label, "没有聚焦的 agent")
 				return
 			end
-			local err = sendToAgent(cx, agent, pasteText(item.body))
+			local err = fillAgent(cx, agent, item.body)
 			if err then
-				cx:toast("error", "提交失败：" .. item.label, err)
+				cx:toast("error", "填入失败：" .. item.label, err)
 				return
 			end
-			cx:toast("success", "已提交：" .. item.label)
+			cx:toast("success", "已填入输入框：" .. item.label)
 		end)
 	end,
 })
 
+--- 胶囊只当插件入口：不显示任何数字。
+--- 数字会随「当前是哪个仓库」变，而胶囊是窗口级的，切 tab 后对不上就是错的。
 tern.chrome.status(function(_pane)
 	return {
 		{
-			text = string.format("%d 可领 · 技能 %s", summary.frontier, summary.version),
+			text = "Matt",
 			icon = "tasks",
 			command = "plugin.tern-matt-panel.panel",
 		},
 	}
 end)
 
-tern.on("focus", function(_ev, cx)
+--- 聚焦时提醒面板「可以刷了」。
+--- 只戳「刚拿到焦点的那个 tab」里的面板：别的 tab 里开着的面板不该跟着刷，
+--- 否则每个 tab 各开一个面板时，一次切 tab 会把所有面板同时拉一遍。
+--- 拉不拉仍由宿主按 5 分钟节流，这里只负责把「这个 tab 亮了」这个事实传过去。
+local function pingPanelsInTab(cx: WindowCx, tab: number)
+	local ok, panes = pcall(cx.session.panes, cx.session)
+	if not ok or type(panes) ~= "table" then
+		return
+	end
+	for _, p in ipairs(panes) do
+		-- 插件块的 program 就是「插件id.块id」（见 tern ls）
+		if p.tab == tab and (p.program == KIND or p.kind == KIND) then
+			pcall(function()
+				cx.session:event(p.pane, { ev = "action", id = "main.refresh", act = "auto-reload" })
+			end)
+		end
+	end
+end
+
+tern.on("focus", function(ev: any, cx)
 	rememberAgent(cx)
+	if ev and type(ev.tab) == "number" then
+		pingPanelsInTab(cx, ev.tab)
+	end
 end)
 
 -- 窗口重启后第一次看到的请求当作已处理，避免重复注入。
