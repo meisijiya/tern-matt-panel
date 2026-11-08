@@ -447,17 +447,17 @@ case_run "技能注入有鼠标入口" "$TMP/back_skills.sc" \
 	"click-btn-until:技能:ask-matt:15000" \
 	"has:注入技能"
 
-# 8. 注入后提示从"提交中"变成结果（结果回写通道）
-# 断言"不再是提交中"而不是断言具体成功失败 —— 测试环境里可能没有邻近 agent，
+# 8. 注入后提示从"填入中"变成结果（结果回写通道）
+# 断言"不再是填入中"而不是断言具体成功失败 —— 测试环境里可能没有邻近 agent，
 # 成功与否取决于环境，回写通道本身才是被测对象。
 cat > "$TMP/inject.sc" <<EOF
 wait 100
 EOF
 case_run "注入结果回写" "$TMP/inject.sc" \
 	"click-sel-until:.sf-item:sf-md:20000" \
-	"click-btn-until:注入技能:提交中:10000" \
-	"wait-for:提交失败:20000" \
-	"lacks:提交中"
+	"click-btn-until:注入技能:填入中:10000" \
+	"wait-for:填入失败:20000" \
+	"lacks:填入中"
 
 # 9. 「刷新」按钮重新拉数据（它的动作名与窗口戳宿主用的 refresh 刻意分开）
 cat > "$TMP/reload.sc" <<EOF

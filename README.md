@@ -77,7 +77,7 @@ test/          luau CLI 桩测试
 两个半边不共享 Lua 状态，用 `tern.kv` 传令：宿主写请求 → 窗口轮询 → 执行 → 结果回写。
 
 - **数据获取在宿主半边**：`gh` 子进程、读技能目录都在这里（实测见 `docs/research/host-half-runtime.md`）。
-- **注入在窗口半边**：`cx.agents:ask` 是 window-only（`docs/research/host-async-render.md`）。
+- **注入在窗口半边**：`cx:run` / `cx.agents:ask` 都是 window-only（`docs/research/host-async-render.md`）。注入用 `cx:run` 打字，不提交。
 
 ## 任务板数据源
 

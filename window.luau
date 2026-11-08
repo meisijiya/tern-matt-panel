@@ -4,7 +4,7 @@
 -- 面板本身在宿主半边（host.luau）。两个半边不共享 Lua 状态，
 -- 这里用 tern.kv 传令：宿主写 action 键，窗口轮询它并执行。
 --
--- cx.agents:ask 是 window-only，所以注入只能在这一侧完成。
+-- cx:run 是 window-only，所以「把提示词填进 agent 输入框」只能在这一侧完成。
 
 local commands = require("./lib/commands")
 local paths = require("./lib/paths")

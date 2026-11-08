@@ -5,7 +5,7 @@
 -- docs/research/host-half-runtime.md）。异步回调里改 state 再 cx:render() 即可重画，
 -- 不必绕 kv（见 docs/research/host-async-render.md）。
 --
--- 需要窗口半边才能做的只有一件：把提示词注入邻近 agent（cx.agents:ask 是 window-only）。
+-- 需要窗口半边才能做的只有一件：把提示词填进邻近 agent 的输入框（cx:run 是 window-only）。
 -- 那一段走 tern.kv 传令：这里写 action 键，窗口半边轮询并执行。
 
 local ui = tern.ui
