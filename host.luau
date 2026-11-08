@@ -466,12 +466,25 @@ end
 --- 诊断：记下最近一次动作与派发正文长度。
 --- 真机上出现过「点了问下一步，实际发出的是技能注入」——光看代码分不清是谁写的，
 --- 所以留一条可读的痕迹，出问题看 kv 就知道。
+--- 最近 8 条，环形保留：刷新与聚焦会自动产生 refresh/auto-reload，
+--- 只存一条的话，等回来看时带信息的那条早被冲掉了。
+local TRACE_MAX = 8
 local function trace(kind: string, extra: string?)
-	pcall(tern.kv.set, "trace", {
-		at = nowSec(),
-		kind = kind,
-		extra = extra or "",
-	})
+	if kind == "act" and (extra == "refresh" or extra == "auto-reload") then
+		return
+	end
+	local list: { any } = {}
+	local ok, old = pcall(tern.kv.get, "trace")
+	if ok and type(old) == "table" then
+		for _, item in ipairs(old) do
+			table.insert(list, item)
+		end
+	end
+	table.insert(list, { at = nowSec(), kind = kind, extra = extra or "" })
+	while #list > TRACE_MAX do
+		table.remove(list, 1)
+	end
+	pcall(tern.kv.set, "trace", list)
 end
 
 local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string): number
