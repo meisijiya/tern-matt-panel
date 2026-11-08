@@ -36,233 +36,138 @@ local TEMPLATES: { Template } = {
 }
 M.TEMPLATES = TEMPLATES
 
---- 「问下一步」：把任务板快照装进信封，交给会话里的 /skill:ask-matt 排序。
---- 面板自己不做判断：它只提供可核对的事实（票、依赖方向、规格进度、文档锚点）
---- 和排序判据。缺事实时要求 agent 自己用 gh 核实，而不是顺着快照猜。
+--- 公共小节：好几条模板共用同一段话，只写一遍，改一次就全改。
+--- 不内嵌技能正文：这里只是「调用哪个技能 + 用什么方式想 + 交付什么」。
+local FIRST = "从第一性原理出发。"
+
+local INVESTIGATION = table.concat({
+	"## 调查（先查后问）",
+	"- [ ] 先读票正文、评论与仓内相关内容，再提问。",
+	"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
+	"- [ ] 既有笔记答不了，再按 /research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
+	"- [ ] 提问前用一句话说明已查阅范围。",
+}, "\n")
+
+local TOOLS = table.concat({
+	"## 工具",
+	"- [ ] 票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
+	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
+}, "\n")
+
+--- 「问下一步」：只调 ask-matt 技能，外加一段写清怎么想、怎么给的提示。
+--- 面板不再搬运任务板快照：事实由会话自己用 gh 核，面板只给判断顺序与交付形状。
 M.NEXT_STEP = {
 	id = "next-step",
 	title = "问下一步",
 	body = table.concat({
 		"/skill:ask-matt",
-		"项目 {repo} 的任务板，{rootLabel}：{root}",
-		"数据源：GitHub issue（gh issue list）；不一致时以 gh 的结果为准。",
 		"",
-		"判断前先读这几处；文件不存在就跳过，不用报告缺失，也不要凭空引用：",
-		"- 领域词汇：{root}/GLOSSARY.md",
-		"- 已定决策：{root}/docs/adr/",
-		"- 规格：{root}/docs/spec/",
+		FIRST,
 		"",
-		"可领（未关闭、未认领、无 OPEN 阻塞）共 {claimableCount} 张：",
-		"{claimable}",
+		"项目 {repo}。判断这个项目此刻的下一步该做什么。",
 		"",
-		"已认领共 {assignedCount} 张：",
-		"{assigned}",
+		"## 边界",
+		"- [ ] 只做分析：不改仓库、不认领票、不关闭票、不建 PR。",
+		"- [ ] 结论必须能被别人复核：每条都写清你实际读过哪个票号或哪个文件。",
 		"",
-		"被阻塞共 {blockedCount} 张：",
-		"{blocked}",
+		"## 先自己核事实",
+		"- [ ] 用 gh 读开放票与依赖（gh issue list --state open），再用 git status 看手上有没有半成品；不要凭记忆猜进度。",
+		"- [ ] 仓里这几处存在就先读，不存在就跳过，不要引用不存在的东西：GLOSSARY.md、docs/adr/、docs/spec/。",
 		"",
-		"地图：",
-		"{maps}",
+		"## 判断顺序（前一档有就不要再往后看）",
+		"- [ ] 有坏的正：能复现的故障优先于任何新功能。",
+		"- [ ] 有卡住的活：已认领却停住的、被阻塞但阻塞方已关闭的。",
+		"- [ ] 能解锁下游最多的一件事。",
+		"- [ ] 都不明显时按阶段：盘问 > 调研 > 原型 > 执行。",
 		"",
-		"已关闭：{closedLine}",
-		"",
-		"规格（含已关闭的，to-spec 的产物与其工单进度）：",
-		"{specs}",
-		"",
-		"流程链：/skill:ask-matt 定位 → /skill:grill-with-docs 盘问（写 GLOSSARY/ADR）→ /skill:to-spec → /skill:to-tickets 拆票 → /skill:implement 逐票实施（小改在同一上下文直接 /skill:implement）→ /skill:tdd → /skill:code-review → /skill:pr。大而模糊才用 /skill:wayfinder；坏了用 /skill:diagnosing-bugs。",
-		"",
-		"排序判据，按序比较：",
-		"1. 解锁下游多者优先（票行里的「被 #N 等待」就是下游）；",
-		"2. 同档按阶段：grilling > research > prototype > task；",
-		"3. 仍同档，创建时间旧者优先。",
-		"以上字段全部来自 gh，不含正文、迷雾、范围外与 spec 细节；需要就用 gh 读。不要编造票号、标题、标签或依赖。",
-		"",
-		"输出（最多 3 张，不要复述整份清单）：",
-		"| 票 | 为什么是现在 | 技能命令 | 第一步动作 |",
-		"每张票下面一行「依据：…」写你实际读过的票号或文件。",
+		"## 交付",
+		"- [ ] 最多 3 条，每条一行：做什么 · 用哪个技能命令 · 第一步具体动作 · 一句依据。",
+		"- [ ] 最后一行写「没核到的：…」；全都核到了就写「没核到的：无」。",
 	}, "\n"),
 }
 
---- 「问下一步」的派发头：让接收方起一个 task 子代理去做排序。
---- 子代理会出现在 omp 的 Agents 列表里，模型与过程都看得见；
---- 面板自己不起进程，也不猜模型。
-M.NEXT_STEP_DISPATCH = {
-	id = "next-step-dispatch",
-	title = "派发问下一步",
+--- 「提 BUG」：按 wayfinder 规则建 bug 票，正文给报告人四项填空，
+--- 建单前强制扫一遍已有 bug 票查重（关键词搜索会漏，必须全扫）。
+M.NEW_BUG = {
+	id = "new-bug",
+	title = "提 BUG",
 	body = table.concat({
-		"用 task 子代理完成下面这份任务板快照的排序：子代理独立上下文，模型按你的 task 路由。",
-		"子代理只做分析——不要改仓库、不要认领或关闭票。",
-		"把它的最终表格与「依据」原样贴回来，不要改写或摘要。",
+		"/skill:wayfinder",
+		"请帮我新增一个 BUG 单（严格遵循 wayfinder 技能规则）。",
 		"",
-		"---",
+		FIRST,
 		"",
+		"仓库：{repo}",
+		"新建的单必须带 bug 标签；还没诊断过就同时带 needs-triage。",
+		"",
+		"## 澄清",
+		"- [ ] 有假设先用 grilling 澄清，不默认；已给的不重问。",
+		"- [ ] 四项全空时先回问报告人，不要替他编；只答出一部分就照常建单，缺的地方标 needs-info。",
+		"",
+		"下面四项是帮报告人把情况说清楚的提示，不是四道必答题：知道多少写多少，说不清的可以空着。",
+		"实际（看到了什么现象；知道影响范围就一并写上）：",
+		"期望（原本预期是什么样；与实际看到的差异写清楚）：",
+		"复现步骤（能说清前置条件和场景就先写，再按编号步骤写；偶发的话写下大概频率）：",
+		"环境信息（知道的话写 OS 版本、软件版本、运行环境）：",
+		"",
+		INVESTIGATION,
+		"",
+		"## 查重（建单前必做）",
+		"- [ ] 收齐「实际」后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",
+		"- [ ] 标题像的用 gh issue view 看正文；清单没取全就把这句写进查重记录。",
+		"- [ ] 有命中时先别下结论：把最多 3 个候选（编号、标题、像在哪）列给报告人，问一句「这些是不是同一个问题」，等到回答再决定。",
+		"- [ ] 同一个问题且旧单开着：不建新单，在旧单下评论补现象与复现步骤，旧单不关。",
+		"- [ ] 同一个问题且旧单已关闭：按回归处理，建新单并在正文写明「回归：原单 #编号」。",
+		"- [ ] 报告人确认不是，或没有命中：建新单，正文写明看过的候选与报告人的回答。",
+		"",
+		"## 查重记录（写进新单正文，没有命中也要写）",
+		"- [ ] 扫描：查了哪些状态与标签、各拿到多少张。",
+		"- [ ] 命中：候选编号与标题；没有就写「无」。",
+		"- [ ] 报告人确认：怎么回答的。",
+		"- [ ] 结论：新建 / 关联哪张旧单 / 按回归新建。",
+		"",
+		TOOLS,
 	}, "\n"),
 }
 
---- 每桶最多列多少张，避免把整个任务板塞进提示词。
-local BRIEF_MAX = 12
-
-export type TicketBrief = {
-	number: number,
-	title: string,
-	type: string?,
-	blockedBy: { number },
-	parent: number?,
-	createdAt: string?,
-	-- 非 wayfinder:* 的标签：测试数据、优先级这类信号都在这里
-	labels: { string }?,
-	assignees: { string }?,
+--- 「体检」：把游离的开放票归位。只做两种结构动作（挂到地图下、开新地图），
+--- 先出建议清单，人点头才动手；其余一律不碰。
+M.HEALTH_CHECK = {
+	id = "health-check",
+	title = "体检",
+	body = table.concat({
+		"/skill:wayfinder",
+		"请给这个仓库的开放票做一次体检，把游离的票归位（严格遵循 wayfinder 技能规则）。",
+		"",
+		FIRST,
+		"",
+		"仓库：{repo}",
+		"范围是整个仓库的开放票，不跟随面板当前的筛选。",
+		"",
+		"## 一、什么算游离",
+		"三条同时成立才算：票未关闭、票自己不是地图、票没有父票（不在任何地图的子票里）。",
+		"不按标签排除：写着等人动手、写着不打算做的票同样算游离，标签只在报告里用来分区。",
+		"在此之上对每张游离票判一句「这张能不能单张票处理掉」：能的话也可以留在原地，只在报告里登记一行并写明理由。",
+		"",
+		"## 二、只做两件结构动作",
+		"1. 建原生子议题边：把票挂到合适的地图下。",
+		"2. 为人点过头的票开一张新地图。",
+		"一律不碰：已关闭的票、任何票的标题与正文、标签与认领状态、别的仓库；不关闭票、不删评论、不改源码、不发版、不提交。清单里要动其中任何一项的，都不做，改成写进建议等人处理。",
+		"",
+		"## 三、交付：先出建议清单，等人点头才动手",
+		"- [ ] 每条写一句结论：挂到哪张地图下 / 建议自立成一张新地图 / 建议留在原地不动，各配一句理由。",
+		"- [ ] 写完停下来等点头。不要自动往票上写评论：动手留下的原生边就是留痕。",
+		"",
+		"## 四、挑地图的判据",
+		"- [ ] 读每张地图的 Destination 与 Notes 做语义归类。",
+		"- [ ] 挑不出唯一一张就列 2 到 3 个候选让人选，不硬选；一张都不合适就按第三节建议自立成图（只写最小的 Destination 草稿）；连自立也说不通，就建议留在原地并写明理由。",
+		"",
+		"## 五、当前后端的科目",
+		"GitHub 后端：用 gh 读票与依赖（gh issue list / gh issue view）；写边只用 gh 的 issue 依赖接口，其余写操作一概不做。",
+		"",
+		TOOLS,
+	}, "\n"),
 }
-
-export type SpecBrief = {
-	number: number,
-	title: string,
-	open: number,
-	total: number,
-	-- "OPEN" / "CLOSED"：已关闭的 spec 和进行中的不是一回事，别并列
-	state: string?,
-}
-
-export type NextStepExtra = {
-	-- 仓库根目录：给 agent 指 GLOSSARY / ADR / spec 的去处
-	root: string?,
-	-- root 是真 git 仓库根（true），还是退化成了当前工作目录（nil/false）
-	rootIsRepo: boolean?,
-	-- 全部未关闭的票：用来算「被谁等待」这个反向依赖
-	all: { TicketBrief }?,
-	specs: { SpecBrief }?,
-	-- 已关闭的票（只取数量与最近几张的标题）
-	closed: { TicketBrief }?,
-}
-
-local function ticketLine(t: TicketBrief, waitedBy: { string }): string
-	local kind = if t.type then "wayfinder:" .. t.type else "无类型"
-	local line = string.format("- #%d %s %s", t.number, kind, t.title)
-	if t.createdAt and #t.createdAt >= 10 then
-		line = line .. " · " .. string.sub(t.createdAt, 1, 10)
-	end
-	if t.parent then
-		line = line .. string.format(" · 父 #%d", t.parent)
-	end
-	if #t.blockedBy > 0 then
-		local nums: { string } = {}
-		for _, n in ipairs(t.blockedBy) do
-			table.insert(nums, "#" .. tostring(n))
-		end
-		line = line .. " · 等 " .. table.concat(nums, ",")
-	end
-	if #waitedBy > 0 then
-		line = line .. " · 被 " .. table.concat(waitedBy, ",") .. " 等待"
-	end
-	if t.assignees and #t.assignees > 0 then
-		line = line .. " · @" .. table.concat(t.assignees, ",@")
-	end
-	-- wayfinder:* 已经用类型表达过了，剩下的标签才是额外信息（测试数据、优先级…）
-	local extra: { string } = {}
-	for _, label in ipairs(t.labels or {}) do
-		if not string.find(label, ":", 1, true) then
-			table.insert(extra, label)
-		end
-	end
-	if #extra > 0 then
-		line = line .. " · 标签 " .. table.concat(extra, ",")
-	end
-	return line
-end
-
---- 反向依赖：哪些票的 blockedBy 里出现了这张票。
-local function waitedIndex(all: { TicketBrief }): { [number]: { string } }
-	local out: { [number]: { string } } = {}
-	for _, t in ipairs(all) do
-		for _, b in ipairs(t.blockedBy) do
-			local list = out[b]
-			if not list then
-				list = {}
-				out[b] = list
-			end
-			table.insert(list, "#" .. tostring(t.number))
-		end
-	end
-	return out
-end
-
---- 已关闭只给数量与最近几张标题：判断「这个阶段收没收尾」用它，不必把整组搬进来。
-local CLOSED_MAX = 5
-local function closedText(items: { TicketBrief }): string
-	if #items == 0 then
-		return "0 张"
-	end
-	local titles: { string } = {}
-	for i, t in ipairs(items) do
-		if i > CLOSED_MAX then
-			break
-		end
-		table.insert(titles, string.format("#%d %s", t.number, t.title))
-	end
-	local tail = if #items > CLOSED_MAX then string.format("，另有 %d 张", #items - CLOSED_MAX) else ""
-	return string.format("%d 张（最新建立的：%s%s）", #items, table.concat(titles, "；"), tail)
-end
-
-local function bucketText(items: { TicketBrief }, waited: { [number]: { string } }): string
-	if #items == 0 then
-		return "（无）"
-	end
-	local out: { string } = {}
-	for i, t in ipairs(items) do
-		if i > BRIEF_MAX then
-			table.insert(out, string.format("- …还有 %d 张", #items - BRIEF_MAX))
-			break
-		end
-		table.insert(out, ticketLine(t, waited[t.number] or {}))
-	end
-	return table.concat(out, "\n")
-end
-
---- 把任务板快照摊成模板占位符的值。纯函数，好单测。
-function M.nextStepVars(
-	repo: string,
-	buckets: { claimable: { TicketBrief }, assigned: { TicketBrief }, blocked: { TicketBrief } },
-	maps: { { number: number, title: string } },
-	extra: NextStepExtra?
-): { [string]: string }
-	local waitList = if extra and extra.all then waitedIndex(extra.all) else {}
-
-	local mapLines: { string } = {}
-	for _, m in ipairs(maps) do
-		table.insert(mapLines, string.format("- #%d %s", m.number, m.title))
-	end
-
-	local specLines: { string } = {}
-	for _, s in ipairs(if extra and extra.specs then extra.specs else {}) do
-		local state = if s.state == "CLOSED" then "已关闭" else "进行中"
-		local progress = if s.total == 0
-			then "未拆工单"
-			else string.format("未完成 %d 张，共 %d 张", s.open, s.total)
-		table.insert(specLines, string.format(
-			"- #%d %s · %s · %s",
-			s.number,
-			s.title,
-			state,
-			progress
-		))
-	end
-
-	return {
-		repo = repo,
-
-		closedLine = closedText(extra and extra.closed or {}),
-		root = if extra and extra.root then extra.root else "（未知，按当前工作目录找）",
-		rootLabel = if extra and extra.rootIsRepo then "仓库根目录" else "当前工作目录",
-		claimableCount = tostring(#buckets.claimable),
-		assignedCount = tostring(#buckets.assigned),
-		blockedCount = tostring(#buckets.blocked),
-		claimable = bucketText(buckets.claimable, waitList),
-		assigned = bucketText(buckets.assigned, waitList),
-		blocked = bucketText(buckets.blocked, waitList),
-		maps = if #mapLines > 0 then table.concat(mapLines, "\n") else "（无）",
-		specs = if #specLines > 0 then table.concat(specLines, "\n") else "（无）",
-	}
-end
 
 --- 仓库空的时候给两条路，对应参考实现的「探索地图 / 实施地图」二选一：
 --- 需求还没摸清走 wayfinder 画地图；需求已经明确直接 grill 收敛成 spec。
@@ -274,13 +179,50 @@ local ENTRIES: { Entry } = {
 		id = "explore",
 		title = "还没想清楚：建路线图",
 		hint = "跑 /wayfinder 画一张地图，把未知与范围拆成决策票",
-		body = "请使用 /wayfinder 技能，为这个仓库建立一张路线图（地图 issue）。\n仓库：{repo}",
+		body = table.concat({
+			"/skill:wayfinder",
+			"请帮我处理一个需求（严格遵循 wayfinder 技能规则）。",
+			"",
+			FIRST,
+			"",
+			"仓库：{repo}",
+			"",
+			INVESTIGATION,
+			"",
+			"## 并行与串行",
+			"- [ ] 画 map、定 sub-issue 时就把并行与串行想清楚：能同时开工、互不等待就是并行，不用另外标注——并行就是彼此之间不连 blockedBy 边；必须等前一个办完才能开工的才是串行，后一个的 blockedBy 指着前一个。",
+			"- [ ] 串行只留在真有先后要求的地方：后一个要用前一个的结论、共用同一组文件或接口、合拢会打架的，先串行；各自独立、合拢不打架的，才并行。",
+			"",
+			"## 收尾",
+			"- [ ] 结束前把 blockedBy 再查一遍：不多不少、串行链条没断没绕圈、并行的票真能同时开工；对不上先把边改对。",
+			"- [ ] 建了新 map 就写明编号，并说清哪些 sub-issue 并行、哪些串行、谁等谁；没建成就写明下一步。",
+			"",
+			TOOLS,
+		}, "\n"),
 	},
 	{
 		id = "implement",
 		title = "需求已明确：直接对齐",
 		hint = "跑 /grill-with-docs 把需求问清，再 /to-spec → /to-tickets 拆成可做的票",
-		body = "请使用 /grill-with-docs 技能，把下面这件事问清楚，收敛成可执行的 spec。\n仓库：{repo}\n\n需求：",
+		body = table.concat({
+			"/skill:grill-with-docs",
+			"请帮我讨论一个需求（严格遵循 grill-with-docs 技能规则）。",
+			"",
+			FIRST,
+			"",
+			"仓库：{repo}",
+			"",
+			INVESTIGATION,
+			"",
+			"## 需求",
+			"（在这里写清这一次要讨论什么）",
+			"",
+			"## 收尾（下面两步由用户手动执行，不要替他做）",
+			"- [ ] 讨论结束、结论对齐后，提醒用户手动执行一次 /to-spec，把结论生成规格 issue。",
+			"- [ ] 规格 issue 生成后，再提醒用户手动执行一次 /to-tickets，把规格拆成实施 issue。",
+			"",
+			TOOLS,
+		}, "\n"),
 	},
 }
 M.ENTRIES = ENTRIES

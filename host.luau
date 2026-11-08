@@ -51,13 +51,6 @@ local COOLDOWN_SEC = 60
 --- 焦点事件很频繁（切 pane 就触发），真正省配额的是这道闸。
 local AUTO_REFRESH_SEC = 60
 
---- 一次「问下一步」最多等多久：子代理要读票与文档，实测 1~3 分钟。
---- 超时后卡片标超时，不再等它。
-local NEXT_STEP_TIMEOUT_MS = 300000
--- 结果另存一份到 kv：块被重建（插件热重载/窗口重排）时 state 会整个换掉，
--- 只存内存的话一分钟的答案就没了。
-local NEXT_STEP_KEY = "nextStepResult"
-
 local ACTION_KEY = "action"
 local RESULT_KEY = "result"
 -- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
@@ -71,18 +64,6 @@ local BLOCK_ID = "matt"
 type View = "skills" | "board" | "map" | "ticket"
 
 --- 一次「问下一步」的状态。独立进程跑完才有结论，中间态要能渲染。
-type NextStep = {
-	phase: "running" | "done" | "error",
-	-- 该结果属于哪个仓库：切仓库后旧答案不许盖到新仓库上
-	repo: string?,
-	text: string,
-	err: string?,
-	-- 非致命提示（例如 omp 警告 MCP 连不上），成功时也可能有
-	warn: string?,
-	model: string?,
-	seconds: number?,
-}
-
 type State = {
 	view: View,
 	-- 技能面板
@@ -100,6 +81,8 @@ type State = {
 	ticketSel: number?,
 	-- 票按创建时间排：默认最新在上
 	sortNewest: boolean,
+	-- 工具条「新增需求」把两条路叫出来，选完或再按一次收起
+	newDemand: boolean,
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
@@ -109,10 +92,6 @@ type State = {
 	cooldownUntil: number?,
 	-- 上次真正发出拉取的时刻；自动刷新按它节流
 	lastLoadAt: number?,
-	-- 「问下一步」的一次性结果（独立进程，不碰任何会话）
-	nextStep: NextStep?,
-	-- 本次派发的序号：结果回来时用它认领，避免旧结果盖新结果
-	pendingNextStepSeq: number?,
 	-- 抓取时刻的唯一真源：秒数。显示用的字符串每次都从它格式化，
 	-- 不再另存一份 —— 两个字段并存时真机出现过「时间字符串」与「年龄」
 	-- 互相矛盾（同一对数据却给出 4.8 分钟和 254 分钟两个答案）。
@@ -139,6 +118,7 @@ local function blank(): State
 	return {
 		view = "skills",
 		sortNewest = true,
+		newDemand = false,
 		skills = {},
 		lanes = {},
 		skillSel = nil,
@@ -153,8 +133,6 @@ local function blank(): State
 		bodyLoading = nil,
 		cooldownUntil = nil,
 		lastLoadAt = nil,
-		nextStep = nil,
-		pendingNextStepSeq = nil,
 		fetchedAtSec = nil,
 		legacyFetchedAt = nil,
 		message = nil,
@@ -345,9 +323,6 @@ local function loadBoard(state: State, cx: BlockCx)
 			state.ticketSel = nil
 			state.fetchedAtSec = nil
 			state.legacyFetchedAt = nil
-			-- 走到这里就说明仓库变了：旧建议必须跟着走，否则拿 A 的建议指导 B。
-			-- 同一仓库重新拉取不会进这个分支，建议自然保留。
-			state.nextStep = nil
 		end
 		state.repo = repo
 		state.repoManual = manual
@@ -520,136 +495,6 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	state.message = "提交中：" .. name
 end
 
---- 「问下一步」的注入正文：把任务板快照摊成模板占位符。
---- 面板不做判断，判断留给会话里的 /skill:ask-matt；这里只保证事实够它判断。
-local function nextStepBody(state: State, cx: BlockCx): string
-	local b = tracker.classify(state.tickets)
-	local maps: { { number: number, title: string } } = {}
-	for _, m in ipairs(state.maps) do
-		table.insert(maps, { number = m.number, title = m.title })
-	end
-	-- 反向依赖要跨整板算，所以要全量未关闭的票，不只是某一桶。
-	local open: { tracker.Ticket } = {}
-	for _, t in ipairs(state.tickets) do
-		if t.state == "OPEN" then
-			table.insert(open, t)
-		end
-	end
-	local closed: { any } = {}
-	for _, t in ipairs(tracker.sortByCreated(b.closed :: any, true)) do
-		table.insert(closed, { number = t.number, title = t.title, type = t.type, blockedBy = t.blockedBy })
-	end
-	-- 标签与认领人是「这张票是不是真活」的关键信号，单靠标题读不出来。
-	local brief: { any } = {}
-	for _, t in ipairs(open) do
-		table.insert(brief, {
-			number = t.number,
-			title = t.title,
-			type = t.type,
-			blockedBy = t.blockedBy,
-			parent = t.parent,
-			createdAt = t.createdAt,
-			labels = t.labels,
-			assignees = t.assignees,
-		})
-	end
-	local specs: { any } = {}
-	for _, entry in ipairs(tracker.groupBySpec(state.tickets)) do
-		local unfinished = 0
-		for _, kid in ipairs(entry.tickets) do
-			if kid.state == "OPEN" then
-				unfinished += 1
-			end
-		end
-		table.insert(specs, {
-			number = entry.spec.number,
-			title = entry.spec.title,
-			open = unfinished,
-			total = #entry.tickets,
-			state = entry.spec.state,
-		})
-	end
-	local extra: templates.NextStepExtra = {
-		root = state.root or (if cx.cwd and cx.cwd ~= "" then cx.cwd else nil),
-		rootIsRepo = state.root ~= nil,
-		all = brief :: any,
-		specs = specs,
-		closed = closed :: any,
-	}
-	return templates.render(templates.NEXT_STEP, templates.nextStepVars(state.repo :: string, b :: any, maps, extra))
-end
-
-
---- 「问下一步」：把任务板快照派给相邻 agent，让它用 task 子代理排序。
---- 子代理在 omp 的 Agents 列表里可见（模型、进度、花费都看得到），
---- 面板只负责装信封与读回结果，不起进程、不猜模型。
-local function runNextStep(state: State, cx: BlockCx)
-	if state.nextStep and state.nextStep.phase == "running" then
-		state.message = "上一次还在问，等它回来"
-		return
-	end
-	if not state.repo then
-		state.message = "先识别到仓库与票，再问下一步"
-		return
-	end
-	local body = templates.NEXT_STEP_DISPATCH.body .. nextStepBody(state, cx)
-	trace("next-step", string.format("kind=ask-subagent bodyLen=%d", #body))
-	local seq = sendAction(state, cx, "ask-subagent", body, "问下一步")
-	state.pendingNextStepSeq = seq
-	state.nextStep = { phase = "running", repo = state.repo, text = "" }
-	state.message = "已派给子代理，等它算完"
-
-	-- 看门狗：子代理可能一直不回来。到点把卡片标超时并重画，别让它永远转圈。
-	local startedAt = nowSec()
-	local seqAtStart = seq
-	tern.timer(NEXT_STEP_TIMEOUT_MS + 5000, function()
-		local ns = state.nextStep
-		if not ns or ns.phase ~= "running" or state.pendingNextStepSeq ~= seqAtStart then
-			return
-		end
-		ns.phase = "error"
-		ns.err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
-		ns.seconds = if nowSec() and startedAt then (nowSec() :: number) - startedAt else nil
-		state.message = "问下一步超时"
-		pcall(tern.kv.set, NEXT_STEP_KEY, ns)
-		cx:render()
-	end)
-end
-
---- 读子代理回写的结果：窗口半边在 agent 空闲后把最后一条回复写进 kv。
-local function readNextStepResult(state: State, cx: BlockCx)
-	local ns = state.nextStep
-	if not ns or ns.phase ~= "running" then
-		return
-	end
-	local ok, value = pcall(tern.kv.get, NEXT_STEP_KEY)
-	if not ok or type(value) ~= "table" then
-		return
-	end
-	if value.seq ~= state.pendingNextStepSeq then
-		return
-	end
-	-- 派发时的仓库和现在不一致：整张卡作废，别拿 A 的答案指导 B
-	if ns.repo ~= nil and state.repo ~= nil and ns.repo ~= state.repo then
-		state.nextStep = nil
-		state.message = "换了仓库，上一次的询问结果已丢弃"
-		cx:render()
-		return
-	end
-	local text = util.trim(tostring(value.text or ""))
-	local err = if value.ok == false then (tostring(value.error or "子代理没有返回内容")) else nil
-	state.nextStep = {
-		phase = if err or text == "" then "error" else "done",
-		repo = ns.repo,
-		text = text,
-		err = err or (if text == "" then "子代理没有返回内容" else nil),
-		model = if type(value.model) == "string" then value.model else nil,
-		seconds = if type(value.seconds) == "number" then value.seconds else nil,
-	}
-	state.message = if state.nextStep.phase == "done" then "问下一步完成" else "问下一步失败"
-	cx:render()
-end
-
 --- 读窗口半边写回的结果，更新提示。
 --- 结果里的 seq 与请求的 seq 对得上才算这次请求的结论。
 local function readResult(state: State)
@@ -800,65 +645,27 @@ local function skillsView(state: State, cx: BlockCx): Node
 end
 
 --- 任务板区：地图列表与前沿票列表，都是可点的。
---- 「问下一步」的结果卡。三种状态：跑着 / 有答案 / 失败（可能带半截答案）。
-local function nextStepCard(state: State): Node
-	local ns = state.nextStep :: NextStep
-	local meta: { Node } = {}
-	if ns.model then
-		table.insert(meta, ui.span(ns.model, "muted"))
-	end
-	if ns.seconds then
-		table.insert(meta, ui.span(string.format("  %.1fs", ns.seconds), "muted"))
-	end
-
-	local body: { Node } = {}
-	if #meta > 0 then
-		table.insert(body, ui.text(meta))
-	end
-	if ns.phase == "running" then
-		table.insert(body, ui.text(ui.span("正在问（独立进程，约 1 分钟）…", "muted")))
-	else
-		if ns.err then
-			table.insert(body, ui.text(ui.span(ns.err, "warning")))
-		end
-		if ns.text ~= "" then
-			table.insert(body, ui.md(ns.text))
-		elseif not ns.err then
-			table.insert(body, ui.text(ui.span("没有内容", "muted")))
-		end
-		if ns.warn then
-			table.insert(body, ui.text(ui.span("omp 提示：" .. ns.warn, "muted")))
-		end
-	end
-
-	local acts: { Node } = {}
-	if ns.phase ~= "running" then
-		table.insert(acts, ui.button("重新问", {
-			icon = "refresh",
+--- 新增需求的两条路：需求还没摸清走 wayfinder 画地图；已经明确就直接 grill 收敛成 spec。
+--- 只甩一条 /wayfinder 会误导需求已经清楚的人。
+local function entryChooser(): Node
+	local col: { Node } = { ui.text(ui.span("新增需求 —— 先选一条路", "strong")) }
+	local row: { Node } = {}
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(row, ui.button(e.title, {
+			icon = if e.id == "explore" then "map" else "message",
 			size = "sm",
-			actions = { click = "next-step" },
+			variant = "primary",
+			actions = { click = "new:" .. e.id },
 		}))
-		if ns.text ~= "" then
-			table.insert(acts, ui.button("注入到会话", {
-				icon = "send",
-				size = "sm",
-				actions = { click = "next-step-inject" },
-			}))
-			table.insert(acts, ui.button("复制", {
-				icon = "copy",
-				size = "sm",
-				actions = { click = "next-step-copy" },
-			}))
-		end
 	end
-	table.insert(acts, ui.button("收起", {
-		icon = "x",
-		size = "sm",
-		actions = { click = "next-step-clear" },
-	}))
-
-	table.insert(body, ui.row(acts))
-	return ui.card(ui.span("下一步建议", "strong"), body)
+	table.insert(col, ui.row(row))
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(col, ui.text({
+			ui.span("· " .. e.title .. "：", "muted"),
+			ui.span(e.hint, "muted"),
+		}))
+	end
+	return ui.col(col)
 end
 
 local function boardView(state: State, cx: BlockCx): Node
@@ -867,10 +674,6 @@ local function boardView(state: State, cx: BlockCx): Node
 	if state.loading then
 		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
 		return ui.col(main)
-	end
-	-- 「问下一步」的结果挂在这里：跑在独立进程里，不碰任何会话。
-	if state.nextStep then
-		table.insert(main, nextStepCard(state))
 	end
 	if state.repo then
 		table.insert(main, ui.text({
@@ -900,27 +703,9 @@ local function boardView(state: State, cx: BlockCx): Node
 		}))
 	end
 
-	-- 空仓库给两条路，别只甩一条。
-	-- 只写「跑 /wayfinder」会误导需求已经明确的人：他不需要画地图，
-	-- 直接 grill 需求再 to-spec / to-tickets 更快。
-	if #state.tickets == 0 and state.repo then
-		table.insert(main, ui.text(ui.span("这个仓库还没有 issue —— 先选一条路", "strong")))
-		local entries: { Node } = {}
-		for _, e in ipairs(templates.ENTRIES) do
-			table.insert(entries, ui.button(e.title, {
-				icon = if e.id == "explore" then "map" else "message",
-				size = "sm",
-				variant = "primary",
-				actions = { click = "new:" .. e.id },
-			}))
-		end
-		table.insert(main, ui.row(entries))
-		for _, e in ipairs(templates.ENTRIES) do
-			table.insert(main, ui.text({
-				ui.span("· " .. e.title .. "：", "muted"),
-				ui.span(e.hint, "muted"),
-			}))
-		end
+	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。
+	if (#state.tickets == 0 and state.repo) or state.newDemand then
+		table.insert(main, entryChooser())
 	end
 
 	-- 地图
@@ -1296,6 +1081,10 @@ type ToolButton = {
 --- 面板宽度不一，按钮装不进一行就换行 —— 任何宽度下都不许把按钮裁掉。
 local function toolbar(state: State, cx: BlockCx): Node
 	local buttons: { ToolButton } = {
+		-- 常驻三条：参考实现里这两条路、提 BUG、体检是随时能按的
+		{ label = "新增需求", icon = "plus", click = "new-demand" },
+		{ label = "提 BUG", icon = "warning", click = "new-bug" },
+		{ label = "体检", icon = "check", click = "health-check" },
 		{ label = "技能", icon = "sparkle", click = "view-skills",
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
@@ -1308,7 +1097,7 @@ local function toolbar(state: State, cx: BlockCx): Node
 		{ label = "换仓库", icon = "repo", click = "pick-repo" },
 		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
-	-- 任务板视图下多两个按钮：问下一步（把票装进信封交给会话排序）、排序开关。
+	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。
 	if state.view == "board" then
 		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
 		table.insert(buttons, {
@@ -1428,26 +1217,6 @@ tern.block.define(BLOCK_ID, {
 			state.showHidden = saved.showHidden == true
 			state.repo = if type(saved.repo) == "string" then saved.repo else nil
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
-			local restored: any = saved.nextStep
-			if type(restored) ~= "table" then
-				local okKv, fromKv = pcall(tern.kv.get, NEXT_STEP_KEY)
-				if okKv and type(fromKv) == "table" and fromKv.phase ~= "none" then
-					restored = fromKv
-				end
-			end
-			if type(restored) == "table" then
-				local ns = restored
-				state.nextStep = {
-					-- 旧块里那个进程已经跟着没了：留着「正在跑」只会一直转圈
-					phase = if ns.phase == "running" then "error" else (ns.phase or "error"),
-					repo = if type(ns.repo) == "string" then ns.repo else nil,
-					text = if type(ns.text) == "string" then ns.text else "",
-					err = if ns.phase == "running" then "块被重建，这次询问中断了" else ns.err,
-					warn = ns.warn,
-					model = ns.model,
-					seconds = ns.seconds,
-				}
-			end
 		end
 		loadSkills(state)
 		loadBoard(state, cx)
@@ -1784,7 +1553,6 @@ tern.block.define(BLOCK_ID, {
 		trace("act", act)
 		-- 窗口半边执行完注入会戳一下，让宿主重画（读回写回的结果）。
 		if act == "refresh" then
-			readNextStepResult(state, cx)
 			readResult(state)
 			return
 		end
@@ -1812,93 +1580,24 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "next-step" then
 			if not state.repo then
-				state.message = "先识别到仓库与票，再问下一步"
+				state.message = "先识别到仓库，再问下一步"
 				return
 			end
-			runNextStep(state, cx)
+			inject(state, cx, templates.render(templates.NEXT_STEP, { repo = state.repo }), "问下一步")
 			return
 		end
-		if act == "next-step-inject" then
-			local ns = state.nextStep
-			if ns and ns.text ~= "" then
-				inject(state, cx, ns.text, "下一步建议")
-			end
-			return
-		end
-		if act == "next-step-copy" then
-			local ns = state.nextStep
-			if ns and ns.text ~= "" then
-				local okCopy, copyErr = pcall(function()
-					cx:copy(ns.text)
-				end)
-				state.message = if okCopy then "建议已复制" else ("复制失败：" .. tostring(copyErr))
-			end
-			return
-		end
-		if act == "next-step-clear" then
-			state.nextStep = nil
-			pcall(tern.kv.set, NEXT_STEP_KEY, { phase = "none" })
+		if act == "new-demand" then
+			state.view = "board"
+			state.newDemand = not state.newDemand
 			state.message = nil
 			return
 		end
-		if act == "auto-reload" then
-			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
-			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 60 秒。
-			-- 时钟拿不到就不刷：宁可少刷一次，也不能把节流闸整个绕过。
-			local now = nowSec()
-			if not now then
-				return
-			end
-			if state.loading then
-				return
-			end
-			if state.cooldownUntil and now < state.cooldownUntil then
-				return
-			end
-			if state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
-				return
-			end
-			loadBoard(state, cx)
+		if act == "new-bug" then
+			inject(state, cx, templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" }), "提 BUG")
 			return
 		end
-		if act == "reload" then
-			loadSkills(state)
-			loadBoard(state, cx)
-			state.message = "已刷新"
-			return
-		end
-		if act == "pick-repo" then
-			pickRepo(state, cx)
-			return
-		end
-		if act == "toggle-hidden" then
-			state.showHidden = not state.showHidden
-			loadSkills(state)
-			state.message = if state.showHidden then "显示 in-progress / deprecated" else "只显示正式技能"
-			return
-		end
-		if act == "inject-skill" then
-			local s = selectedSkill(state)
-			if not s then
-				state.message = "没有选中技能"
-				return
-			end
-			inject(state, cx, commands.buildSkillCommand(s), s.name)
-			return
-		end
-		if act == "back-board" then
-			state.view = "board"
-			state.ticket = nil
-			state.ticketBody = nil
-			return
-		end
-		if act == "copy-ticket" then
-			local t = state.ticket
-			if not t then
-				return
-			end
-			cx:copy(t.title .. "\n" .. t.url)
-			state.message = "已复制票信息"
+		if act == "health-check" then
+			inject(state, cx, templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" }), "体检")
 			return
 		end
 		if act == "open-ticket" then
@@ -1925,9 +1624,7 @@ tern.block.define(BLOCK_ID, {
 			showHidden = state.showHidden,
 			repo = state.repo,
 			skillSel = state.skillSel,
-			-- 一次问下一步要跑约一分钟，块被重建（插件重载/窗口重排）时
-			-- 不能把结果连同「正在跑」一起吞掉
-			nextStep = state.nextStep,
+			newDemand = state.newDemand,
 		}
 	end,
 })

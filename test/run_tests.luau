@@ -601,64 +601,48 @@ test("commands.buildTicketCommand", function()
 end)
 
 test("templates.render 缺的占位符留原样", function()
-	local out = templates.render(templates.NEXT_STEP, { repo = "o/r" })
-	ok(string.find(out, "o/r", 1, true) ~= nil, "repo substituted")
-	ok(string.find(out, "{claimable}", 1, true) ~= nil, "missing placeholder kept")
+	local tpl = { id = "x", title = "x", body = "repo={repo} 缺={nope}" }
+	local out = templates.render(tpl, { repo = "o/r" })
+	ok(string.find(out, "repo=o/r", 1, true) ~= nil, "repo substituted")
+	ok(string.find(out, "缺={nope}", 1, true) ~= nil, "missing placeholder kept")
 end)
 
-test("templates.nextStepVars 摊出真实票清单", function()
-	local blockedTicket = { number = 15, title = "等前置", type = "research", blockedBy = { 12, 3 }, createdAt = "2026-10-30T08:00:00Z",
-		labels = { "wayfinder:research", "test" }, assignees = {} }
-	local buckets = {
-		claimable = {
-			{ number = 12, title = "修 X", type = "task", blockedBy = {}, createdAt = "2026-11-01T00:00:00Z" },
-			{ number = 13, title = "没打标签的票", type = nil, blockedBy = {} },
-		},
-		assigned = {},
-		blocked = { blockedTicket },
-	}
-	local vars = templates.nextStepVars(
-		"me/repo",
-		buckets,
-		{ { number = 1, title = "地图一" } },
-		{
-			root = "D:/repo",
-			all = { buckets.claimable[1], buckets.claimable[2], blockedTicket },
-			specs = {
-				{ number = 14, title = "规格十四", open = 1, total = 2, state = "OPEN" },
-				{ number = 11, title = "规格十一", open = 0, total = 0, state = "CLOSED" },
-			},
-			rootIsRepo = true,
-		}
-	)
-	eq(vars.repo, "me/repo")
-	eq(vars.root, "D:/repo")
-	eq(vars.rootLabel, "仓库根目录")
-	eq(vars.claimableCount, "2")
-	ok(string.find(vars.claimable, "- #12 wayfinder:task 修 X · 2026-11-01", 1, true) ~= nil, "claimable line")
-	ok(string.find(vars.claimable, "- #13 无类型 没打标签的票", 1, true) ~= nil, "untyped line")
-	ok(string.find(vars.claimable, "被 #15 等待", 1, true) ~= nil, "reverse dep: 12 unlocks 15")
-	eq(vars.assigned, "（无）")
-	ok(string.find(vars.blocked, "等 #12,#3", 1, true) ~= nil, "blockers listed")
-	eq(vars.maps, "- #1 地图一")
-	ok(string.find(vars.specs, "- #14 规格十四 · 进行中 · 未完成 1 张，共 2 张", 1, true) ~= nil, "open spec")
-	-- 已关闭的 spec 必须与进行中的区分开：并列会让接收方以为 v1 还没做完
-	ok(string.find(vars.specs, "- #11 规格十一 · 已关闭 · 未拆工单", 1, true) ~= nil, "closed spec")
-	-- 非 wayfinder 标签是「这是不是真活」的唯一信号，必须进快照
-	ok(string.find(vars.blocked, "标签 test", 1, true) ~= nil, "extra labels kept")
-	ok(string.find(vars.blocked, "wayfinder:research", 1, true) ~= nil, "type kept separately")
-
-	-- 超过 12 张要收尾，别把整块板塞进提示词
-	local many = {}
-	for i = 1, 14 do
-		many[i] = { number = i, title = "t" .. i, type = "task", blockedBy = {} }
+test("问下一步只调 ask-matt，不再搬任务板快照", function()
+	local out = templates.render(templates.NEXT_STEP, { repo = "me/repo" })
+	ok(string.find(out, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
+	ok(string.find(out, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(out, "只做分析", 1, true) ~= nil, "写明只读边界")
+	ok(string.find(out, "gh issue list", 1, true) ~= nil, "让它自己核事实")
+	ok(string.find(out, "#12 wayfinder:task", 1, true) == nil, "没有票行")
+	ok(string.find(out, "@me", 1, true) == nil, "没有认领人")
+	ok(string.find(out, "已关闭：", 1, true) == nil, "没有已关闭统计")
+	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "置信" }) do
+		ok(string.find(out, banned, 1, true) == nil, "正文不该出现：" .. banned)
 	end
-	local v2 = templates.nextStepVars("r", { claimable = many, assigned = {}, blocked = {} }, {})
-	ok(string.find(v2.claimable, "还有 2 张", 1, true) ~= nil, "truncated")
-	eq(v2.maps, "（无）")
-	eq(v2.specs, "（无）")
-	eq(v2.root, "（未知，按当前工作目录找）")
-	eq(v2.rootLabel, "当前工作目录")
+end)
+
+test("新增需求两条路、提 BUG、体检各调对技能", function()
+	local explore = templates.entryById("explore")
+	local implement = templates.entryById("implement")
+	ok(explore ~= nil and implement ~= nil, "两条路都在")
+	local e = templates.renderEntry(explore :: any, "me/repo")
+	ok(string.find(e, "/skill:wayfinder", 1, true) ~= nil, "探索走 wayfinder")
+	ok(string.find(e, "blockedBy", 1, true) ~= nil, "讲了并行与串行")
+	local i = templates.renderEntry(implement :: any, "me/repo")
+	ok(string.find(i, "/skill:grill-with-docs", 1, true) ~= nil, "实施走 grill-with-docs")
+	ok(string.find(i, "/to-spec", 1, true) ~= nil, "收尾提醒 to-spec")
+
+	local bug = templates.render(templates.NEW_BUG, { repo = "me/repo" })
+	ok(string.find(bug, "/skill:wayfinder", 1, true) ~= nil, "提 BUG 调 wayfinder")
+	ok(string.find(bug, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(bug, "bug 标签", 1, true) ~= nil, "要求打 bug 标签")
+	ok(string.find(bug, "查重", 1, true) ~= nil, "建单前查重")
+	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "四项填空在")
+
+	local health = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" })
+	ok(string.find(health, "游离", 1, true) ~= nil, "说清什么算游离")
+	ok(string.find(health, "等人点头", 1, true) ~= nil, "先出清单再动手")
+	ok(string.find(health, "不关闭票", 1, true) ~= nil, "禁止越界写操作")
 end)
 
 test("lanes 每条泳道都指路", function()
@@ -818,62 +802,6 @@ test("compose 复制失败不许报已复制", function()
 	ok(string.find(tostring(said[1][3]), "已复制", 1, true) == nil, "does not claim success")
 end)
 
-test("窗口半边派发子代理：提交、等待、写回 nextStepResult", function()
-	local winPane = 42
-	local asked: { string } = {}
-	local events: { { pane: number, id: string? } } = {}
-	local freshEvents: { { pane: number, id: string? } } = {}
-	local freshCx: any = {
-		pane = winPane,
-		session = {
-			event = function(_self: any, pane: number, ev: any)
-				table.insert(freshEvents, { pane = pane, id = ev and ev.id })
-			end,
-		},
-	}
-	local cx: any = {
-		pane = winPane,
-		copy = function() end,
-		toast = function() end,
-		session = {
-			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
-			focused = function() return winPane end,
-			tab_of = function() return 1 end,
-			layout = function() return { root = { pane = winPane } } end,
-			event = function(_self: any, pane: number, ev: any)
-				table.insert(events, { pane = pane, id = ev and ev.id })
-			end,
-		},
-		agents = {
-			list = function() return { { pane = winPane, state = "idle" } } end,
-			ask = function(_self: any, _pane: number, text: string) table.insert(asked, text) end,
-			-- 等 290 秒后回来：回调会带来一个新的 cx
-			wait = function(_self: any, _agent: any, _opts: any)
-				local aw: any = {}
-				function aw:next(fn: any)
-					fn("| 票 | 建议 |", nil, freshCx)
-				end
-				return aw
-			end,
-		},
-	}
-
-	kvStore["action"] = { seq = 77, kind = "ask-subagent", pane = winPane, body = "派发正文", name = "问下一步" }
-	pollTick(cx)
-
-	eq(#asked, 1, "提交了一次")
-	eq(asked[1], "派发正文")
-	-- 结果必须写到宿主读的那个键上
-	local res = kvStore["nextStepResult"]
-	ok(type(res) == "table", "写了 nextStepResult")
-	eq(res.seq, 77)
-	eq(res.ok, true)
-	eq(res.text, "| 票 | 建议 |")
-	-- 重画事件必须用回调带来的新 cx（老 cx 在等待期间已失效）
-	eq(#freshEvents, 1, "用新 cx 发了重画事件")
-	eq(freshEvents[1].id, "main.refresh")
-end)
-
 --- 收一棵节点树里的按钮文字。
 local function buttonTexts(node: any, out: { string }): { string }
 	out = out or {}
@@ -896,7 +824,6 @@ test("工具条在宽窄面板都露出全部按钮", function()
 	broad.view = "board"
 	local wide = panel.view(broad, mkCx(120))
 	local wideTexts = buttonTexts(wide.main, {})
-	eq(#wide.main.c[1].c, 1, "broad: 一行装得下")
 	ok(util.contains(wideTexts, "问下一步"), "broad: 有问下一步")
 	ok(util.contains(wideTexts, "刷新"), "broad: 有刷新")
 
@@ -908,9 +835,13 @@ test("工具条在宽窄面板都露出全部按钮", function()
 	ok(util.contains(tightTexts, "问下一步"), "narrow: 保留问下一步")
 	ok(util.contains(tightTexts, "换仓库"), "narrow: 保留换仓库")
 	ok(#tight.main.c[1].c > 1, "narrow: 工具条换行")
+	ok(util.contains(wideTexts, "新增需求"), "broad: 新增需求常驻")
+	ok(util.contains(wideTexts, "提 BUG"), "broad: 提 BUG 常驻")
+	ok(util.contains(wideTexts, "体检"), "broad: 体检常驻")
+	ok(util.contains(tightTexts, "新增需求"), "narrow: 新增需求也在")
 end)
 
---- 造一份带仓库/票/地图的 state，供「问下一步」的几个用例共用。
+--- 造一份带仓库/票的 state，供「问下一步」用。
 local function nextStepState()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = "me/repo"
@@ -919,96 +850,46 @@ local function nextStepState()
 		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
 			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
 			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
-		{ number = 99, title = "已完成", body = "", state = "CLOSED", url = "u99",
-			labels = { "wayfinder:task" }, assignees = {}, blockedBy = {}, type = "task",
-			parent = nil, isSpec = false, createdAt = "2026-10-01T00:00:00Z" },
 	}
 	return st
 end
 
-test("问下一步派给子代理，正文仍只含票面", function()
-	local renders = 0
-	local rawCx = mkCx(120)
-	rawCx.render = function() renders += 1 end
+test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, rawCx)
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
 
 	local action = kvStore["action"]
-	ok(type(action) == "table", "写了派发请求")
-	eq(action.kind, "ask-subagent", "走子代理派发")
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject", "走普通注入，不起子代理")
 	local body = action.body
-	-- 派发头：要求用 task 子代理，并只贴回结论
-	ok(string.find(body, "task 子代理", 1, true) ~= nil, "要求起子代理")
-	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "调用 ask-matt")
-	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
-	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
-	ok(string.find(body, "已关闭：1 张", 1, true) ~= nil, "带了已关闭组")
-	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "新鲜", "可能" }) do
-		ok(string.find(body, banned, 1, true) == nil, "正文不该出现：" .. banned)
-	end
-	eq(st.nextStep.phase, "running", "进入等待")
-	eq(st.pendingNextStepSeq, action.seq, "记下本次序号")
+	ok(string.find(body, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
+	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
+	ok(string.find(tostring(st.message), "提交中", 1, true) ~= nil, "提示提交中")
 end)
 
-test("子代理回写后卡片转成完成或失败", function()
+test("没识别到仓库时不给问下一步", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	ok(kvStore["action"] == nil, "没有仓库就不注入")
+	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
+end)
+
+test("常驻三条：新增需求/提 BUG/体检", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	local seq = st.pendingNextStepSeq
+	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	eq(kvStore["action"].kind, "inject")
+	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带四项填空")
 
-	-- 完成：窗口半边把 agent 的最后一条回复写进 kv，宿主收到 refresh 后读回
-	kvStore["nextStepResult"] = { seq = seq, ok = true, text = "| 票 | 建议 |" }
-	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
-	eq(st.nextStep.phase, "done")
-	eq(st.nextStep.text, "| 票 | 建议 |")
+	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	ok(string.find(kvStore["action"].body, "游离", 1, true) ~= nil, "体检正文带游离判据")
 
-	-- 失败：带错误信息
-	local st2 = nextStepState()
-	panel.event(st2, { ev = "action", act = "next-step" }, mkCx(120))
-	kvStore["nextStepResult"] = { seq = st2.pendingNextStepSeq, ok = false, text = "", error = "agent 忙" }
-	panel.event(st2, { ev = "action", act = "refresh" }, mkCx(120))
-	eq(st2.nextStep.phase, "error")
-	ok(string.find(tostring(st2.nextStep.err), "agent 忙", 1, true) ~= nil, "保留失败原因")
-
-	-- 序号对不上：旧结果不许盖新结果
-	local st3 = nextStepState()
-	panel.event(st3, { ev = "action", act = "next-step" }, mkCx(120))
-	kvStore["nextStepResult"] = { seq = (st3.pendingNextStepSeq :: number) - 1, ok = true, text = "旧答案" }
-	panel.event(st3, { ev = "action", act = "refresh" }, mkCx(120))
-	eq(st3.nextStep.phase, "running", "旧 seq 被忽略")
-end)
-
-test("问下一步跑着时再点不叠第二次派发", function()
-	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(st.nextStep.phase, "running")
-	local first = kvStore["action"].seq
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(kvStore["action"].seq, first, "没有再写派发请求")
-	ok(string.find(tostring(st.message), "上一次还在问", 1, true) ~= nil, "给出明确提示")
-end)
-
-test("切了仓库，旧答案不许盖到新仓库上", function()
-	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(st.nextStep.phase, "running")
-
-	st.repo = "other/repo"
-	kvStore["nextStepResult"] = { seq = st.pendingNextStepSeq, ok = true, text = "旧仓库的答案" }
-	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
-	ok(st.nextStep == nil or st.nextStep.repo == "other/repo", "不把旧仓库答案挂上去")
-end)
-
-test("已关闭组只给数量与最新建立的标题", function()
-	local closed = {}
-	for i = 1, 8 do
-		closed[i] = { number = i, title = "收尾票" .. i, blockedBy = {} }
-	end
-	local vars = templates.nextStepVars("o/r", { claimable = {}, assigned = {}, blocked = {} }, {}, {
-		root = "D:/r", all = {}, specs = {}, closed = closed,
-	})
-	ok(string.find(vars.closedLine, "8 张", 1, true) ~= nil, "count")
-	ok(string.find(vars.closedLine, "#1 收尾票1", 1, true) ~= nil, "recent listed")
-	ok(string.find(vars.closedLine, "另有 3 张", 1, true) ~= nil, "overflow noted")
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "new-demand" }, mkCx(120))
+	eq(st.view, "board", "切到任务板")
+	eq(st.newDemand, true, "叫出两条路")
+	ok(kvStore["action"] == nil, "选择前不注入")
 end)
 
 -- -------------------------------------------------------------- report ----
