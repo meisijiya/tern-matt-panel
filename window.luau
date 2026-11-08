@@ -56,7 +56,8 @@ local function openPanel(cx: WindowCx)
 	end
 end
 
---- 多行正文包成括号粘贴：agent 的输入框会整段粘进去，不会在第一个换行处提交。
+--- 多行正文包成括号粘贴：终端会当成一次粘贴整段塞进输入框，
+--- 不会在第一个换行处把消息提前发出去。
 local function pasteText(body: string): string
 	if string.find(body, "\n", 1, true) then
 		return "\27[200~" .. body .. "\27[201~"
@@ -125,26 +126,30 @@ local function agentFor(cx: WindowCx, panelPane: number): number?
 	return nil
 end
 
---- 把正文发给某个 agent。出错时返回错误说明。
-local function sendToAgent(cx: WindowCx, pane: number, body: string): string?
+--- 把正文填进某个 agent 的输入框，不提交。
+--- 用 cx:run 逐字打进 pane（多行包成括号粘贴），用户看过、补完再自己按回车。
+--- 出错时返回错误说明。
+local function fillAgent(cx: WindowCx, pane: number, body: string): string?
+	local isAgent = false
 	for _, agent in ipairs(cx.agents:list()) do
 		if agent.pane == pane then
-			if agent.state == "working" then
-				return "agent 正在忙，等它空闲再试"
-			end
+			isAgent = true
 			if agent.delivery_error then
 				return tostring(agent.delivery_error)
 			end
-			local ok, err = pcall(function()
-				cx.agents:ask(pane, body)
-			end)
-			if not ok then
-				return tostring(err)
-			end
-			return nil
+			break
 		end
 	end
-	return "找不到那个 agent"
+	if not isAgent then
+		return "找不到那个 agent"
+	end
+	local ok, err = pcall(function()
+		cx:run(pane, pasteText(body))
+	end)
+	if not ok then
+		return tostring(err)
+	end
+	return nil
 end
 
 --- 状态栏用的数字：前沿票数与技能组版本。宿主半边算好后写在 result 键里。
@@ -233,9 +238,8 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
-	-- compose：把内容放进剪贴板，不提交。技能面板双击走这条 ——
-	-- tern 没有「只填输入框不发送」的接口（agents:ask 一定提交），
-	-- 复制到剪贴板是唯一不替用户做决定的做法。
+	-- compose：只把内容放进剪贴板，连输入框都不碰。
+	-- 技能面板双击走这条，用于「想换个地方贴」的场景。
 	if action.kind == "compose" then
 		local err = copyOrErr(cx, action.body)
 		if err then
@@ -250,8 +254,8 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
-	-- 结果回写：宿主不能自己下"成功"的结论，注入可能失败。
-	-- 写回后戳宿主一下，让它重画（否则提示停在"提交中"）。
+	-- 结果回写：宿主不能自己下"成功"的结论，填入可能失败。
+	-- 写回后戳宿主一下，让它重画（否则提示停在"填入中"）。
 	local function report(ok: boolean, err: string?)
 		pcall(function()
 			tern.kv.set(INJECT_RESULT_KEY, {
@@ -263,7 +267,7 @@ local function handleAction(cx: WindowCx)
 		end)
 		-- 通知宿主重画：往 pane 发一个 action 事件，宿主的 event 处理里会读 kv。
 		-- id 必须指向真实节点 —— 宿主那边是工具条上的「刷新」按钮（key = "refresh"），
-		-- 节点 id 是 <区块>.<区域>.<按钮key>。用编造的 id 事件会被丢掉，提示会停在「提交中」。
+		-- 节点 id 是 <区块>.<区域>.<按钮key>。用编造的 id 事件会被丢掉，提示会停在「填入中」。
 		pcall(function()
 			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
 		end)
@@ -278,15 +282,15 @@ local function handleAction(cx: WindowCx)
 		report(false, "没有可用的 agent（" .. tail .. "）")
 		return
 	end
-	local err = sendToAgent(cx, agent, pasteText(action.body))
+	local err = fillAgent(cx, agent, action.body)
 	if err then
 		local copyErr = copyOrErr(cx, action.body)
 		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
-		cx:toast("error", "提交失败：" .. tostring(action.name or ""), err .. "（" .. tail .. "）")
+		cx:toast("error", "填入失败：" .. tostring(action.name or ""), err .. "（" .. tail .. "）")
 		report(false, err .. "（" .. tail .. "）")
 		return
 	end
-	cx:toast("success", "已提交：" .. tostring(action.name or ""))
+	cx:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
 	report(true, nil)
 end
 
@@ -356,12 +360,12 @@ tern.command({
 				cx:toast("info", "已复制：" .. item.label, "没有聚焦的 agent")
 				return
 			end
-			local err = sendToAgent(cx, agent, pasteText(item.body))
+			local err = fillAgent(cx, agent, item.body)
 			if err then
-				cx:toast("error", "提交失败：" .. item.label, err)
+				cx:toast("error", "填入失败：" .. item.label, err)
 				return
 			end
-			cx:toast("success", "已提交：" .. item.label)
+			cx:toast("success", "已填入输入框：" .. item.label)
 		end)
 	end,
 })

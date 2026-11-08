@@ -727,11 +727,14 @@ end
 
 --- 窗口半边的投递通道：agent 空闲时 inject 应当真的送出去，并回写成功。
 --- 这条路径以前只靠真机点，现在用桩把「空闲 agent」这个前提直接造出来。
-test("窗口半边把 inject 交给空闲 agent 并回写成功", function()
+test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", function()
 	local winPane = 42
-	local asks: { { pane: number, text: string } } = {}
+	local typed: { { pane: number, text: string } } = {}
 	local cx: any = {
 		pane = winPane,
+		run = function(_self: any, pane: number, text: string)
+			table.insert(typed, { pane = pane, text = text })
+		end,
 		copy = function() end,
 		toast = function() end,
 		session = {
@@ -756,24 +759,34 @@ test("窗口半边把 inject 交给空闲 agent 并回写成功", function()
 			list = function()
 				return { { pane = winPane, state = "idle" } }
 			end,
-			ask = function(_self: any, pane: number, text: string)
-				table.insert(asks, { pane = pane, text = text })
+			-- 填输入框不走 ask：ask 一定会提交，用户就没有补内容的机会了
+			ask = function(_self: any, _pane: number, _text: string)
+				error("不该调用 agents:ask —— 提示词只能填进输入框")
 			end,
 		},
 	}
-	-- 宿主写进去的注入请求
+	-- 宿主写进去的填入请求
 	kvStore["action"] = { seq = 5, kind = "inject", pane = winPane, body = "hello", name = "测试" }
 	-- 轮询回调在加载时就注册了，reset() 会清空 timers 表，所以用加载时抓的那一份
 	ok(pollTick ~= nil, "window registered a poll timer")
 	pollTick(cx)
 
-	eq(#asks, 1, "agent asked once")
-	eq(asks[1].pane, winPane)
-	ok(string.find(asks[1].text, "hello", 1, true) ~= nil, "body delivered")
+	eq(#typed, 1, "正文打进 pane 一次")
+	eq(typed[1].pane, winPane)
+	ok(string.find(typed[1].text, "hello", 1, true) ~= nil, "body delivered")
 	local res = kvStore["inject_result"]
 	ok(type(res) == "table", "result written back")
 	eq(res.ok, true, "reported success")
 	eq(res.seq, 5, "seq echoed")
+
+	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
+	-- 用户就没机会补内容了。
+	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = "第一行\n第二行", name = "多行" }
+	pollTick(cx)
+	eq(#typed, 2, "多行正文也打进 pane")
+	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "以括号粘贴开头")
+	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "以括号粘贴收尾")
+	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
 end)
 
 test("剪贴板写不进去时不许谎报已复制", function()
@@ -896,7 +909,7 @@ test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	ok(string.find(body, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
-	ok(string.find(tostring(st.message), "提交中", 1, true) ~= nil, "提示提交中")
+	ok(string.find(tostring(st.message), "填入中", 1, true) ~= nil, "提示填入中")
 end)
 
 test("没识别到仓库时不给问下一步", function()

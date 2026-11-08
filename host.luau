@@ -485,14 +485,15 @@ local function pickRepo(state: State, cx: BlockCx)
 	})
 end
 
---- 注入一段文本到邻近 agent（真正执行在窗口半边）。
+--- 把一段文本填进邻近 agent 的输入框（真正执行在窗口半边），不提交。
+--- 用户看过、补完自己的内容再按回车。
 ---
---- 宿主不能自己下"成功"的结论：注入可能失败（没 agent、agent 忙、投递出错）。
---- 所以这里只标"提交中"，等窗口半边把结果写回 RESULT_KEY 再改口。
+--- 宿主不能自己下"成功"的结论：填入可能失败（没 agent、写不进去）。
+--- 所以这里只标"填入中"，等窗口半边把结果写回 RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
-	state.message = "提交中：" .. name
+	state.message = "填入中：" .. name
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -509,8 +510,8 @@ local function readResult(state: State)
 	state.pendingSeq = nil
 	local ok2 = value.ok == true
 	state.message = if ok2
-		then "已提交：" .. tostring(value.name or "")
-		else "提交失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
+		then "已填入：" .. tostring(value.name or "")
+		else "填入失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
 end
 
 --- 票的动作按钮：按票类型给出。
