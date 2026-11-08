@@ -463,6 +463,17 @@ local function nextSeq(): number
 	return seq
 end
 
+--- 诊断：记下最近一次动作与派发正文长度。
+--- 真机上出现过「点了问下一步，实际发出的是技能注入」——光看代码分不清是谁写的，
+--- 所以留一条可读的痕迹，出问题看 kv 就知道。
+local function trace(kind: string, extra: string?)
+	pcall(tern.kv.set, "trace", {
+		at = nowSec(),
+		kind = kind,
+		extra = extra or "",
+	})
+end
+
 local function sendAction(state: State, cx: BlockCx, kind: string, body: string, name: string): number
 	local seq = nextSeq()
 	tern.kv.set(ACTION_KEY, {
@@ -569,6 +580,7 @@ local function runNextStep(state: State, cx: BlockCx)
 		return
 	end
 	local body = templates.NEXT_STEP_DISPATCH.body .. nextStepBody(state, cx)
+	trace("next-step", string.format("kind=ask-subagent bodyLen=%d", #body))
 	local seq = sendAction(state, cx, "ask-subagent", body, "问下一步")
 	state.pendingNextStepSeq = seq
 	state.nextStep = { phase = "running", repo = state.repo, text = "" }
@@ -1756,6 +1768,7 @@ tern.block.define(BLOCK_ID, {
 		end
 
 		local act = ev.act
+		trace("act", act)
 		-- 窗口半边执行完注入会戳一下，让宿主重画（读回写回的结果）。
 		if act == "refresh" then
 			readNextStepResult(state, cx)
