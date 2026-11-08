@@ -15,8 +15,6 @@ local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
--- 面板开的那个 pane：宿主开块时写进来，聚焦时往它戳自动刷新。
-local PANEL_KEY = "panel"
 local POLL_MS = 300
 
 -- 最近聚焦的 agent：面板没有绑定目标时的兜底。
@@ -355,21 +353,30 @@ tern.chrome.status(function(_pane)
 	}
 end)
 
---- 聚焦时提醒面板「可以刷了」。拉不拉由宿主定（它按 5 分钟节流），
---- 这里只负责把「窗口亮了」这个窗口半边才知道的事实传过去。
-local function pingPanel(cx: WindowCx)
-	local ok, v = pcall(tern.kv.get, PANEL_KEY)
-	if not ok or type(v) ~= "table" or type(v.pane) ~= "number" then
+--- 聚焦时提醒面板「可以刷了」。
+--- 只戳「刚拿到焦点的那个 tab」里的面板：别的 tab 里开着的面板不该跟着刷，
+--- 否则每个 tab 各开一个面板时，一次切 tab 会把所有面板同时拉一遍。
+--- 拉不拉仍由宿主按 5 分钟节流，这里只负责把「这个 tab 亮了」这个事实传过去。
+local function pingPanelsInTab(cx: WindowCx, tab: number)
+	local ok, panes = pcall(cx.session.panes, cx.session)
+	if not ok or type(panes) ~= "table" then
 		return
 	end
-	pcall(function()
-		cx.session:event(v.pane, { ev = "action", id = "main.refresh", act = "auto-reload" })
-	end)
+	for _, p in ipairs(panes) do
+		-- 插件块的 program 就是「插件id.块id」（见 tern ls）
+		if p.tab == tab and (p.program == KIND or p.kind == KIND) then
+			pcall(function()
+				cx.session:event(p.pane, { ev = "action", id = "main.refresh", act = "auto-reload" })
+			end)
+		end
+	end
 end
 
-tern.on("focus", function(_ev, cx)
+tern.on("focus", function(ev: any, cx)
 	rememberAgent(cx)
-	pingPanel(cx)
+	if ev and type(ev.tab) == "number" then
+		pingPanelsInTab(cx, ev.tab)
+	end
 end)
 
 -- 窗口重启后第一次看到的请求当作已处理，避免重复注入。

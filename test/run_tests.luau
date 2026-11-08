@@ -863,6 +863,38 @@ end
 
 local panel = blockDefs["matt"]
 
+test("聚焦只戳当前 tab 里的面板，不惊动别的 tab", function()
+	local panelA, panelB, term = 101, 202, 303
+	local events: { { pane: number, act: string? } } = {}
+	local cx: any = {
+		pane = panelA,
+		session = {
+			focused = function() return term end,
+			panes = function()
+				return {
+					{ pane = panelA, tab = 1, program = "tern-matt-panel.matt" },
+					{ pane = panelB, tab = 2, program = "tern-matt-panel.matt" },
+					{ pane = term, tab = 2, program = "powershell.exe" },
+				}
+			end,
+			event = function(_self: any, pane: number, ev: any)
+				table.insert(events, { pane = pane, act = ev and ev.act })
+			end,
+		},
+		agents = { list = function() return {} end },
+	}
+
+	handlers["focus"]({ pane = term, tab = 2 }, cx)
+	eq(#events, 1, "tab 2 里只有一个面板该被戳")
+	eq(events[1].pane, panelB, "戳的是该 tab 里的面板")
+	eq(events[1].act, "auto-reload", "发的是自动刷新")
+
+	events = {}
+	handlers["focus"]({ pane = panelA, tab = 1 }, cx)
+	eq(#events, 1, "切到 tab 1 也只戳一个")
+	eq(events[1].pane, panelA, "戳 tab 1 的面板")
+end)
+
 test("工具条在宽窄面板都露出全部按钮", function()
 	local broad = panel.init(mkCx(120), {}, nil)
 	broad.view = "board"

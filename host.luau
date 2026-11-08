@@ -58,8 +58,6 @@ local ACTION_KEY = "action"
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
--- 窗口半边要知道往哪个 pane 戳「可以刷了吗」：宿主开块时把自己的 pane 记在这里。
-local PANEL_KEY = "panel"
 local BLOCK_ID = "matt"
 
 type View = "skills" | "board" | "map" | "ticket"
@@ -1214,9 +1212,6 @@ end
 tern.block.define(BLOCK_ID, {
 	init = function(cx: BlockCx, _args: { string }, saved: any): State
 		local state = blank()
-		-- 记下自己的 pane：窗口半边聚焦时只知道「某个窗口亮了」，
-		-- 要靠这个键找到该戳哪个面板。
-		pcall(tern.kv.set, PANEL_KEY, { pane = cx.pane })
 		if type(saved) == "table" then
 			state.view = (saved.view :: View) or "skills"
 			state.showHidden = saved.showHidden == true
