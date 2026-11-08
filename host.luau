@@ -48,12 +48,13 @@ end
 local COOLDOWN_SEC = 60
 
 --- 自动刷新的最短间隔：窗口获得焦点时才考虑拉，且两次拉取之间至少隔这么久。
---- 焦点事件很频繁（切 pane 就触发），真正省配额的是这道闸。
-local AUTO_REFRESH_SEC = 60
+--- 焦点事件很频繁（切 pane、切 tab 都触发），而一次刷新要跑一趟 gh（实测 2.8 秒、
+--- 约 4 个 GraphQL 点）。60 秒的闸意味着频繁切 tab 时几乎每次都在拉，
+--- 面板跟着闪。5 分钟足够：票的变化来自用户自己刚做的操作，回来时会看到。
+--- 需要立刻看到最新就按「刷新」或 r。
+local AUTO_REFRESH_SEC = 300
 
 local ACTION_KEY = "action"
-local RESULT_KEY = "result"
--- 注入结果单独一个键：RESULT_KEY 已经被前沿/版本摘要占着，不能互相覆盖。
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
@@ -396,13 +397,6 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 		if #state.tickets == 0 then
 			state.message = "这个仓库还没有 issue"
 		end
-		-- 状态栏胶囊要数字，写进 result 键给窗口半边读。
-		tern.kv.set(RESULT_KEY, {
-			-- 与任务板「可领」同口径：都要排除顶层 spec，
-			-- 否则面板写 4 张、状态栏写 5 张，用户以为哪里算错了。
-			frontier = #tracker.classify(state.tickets).claimable,
-			version = state.skillVersion or "—",
-		})
 		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
 		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
 		-- 会把它当实时状态，据此做出已经过期的判断。
@@ -489,7 +483,7 @@ end
 --- 用户看过、补完自己的内容再按回车。
 ---
 --- 宿主不能自己下"成功"的结论：填入可能失败（没 agent、写不进去）。
---- 所以这里只标"填入中"，等窗口半边把结果写回 RESULT_KEY 再改口。
+--- 所以这里只标"填入中"，等窗口半边把结果写回 INJECT_RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
@@ -672,7 +666,9 @@ end
 local function boardView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
-	if state.loading then
+	-- 已经有数据时刷新不清屏：清屏会让整块面板闪一下，
+	-- 而焦点切换本来就可能每分钟触发一次刷新。空板才给占位。
+	if state.loading and #state.tickets == 0 and #state.maps == 0 then
 		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
 		return ui.col(main)
 	end
@@ -1599,6 +1595,66 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "health-check" then
 			inject(state, cx, templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" }), "体检")
+			return
+		end
+		if act == "auto-reload" then
+			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
+			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 60 秒。
+			-- 时钟拿不到就不刷：宁可少刷一次，也不能把节流闸整个绕过。
+			local now = nowSec()
+			if not now then
+				return
+			end
+			if state.loading then
+				return
+			end
+			if state.cooldownUntil and now < state.cooldownUntil then
+				return
+			end
+			if state.lastLoadAt and now - state.lastLoadAt < AUTO_REFRESH_SEC then
+				return
+			end
+			loadBoard(state, cx)
+			return
+		end
+		if act == "reload" then
+			loadSkills(state)
+			loadBoard(state, cx)
+			state.message = "已刷新"
+			return
+		end
+		if act == "pick-repo" then
+			pickRepo(state, cx)
+			return
+		end
+		if act == "toggle-hidden" then
+			state.showHidden = not state.showHidden
+			loadSkills(state)
+			state.message = if state.showHidden then "显示 in-progress / deprecated" else "只显示正式技能"
+			return
+		end
+		if act == "inject-skill" then
+			local s = selectedSkill(state)
+			if not s then
+				state.message = "没有选中技能"
+				return
+			end
+			inject(state, cx, commands.buildSkillCommand(s), s.name)
+			return
+		end
+		if act == "back-board" then
+			state.view = "board"
+			state.ticket = nil
+			state.ticketBody = nil
+			return
+		end
+		if act == "copy-ticket" then
+			local t = state.ticket
+			if not t then
+				return
+			end
+			cx:copy(t.title .. "\n" .. t.url)
+			state.message = "已复制票信息"
 			return
 		end
 		if act == "open-ticket" then

@@ -13,8 +13,6 @@ local templates = require("./lib/templates")
 
 local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
-local RESULT_KEY = "result"
--- 注入结果单独一个键：RESULT_KEY 已被前沿/版本摘要占着。
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 -- 面板开的那个 pane：宿主开块时写进来，聚焦时往它戳自动刷新。
@@ -152,30 +150,6 @@ local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	return nil
 end
 
---- 状态栏用的数字：前沿票数与技能组版本。宿主半边算好后写在 result 键里。
-local summary = { frontier = 0, version = "—" }
-
-local function readSummary()
-	local ok, value = pcall(tern.kv.get, RESULT_KEY)
-	if not ok or type(value) ~= "table" then
-		return
-	end
-	local frontier = value.frontier
-	local version = value.version
-	local changed = false
-	if type(frontier) == "number" and frontier ~= summary.frontier then
-		summary.frontier = frontier
-		changed = true
-	end
-	if type(version) == "string" and version ~= summary.version then
-		summary.version = version
-		changed = true
-	end
-	if changed then
-		tern.chrome.refresh()
-	end
-end
-
 --- 写剪贴板：cx:copy 不返回值，只能区分「抛错」与「没抛错」。
 --- 返回错误说明；nil 表示没报错（不保证内容真进去了）。
 --- 真机上出现过复制静默失败，所以任何「已复制」的提示都必须经过这里，
@@ -305,7 +279,6 @@ poll = function(cx)
 	if cx then
 		pcall(function()
 			handleAction(cx)
-			readSummary()
 		end)
 	end
 	tern.timer(POLL_MS, poll)
@@ -370,10 +343,12 @@ tern.command({
 	end,
 })
 
+--- 胶囊只当插件入口：不显示任何数字。
+--- 数字会随「当前是哪个仓库」变，而胶囊是窗口级的，切 tab 后对不上就是错的。
 tern.chrome.status(function(_pane)
 	return {
 		{
-			text = string.format("%d 可领 · 技能 %s", summary.frontier, summary.version),
+			text = "Matt",
 			icon = "tasks",
 			command = "plugin.tern-matt-panel.panel",
 		},
