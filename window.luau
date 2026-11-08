@@ -355,7 +355,7 @@ tern.chrome.status(function(_pane)
 	}
 end)
 
---- 聚焦时提醒面板「可以刷了」。拉不拉由宿主定（它按 60 秒节流），
+--- 聚焦时提醒面板「可以刷了」。拉不拉由宿主定（它按 5 分钟节流），
 --- 这里只负责把「窗口亮了」这个窗口半边才知道的事实传过去。
 local function pingPanel(cx: WindowCx)
 	local ok, v = pcall(tern.kv.get, PANEL_KEY)

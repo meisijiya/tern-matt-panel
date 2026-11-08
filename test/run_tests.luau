@@ -912,6 +912,124 @@ test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	ok(string.find(tostring(st.message), "填入中", 1, true) ~= nil, "提示填入中")
 end)
 
+--- 收一棵节点树里的全部文字（text 的 spans、button/badge 的 t、md 的 text）。
+local function allText(node: any, out: { string }): { string }
+	out = out or {}
+	if type(node) ~= "table" then
+		return out
+	end
+	local p = node.p
+	if type(p) == "table" then
+		local spans = p.spans
+		if type(spans) == "string" then
+			table.insert(out, spans)
+		elseif type(spans) == "table" then
+			if type(spans.t) == "string" then
+				-- 单个 span：ui.text(ui.span(...))
+				table.insert(out, spans.t)
+			else
+				for _, sp in ipairs(spans) do
+					if type(sp) == "string" then
+						table.insert(out, sp)
+					elseif type(sp) == "table" and type(sp.t) == "string" then
+						table.insert(out, sp.t)
+					end
+				end
+			end
+		end
+		if type(p.t) == "string" then
+			table.insert(out, p.t)
+		end
+		if type(p.text) == "string" then
+			table.insert(out, p.text)
+		end
+	end
+	for _, kid in ipairs(node.c or {}) do
+		allText(kid, out)
+	end
+	return out
+end
+
+--- 工具条上每个 click 值都必须在动作表里：删掉分支而按钮还在，
+--- 用户点下去就是没反应，且任何单测都不会红。
+local ACTION_CASES = {
+	{ act = "view-skills", want = function(st: any) return st.view == "skills" end },
+	{ act = "view-board", want = function(st: any) return st.view == "board" end },
+	{ act = "toggle-sort", want = function(st: any, before: any) return st.sortNewest ~= before.sortNewest end },
+	{ act = "reload", want = function(st: any) return st.message == "已刷新" end },
+	{ act = "pick-repo", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "pick-repo" end },
+	{ act = "toggle-hidden", want = function(st: any, before: any) return st.showHidden ~= before.showHidden end },
+	{ act = "next-step", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
+	{ act = "back-board", want = function(st: any) return st.view == "board" end },
+}
+
+test("工具条每个按钮都接上了动作分支", function()
+	for _, c in ipairs(ACTION_CASES) do
+		local st = nextStepState()
+		st.view = "board"
+		st.ticket = st.tickets[1]
+		st.view = "ticket"
+		local before = { sortNewest = st.sortNewest, showHidden = st.showHidden }
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = c.act }, mkCx(120))
+		ok(c.want(st, before, kvStore), "动作没反应：" .. c.act)
+	end
+end)
+
+test("工具条 click 值全部有分支覆盖", function()
+	local known: { [string]: boolean } = {}
+	for _, c in ipairs(ACTION_CASES) do
+		known[c.act] = true
+	end
+	-- 这几条需要真实票/技能，另有用例覆盖
+	known["inject-skill"] = true
+	known["copy-ticket"] = true
+	known["open-ticket"] = true
+	known["auto-reload"] = true
+
+	local st = nextStepState()
+	st.view = "board"
+	local clicks: { string } = {}
+	local function walk(n: any)
+		if type(n) ~= "table" then
+			return
+		end
+		local a = type(n.p) == "table" and n.p.actions or nil
+		if type(a) == "table" and type(a.click) == "string" then
+			table.insert(clicks, a.click)
+		end
+		for _, kid in ipairs(n.c or {}) do
+			walk(kid)
+		end
+	end
+	walk(panel.view(st, mkCx(120)).main)
+	ok(#clicks > 0, "工具条上有按钮")
+	for _, c in ipairs(clicks) do
+		if string.sub(c, 1, 4) == "new:" then
+			ok(templates.entryById(string.sub(c, 5)) ~= nil, "入口不存在：" .. c)
+		else
+			ok(known[c] == true, "按钮指向没有分支的动作：" .. c)
+		end
+	end
+end)
+
+test("底部显示数据时刻，且刷新中不清空已有内容", function()
+	local st = nextStepState()
+	st.view = "board"
+	st.fetchedAtSec = 1762000000
+	local dockText = table.concat(allText(panel.view(st, mkCx(120)).dock, {}), " | ")
+	ok(string.find(dockText, "数据 ", 1, true) ~= nil, "dock 显示数据时刻：" .. dockText)
+
+	-- 刷新中：已有票就继续显示，不许整块换成「正在拉取…」
+	st.loading = true
+	local mainText = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(mainText, "正在拉取", 1, true) == nil, "有数据时不显示占位")
+	ok(string.find(mainText, "me/repo", 1, true) ~= nil, "旧内容还在")
+end)
+
 test("没识别到仓库时不给问下一步", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	kvStore["action"] = nil

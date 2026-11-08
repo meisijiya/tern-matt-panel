@@ -342,8 +342,10 @@ end
 
 --- 真正拉 issue 的那一步。
 fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	-- 刻意不拉 body：列表一次 400 点，5000 点/小时只够刷十来次。
-	-- body 是成本大头，改成点开某张票时用 REST 单独取（REST 不占 GraphQL 配额）。
+	-- 刻意不拉 body：body 是成本大头（带正文的列表查询约 400 点/次）。
+	-- 这份字段实测约 4 点/次（3 次共耗 13 点），所以刷新成本不在配额，
+	-- 而在每次 spawn 一个 gh 子进程（约 2.8 秒）。body 改成点开某张票时
+	-- 用 REST 单独取（REST 不占 GraphQL 配额）。
 	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
 	tern.process.run({
 		"gh",
@@ -1135,11 +1137,17 @@ local function toolbar(state: State, cx: BlockCx): Node
 	return ui.col(rows)
 end
 
---- 底部提示条：键位说明。
+--- 底部提示条：键位说明、数据时刻、最近一条提示。
+--- 自动刷新拉到 5 分钟后，光看面板分不清数据是刚拉的还是十分钟前的，
+--- 所以把拉取时刻直接摊在这里；要最新就按刷新。
 local function dockView(state: State): Node
 	local items: { Node } = {
 		ui.text(ui.span("点行看内容 · 点按钮操作", "muted")),
 	}
+	local at = fetchedLabel(state)
+	if at then
+		table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+	end
 	if state.message then
 		table.insert(items, ui.text(ui.span(state.message, "accent")))
 	end
@@ -1599,7 +1607,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "auto-reload" then
 			-- 窗口半边每次聚焦都戳一下；真正拉不拉由这里定，焦点本身不花配额。
-			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 60 秒。
+			-- 三道闸：正在拉 / 失败冷却中 / 距上次拉取不足 5 分钟。
 			-- 时钟拿不到就不刷：宁可少刷一次，也不能把节流闸整个绕过。
 			local now = nowSec()
 			if not now then
