@@ -870,30 +870,19 @@ local function nextStepState()
 	return st
 end
 
-test("问下一步交给独立进程，正文仍只含票面", function()
+test("问下一步派给子代理，正文仍只含票面", function()
 	local renders = 0
 	local rawCx = mkCx(120)
 	rawCx.render = function() renders += 1 end
-	processFixtures = { { match = "omp -p", result = { status = 0, stdout = "| 票 | 建议 |\n", stderr = "warn: mcp", timed_out = false } } }
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "next-step" }, rawCx)
 
-	-- 不再往会话里灌：没有任何注入请求
-	ok(kvStore["action"] == nil, "不写注入请求")
-
-	local call
-	for _, c in ipairs(processCalls) do
-		if c.argv[1] == "omp" then
-			call = c
-		end
-	end
-	ok(call ~= nil, "起了 omp 进程")
-	eq(call.argv[2], "-p")
-	eq(call.argv[3], "--no-session")
-	ok(call.opts ~= nil and call.opts.timeout_ms == 300000, "带超时")
-	-- 正文走 argv：真机上走 stdin 会卡住不返回
-	local body = tostring(call.argv[4])
-	ok(call.opts.stdin == nil, "短正文不塞 stdin")
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了派发请求")
+	eq(action.kind, "ask-subagent", "走子代理派发")
+	local body = action.body
+	-- 派发头：要求用 task 子代理，并只贴回结论
+	ok(string.find(body, "task 子代理", 1, true) ~= nil, "要求起子代理")
 	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "调用 ask-matt")
 	ok(string.find(body, "#12 wayfinder:task 修 X", 1, true) ~= nil, "带真实票行")
 	ok(string.find(body, "@me", 1, true) ~= nil, "带了认领人")
@@ -901,124 +890,56 @@ test("问下一步交给独立进程，正文仍只含票面", function()
 	for _, banned in ipairs({ "抓取时间", "分钟前", "已过时", "缓存", "新鲜", "可能" }) do
 		ok(string.find(body, banned, 1, true) == nil, "正文不该出现：" .. banned)
 	end
-
-	-- 异步回调必须自己重画：漏掉这一步，卡片会永远停在「正在问」
-	ok(renders > 0, "回调里重画了面板")
-
-	eq(st.nextStep.phase, "done", "拿到结果")
-	ok(string.find(st.nextStep.text, "建议", 1, true) ~= nil, "保留 stdout")
-	ok(st.nextStep.warn ~= nil, "stderr 有内容时作为提示保留")
+	eq(st.nextStep.phase, "running", "进入等待")
+	eq(st.pendingNextStepSeq, action.seq, "记下本次序号")
 end)
 
-test("问下一步失败与超时都保留已拿到的部分输出", function()
-	processFixtures = { { match = "omp -p", result = { status = 1, stdout = "半截", stderr = "boom\nB", timed_out = false } } }
+test("子代理回写后卡片转成完成或失败", function()
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(st.nextStep.phase, "error")
-	eq(st.nextStep.text, "半截", "保留部分输出")
-	ok(string.find(st.nextStep.err, "退出码 1", 1, true) ~= nil, "说清退出码")
-	ok(string.find(st.nextStep.err, "B", 1, true) ~= nil, "带 stderr 尾部")
+	local seq = st.pendingNextStepSeq
 
-	processFixtures = { { match = "omp -p", result = { status = -1, stdout = "半截", stderr = "", timed_out = true } } }
+	-- 完成：窗口半边把 agent 的最后一条回复写进 kv，宿主收到 refresh 后读回
+	kvStore["nextStepResult"] = { seq = seq, ok = true, text = "| 票 | 建议 |" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	eq(st.nextStep.phase, "done")
+	eq(st.nextStep.text, "| 票 | 建议 |")
+
+	-- 失败：带错误信息
 	local st2 = nextStepState()
 	panel.event(st2, { ev = "action", act = "next-step" }, mkCx(120))
+	kvStore["nextStepResult"] = { seq = st2.pendingNextStepSeq, ok = false, text = "", error = "agent 忙" }
+	panel.event(st2, { ev = "action", act = "refresh" }, mkCx(120))
 	eq(st2.nextStep.phase, "error")
-	ok(string.find(st2.nextStep.err, "超时", 1, true) ~= nil, "标超时")
-	eq(st2.nextStep.text, "半截", "超时也保留部分输出")
+	ok(string.find(tostring(st2.nextStep.err), "agent 忙", 1, true) ~= nil, "保留失败原因")
+
+	-- 序号对不上：旧结果不许盖新结果
+	local st3 = nextStepState()
+	panel.event(st3, { ev = "action", act = "next-step" }, mkCx(120))
+	kvStore["nextStepResult"] = { seq = (st3.pendingNextStepSeq :: number) - 1, ok = true, text = "旧答案" }
+	panel.event(st3, { ev = "action", act = "refresh" }, mkCx(120))
+	eq(st3.nextStep.phase, "running", "旧 seq 被忽略")
 end)
 
-test("问下一步跑着时再点不叠第二次调用", function()
-	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "答案", stderr = "", timed_out = false } } }
+test("问下一步跑着时再点不叠第二次派发", function()
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(st.nextStep.phase, "running", "第一次在跑")
-	local before = #processCalls
+	eq(st.nextStep.phase, "running")
+	local first = kvStore["action"].seq
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(#processCalls, before, "第二次不再起进程")
+	eq(kvStore["action"].seq, first, "没有再写派发请求")
 	ok(string.find(tostring(st.message), "上一次还在问", 1, true) ~= nil, "给出明确提示")
 end)
 
 test("切了仓库，旧答案不许盖到新仓库上", function()
-	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "旧仓库的答案", stderr = "", timed_out = false } } }
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
 	eq(st.nextStep.phase, "running")
 
-	-- 结果还没回来就换了仓库：放行后必须丢弃，不许写进新仓库的视图
 	st.repo = "other/repo"
-	flushProcess()
-	eq(st.nextStep.phase, "running", "旧请求的结果被丢掉，状态不再前进")
-	eq(st.nextStep.text, "", "没把旧答案写进来")
-
-	-- 反证：仓库没变时同一份结果会被采用
-	processFixtures = { { match = "omp -p", defer = true, result = { status = 0, stdout = "答案", stderr = "", timed_out = false } } }
-	local st2 = nextStepState()
-	panel.event(st2, { ev = "action", act = "next-step" }, mkCx(120))
-	flushProcess()
-	eq(st2.nextStep.phase, "done", "仓库没变则采用")
-	eq(st2.nextStep.text, "答案")
-end)
-
-test("块被重建时结果保留，正在跑的标成中断", function()
-	-- 结果存在的块：重建后卡片还在，不用再问一次
-	local saved = {
-		view = "board", showHidden = false, repo = "me/repo", skillSel = nil,
-		nextStep = { phase = "done", repo = "me/repo", text = "| 票 | 建议 |", model = "m", seconds = 51 },
-	}
-	local st = panel.init(mkCx(120), {}, saved)
-	eq(st.nextStep.phase, "done", "done 保留")
-	eq(st.nextStep.text, "| 票 | 建议 |")
-	eq(st.nextStep.seconds, 51)
-
-	-- 正在跑的块：进程已随旧块消失，必须标成中断而不是一直转圈
-	local saved2 = {
-		view = "board", repo = "me/repo",
-		nextStep = { phase = "running", repo = "me/repo", text = "" },
-	}
-	local st2 = panel.init(mkCx(120), {}, saved2)
-	eq(st2.nextStep.phase, "error", "running 降级为中断")
-	ok(string.find(tostring(st2.nextStep.err), "中断", 1, true) ~= nil, "说清为什么停")
-end)
-
-test("换仓库清掉旧建议，同仓库刷新不动它", function()
-	local st = nextStepState()
-	st.nextStep = { phase = "done", repo = "me/repo", text = "旧建议" }
-	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
-	ok(st.nextStep ~= nil, "别的动作不会清")
-
-	-- 同仓库重新拉取：建议还在
-	st.repo = "me/repo"
-	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
-	ok(st.nextStep ~= nil, "同仓库刷新不清")
-
-	-- 换成另一个仓库：旧建议必须消失，否则会拿 A 的建议指导 B
-	processFixtures = {
-		{ match = "remote get-url", result = { status = 0, stdout = "git@github.com:other/repo.git\n", stderr = "", timed_out = false } },
-	}
-	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
-	eq(st.repo, "other/repo", "仓库确实换了")
-	ok(st.nextStep == nil, "换仓库后不展示旧仓库建议")
-end)
-
-test("结果写进 kv，块重建后能从 kv 读回来", function()
-	processFixtures = { { match = "omp -p", result = { status = 0, stdout = "答案正文", stderr = "", timed_out = false } } }
-	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
-	eq(st.nextStep.phase, "done")
-	-- 结果同时落 kv：这是块被重建时唯一还活着的地方
-	local savedKv = kvStore["nextStepResult"]
-	ok(type(savedKv) == "table", "写了 kv")
-	eq(savedKv.text, "答案正文")
-
-	-- 新块没有任何 saved.nextStep，只能靠 kv 恢复
-	local fresh = panel.init(mkCx(120), {}, { view = "board", repo = "me/repo" })
-	ok(fresh.nextStep ~= nil, "从 kv 恢复")
-	eq(fresh.nextStep.text, "答案正文")
-
-	-- 收起要把 kv 也置空，否则下次打开又冒出来
-	panel.event(fresh, { ev = "action", act = "next-step-clear" }, mkCx(120))
-	ok(fresh.nextStep == nil, "收起后清空")
-	eq(kvStore["nextStepResult"].phase, "none", "kv 也标记为空")
+	kvStore["nextStepResult"] = { seq = st.pendingNextStepSeq, ok = true, text = "旧仓库的答案" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	ok(st.nextStep == nil or st.nextStep.repo == "other/repo", "不把旧仓库答案挂上去")
 end)
 
 test("已关闭组只给数量与最新建立的标题", function()

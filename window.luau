@@ -246,6 +246,50 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
+	-- 派发给相邻 agent，由它起 task 子代理：子代理在 omp 的 Agents 列表里可见。
+	-- 这里只负责提交与读回，判断与执行都在会话里。
+	if action.kind == "ask-subagent" then
+		local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
+		local function finish(ok: boolean, text: string, err: string?)
+			pcall(function()
+				tern.kv.set(INJECT_RESULT_KEY, {
+					seq = seq,
+					ok = ok,
+					name = tostring(action.name or ""),
+					error = err or "",
+					text = text,
+					-- 结果与注入共用回写键，但用 seq 区分；宿主只看 seq 对得上的那条
+				})
+			end)
+			pcall(function()
+				cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+			end)
+		end
+		if not agent then
+			local copyErr = copyOrErr(cx, action.body)
+			local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
+			cx:toast("info", "没有可用的 agent", tail)
+			finish(false, "", "没有可用的 agent（" .. tail .. "）")
+			return
+		end
+		local err = sendToAgent(cx, agent, pasteText(action.body))
+		if err then
+			cx:toast("error", "派发失败：" .. tostring(action.name or ""), err)
+			finish(false, "", err)
+			return
+		end
+		cx:toast("success", "已派给子代理")
+		-- agent 空闲后拿到最后一条回复（也就是子代理的结论）
+		cx.agents:wait(agent, { timeout = 600000 }):next(function(message: string?, waitErr: string?)
+			if waitErr then
+				finish(false, "", tostring(waitErr))
+				return
+			end
+			finish(true, tostring(message or ""), nil)
+		end)
+		return
+	end
+
 	if action.kind ~= "inject" then
 		return
 	end

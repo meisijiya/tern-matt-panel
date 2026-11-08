@@ -51,11 +51,9 @@ local COOLDOWN_SEC = 60
 --- 焦点事件很频繁（切 pane 就触发），真正省配额的是这道闸。
 local AUTO_REFRESH_SEC = 60
 
---- 一次「问下一步」最多等多久。omp -p 实测 51 秒（含读 gh 与文档），
---- 给到 5 分钟是为了容纳慢网络；超时后仍把已拿到的部分输出显示出来。
+--- 一次「问下一步」最多等多久：子代理要读票与文档，实测 1~3 分钟。
+--- 超时后卡片标超时，不再等它。
 local NEXT_STEP_TIMEOUT_MS = 300000
--- 模型由用户配置：留空就用 omp 自己的默认，面板不替用户选模型。
-local NEXT_STEP_MODEL_KEY = "nextStepModel"
 -- 结果另存一份到 kv：块被重建（插件热重载/窗口重排）时 state 会整个换掉，
 -- 只存内存的话一分钟的答案就没了。
 local NEXT_STEP_KEY = "nextStepResult"
@@ -113,6 +111,8 @@ type State = {
 	lastLoadAt: number?,
 	-- 「问下一步」的一次性结果（独立进程，不碰任何会话）
 	nextStep: NextStep?,
+	-- 本次派发的序号：结果回来时用它认领，避免旧结果盖新结果
+	pendingNextStepSeq: number?,
 	-- 抓取时刻的唯一真源：秒数。显示用的字符串每次都从它格式化，
 	-- 不再另存一份 —— 两个字段并存时真机出现过「时间字符串」与「年龄」
 	-- 互相矛盾（同一对数据却给出 4.8 分钟和 254 分钟两个答案）。
@@ -154,6 +154,7 @@ local function blank(): State
 		cooldownUntil = nil,
 		lastLoadAt = nil,
 		nextStep = nil,
+		pendingNextStepSeq = nil,
 		fetchedAtSec = nil,
 		legacyFetchedAt = nil,
 		message = nil,
@@ -555,39 +556,10 @@ local function nextStepBody(state: State, cx: BlockCx): string
 end
 
 
---- stderr 只留尾部几行：omp 的告警很长，全塞进面板没人看。
-local function tailLines(text: string, n: number): string
-	local all: { string } = {}
-	for line in (text or ""):gmatch("[^\r\n]+") do
-		if util.trim(line) ~= "" then
-			table.insert(all, line)
-		end
-	end
-	if #all == 0 then
-		return ""
-	end
-	local from = math.max(1, #all - n + 1)
-	local out: { string } = {}
-	for i = from, #all do
-		table.insert(out, all[i])
-	end
-	return table.concat(out, "\n")
-end
-
---- 面板不替用户选模型：kv 里有就用，没有就让 omp 用自己的默认。
-local function nextStepModel(): string?
-	local ok, v = pcall(tern.kv.get, NEXT_STEP_MODEL_KEY)
-	if ok and type(v) == "string" and util.trim(v) ~= "" then
-		return util.trim(v)
-	end
-	return nil
-end
-
---- 「问下一步」：起一次独立进程拿建议，不往任何会话里灌东西。
---- 独立上下文是这里唯一的理由 —— 结果与主会话互不污染，输出可直接观测、便于调提示词。
+--- 「问下一步」：把任务板快照派给相邻 agent，让它用 task 子代理排序。
+--- 子代理在 omp 的 Agents 列表里可见（模型、进度、花费都看得到），
+--- 面板只负责装信封与读回结果，不起进程、不猜模型。
 local function runNextStep(state: State, cx: BlockCx)
-	-- 一次点击就是一次真实模型调用（实测约 1 分钟）：正在跑时再点必须拒，
-	-- 否则两个结果按到达顺序互相覆盖，用户看到的是旧答案。
 	if state.nextStep and state.nextStep.phase == "running" then
 		state.message = "上一次还在问，等它回来"
 		return
@@ -596,95 +568,61 @@ local function runNextStep(state: State, cx: BlockCx)
 		state.message = "先识别到仓库与票，再问下一步"
 		return
 	end
-	local body = nextStepBody(state, cx)
-	local model = nextStepModel()
-	-- 正文走 argv，不走 stdin：真机上 omp 从 stdin 读时一直等不到 EOF
-	-- （CPU 几乎为零、卡到超时），传成位置参数就正常。
-	-- Windows 命令行上限约 32k，正文通常在 2k 以内；超长时仍然退 stdin。
-	local argv: { string } = { "omp", "-p", "--no-session" }
-	if model then
-		table.insert(argv, "--model")
-		table.insert(argv, model)
-	end
-	local viaStdin = #body > 8000
-	if not viaStdin then
-		table.insert(argv, body)
-	end
+	local body = templates.NEXT_STEP_DISPATCH.body .. nextStepBody(state, cx)
+	local seq = sendAction(state, cx, "ask-subagent", body, "问下一步")
+	state.pendingNextStepSeq = seq
+	state.nextStep = { phase = "running", repo = state.repo, text = "" }
+	state.message = "已派给子代理，等它算完"
+
+	-- 看门狗：子代理可能一直不回来。到点把卡片标超时并重画，别让它永远转圈。
 	local startedAt = nowSec()
-	state.nextStep = {
-		phase = "running",
-		repo = state.repo,
-		text = "",
-		model = model,
-	}
-	state.message = "正在问下一步（约 1 分钟）"
-
-	local settled = false
-	-- 看门狗：超时不一定会真的杀掉子进程（真机验过 300 秒后仍在跑），
-	-- 但界面必须先说实话，不能让卡片永远转圈。
+	local seqAtStart = seq
 	tern.timer(NEXT_STEP_TIMEOUT_MS + 5000, function()
-		local pending = state.nextStep
-		if settled or not pending or pending.phase ~= "running" then
+		local ns = state.nextStep
+		if not ns or ns.phase ~= "running" or state.pendingNextStepSeq ~= seqAtStart then
 			return
 		end
-		settled = true
-		pending.phase = "error"
-		pending.err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
+		ns.phase = "error"
+		ns.err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
+		ns.seconds = if nowSec() and startedAt then (nowSec() :: number) - startedAt else nil
 		state.message = "问下一步超时"
+		pcall(tern.kv.set, NEXT_STEP_KEY, ns)
 		cx:render()
 	end)
+end
 
-	tern.process.run(argv, {
-		cwd = state.root or cx.cwd,
-		stdin = if viaStdin then body else nil,
-		timeout_ms = NEXT_STEP_TIMEOUT_MS,
-	}):next(function(result: any)
-		local pending = state.nextStep
-		-- 结果回来时可能已经换了仓库、被看门狗判超时、或已被新的请求覆盖：
-		-- 旧答案一律丢弃。
-		if settled or not pending or pending.phase ~= "running" or pending.repo ~= state.repo then
-			-- 静默丢弃会让用户「点了、等了、什么都没发生」：说一句。
-			if state.repo ~= nil and pending and pending.repo ~= nil and pending.repo ~= state.repo then
-				state.message = "换了仓库，上一次的询问结果已丢弃"
-				cx:render()
-			end
-			return
-		end
-		settled = true
-		local out = util.trim(tostring(result and result.stdout or ""))
-		local errTail = tailLines(tostring(result and result.stderr or ""), 5)
-		local elapsed = if nowSec() and startedAt then (nowSec() :: number) - startedAt else nil
-		local warn = if result and result.status == 0 and errTail ~= "" then errTail else nil
-
-		local err: string? = nil
-		if result == nil then
-			err = "没拿到进程结果"
-		elseif result.timed_out then
-			err = string.format("超时（%d 秒）", NEXT_STEP_TIMEOUT_MS // 1000)
-		elseif result.status ~= 0 then
-			err = "退出码 " .. tostring(result.status)
-		elseif out == "" then
-			err = "没有输出"
-		end
-		if err and errTail ~= "" then
-			err = err .. "：" .. errTail
-		end
-
-		state.nextStep = {
-			phase = if err then "error" else "done",
-			repo = state.repo,
-			-- 失败和超时都保留已拿到的部分输出：半截答案也好过空面板
-			text = out,
-			err = err,
-			warn = warn,
-			model = model,
-			seconds = elapsed,
-		}
-		state.message = if err then "问下一步失败" else "问下一步完成"
-		pcall(tern.kv.set, NEXT_STEP_KEY, state.nextStep)
-		-- 宿主半边的异步回调不会自动重画：不显式画一次，卡片会一直停在「正在问」。
+--- 读子代理回写的结果：窗口半边在 agent 空闲后把最后一条回复写进 kv。
+local function readNextStepResult(state: State, cx: BlockCx)
+	local ns = state.nextStep
+	if not ns or ns.phase ~= "running" then
+		return
+	end
+	local ok, value = pcall(tern.kv.get, NEXT_STEP_KEY)
+	if not ok or type(value) ~= "table" then
+		return
+	end
+	if value.seq ~= state.pendingNextStepSeq then
+		return
+	end
+	-- 派发时的仓库和现在不一致：整张卡作废，别拿 A 的答案指导 B
+	if ns.repo ~= nil and state.repo ~= nil and ns.repo ~= state.repo then
+		state.nextStep = nil
+		state.message = "换了仓库，上一次的询问结果已丢弃"
 		cx:render()
-	end)
+		return
+	end
+	local text = util.trim(tostring(value.text or ""))
+	local err = if value.ok == false then (tostring(value.error or "子代理没有返回内容")) else nil
+	state.nextStep = {
+		phase = if err or text == "" then "error" else "done",
+		repo = ns.repo,
+		text = text,
+		err = err or (if text == "" then "子代理没有返回内容" else nil),
+		model = if type(value.model) == "string" then value.model else nil,
+		seconds = if type(value.seconds) == "number" then value.seconds else nil,
+	}
+	state.message = if state.nextStep.phase == "done" then "问下一步完成" else "问下一步失败"
+	cx:render()
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -1820,6 +1758,7 @@ tern.block.define(BLOCK_ID, {
 		local act = ev.act
 		-- 窗口半边执行完注入会戳一下，让宿主重画（读回写回的结果）。
 		if act == "refresh" then
+			readNextStepResult(state, cx)
 			readResult(state)
 			return
 		end
