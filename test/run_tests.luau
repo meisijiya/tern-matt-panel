@@ -621,6 +621,37 @@ test("问下一步只调 ask-matt，不再搬任务板快照", function()
 	end
 end)
 
+--- omp 只认 /skill: 前缀：注入正文里出现裸斜杠命令，会话就解析不到技能。
+local function outerSlashCmds(text: string): { string }
+	local out: { string } = {}
+	for word in string.gmatch(text, "%f[%S]/([%w%-]+)") do
+		table.insert(out, word)
+	end
+	return out
+end
+
+test("注入正文里的斜杠命令一律带 skill: 前缀", function()
+	local bodies = {
+		{ "问下一步", templates.render(templates.NEXT_STEP, { repo = "o/r" }) },
+		{ "提 BUG", templates.render(templates.NEW_BUG, { repo = "o/r" }) },
+		{ "体检", templates.render(templates.HEALTH_CHECK, { repo = "o/r" }) },
+	}
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(bodies, { e.title, templates.renderEntry(e, "o/r") })
+	end
+	for _, tpl in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { tpl.title, templates.render(tpl, { url = "u", title = "t" }) })
+	end
+	for _, item in ipairs(bodies) do
+		local name = item[1]
+		local text = item[2]
+		local cmds = outerSlashCmds(text)
+		for _, c in ipairs(cmds) do
+			ok(c == "skill" or string.sub(c, 1, 5) == "skill", name .. " 有不带 skill: 的斜杠命令：/" .. c)
+		end
+	end
+end)
+
 test("新增需求两条路、提 BUG、体检各调对技能", function()
 	local explore = templates.entryById("explore")
 	local implement = templates.entryById("implement")
@@ -630,7 +661,7 @@ test("新增需求两条路、提 BUG、体检各调对技能", function()
 	ok(string.find(e, "blockedBy", 1, true) ~= nil, "讲了并行与串行")
 	local i = templates.renderEntry(implement :: any, "me/repo")
 	ok(string.find(i, "/skill:grill-with-docs", 1, true) ~= nil, "实施走 grill-with-docs")
-	ok(string.find(i, "/to-spec", 1, true) ~= nil, "收尾提醒 to-spec")
+	ok(string.find(i, "/skill:to-spec", 1, true) ~= nil, "收尾提醒 to-spec")
 
 	local bug = templates.render(templates.NEW_BUG, { repo = "me/repo" })
 	ok(string.find(bug, "/skill:wayfinder", 1, true) ~= nil, "提 BUG 调 wayfinder")

@@ -16,17 +16,17 @@ local TEMPLATES: { Template } = {
 	{
 		id = "grilling",
 		title = "盘问",
-		body = "请使用 /grill-with-docs 技能，对以下需求做盘问式审查，找出隐藏假设与尚未拍板的决策。\n需求链接：{url}",
+		body = "请使用 /skill:grill-with-docs 技能，对以下需求做盘问式审查，找出隐藏假设与尚未拍板的决策。\n需求链接：{url}",
 	},
 	{
 		id = "prototype",
 		title = "原型",
-		body = "请使用 /prototype 技能，为以下需求快速做出可运行的原型，验证想法是否站得住。\n需求链接：{url}",
+		body = "请使用 /skill:prototype 技能，为以下需求快速做出可运行的原型，验证想法是否站得住。\n需求链接：{url}",
 	},
 	{
 		id = "research",
 		title = "调研",
-		body = "请使用 /research 技能，围绕以下主题展开调研，给出结论与一手来源。\n需求链接：{url}",
+		body = "请使用 /skill:research 技能，围绕以下主题展开调研，给出结论与一手来源。\n需求链接：{url}",
 	},
 	{
 		id = "task",
@@ -44,7 +44,7 @@ local INVESTIGATION = table.concat({
 	"## 调查（先查后问）",
 	"- [ ] 先读票正文、评论与仓内相关内容，再提问。",
 	"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
-	"- [ ] 既有笔记答不了，再按 /research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
+	"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
 	"- [ ] 提问前用一句话说明已查阅范围。",
 }, "\n")
 
@@ -178,7 +178,7 @@ local ENTRIES: { Entry } = {
 	{
 		id = "explore",
 		title = "还没想清楚：建路线图",
-		hint = "跑 /wayfinder 画一张地图，把未知与范围拆成决策票",
+		hint = "跑 /skill:wayfinder 画一张地图，把未知与范围拆成决策票",
 		body = table.concat({
 			"/skill:wayfinder",
 			"请帮我处理一个需求（严格遵循 wayfinder 技能规则）。",
@@ -203,7 +203,7 @@ local ENTRIES: { Entry } = {
 	{
 		id = "implement",
 		title = "需求已明确：直接对齐",
-		hint = "跑 /grill-with-docs 把需求问清，再 /to-spec → /to-tickets 拆成可做的票",
+		hint = "跑 /skill:grill-with-docs 把需求问清，再 /skill:to-spec → /skill:to-tickets 拆成可做的票",
 		body = table.concat({
 			"/skill:grill-with-docs",
 			"请帮我讨论一个需求（严格遵循 grill-with-docs 技能规则）。",
@@ -218,8 +218,8 @@ local ENTRIES: { Entry } = {
 			"（在这里写清这一次要讨论什么）",
 			"",
 			"## 收尾（下面两步由用户手动执行，不要替他做）",
-			"- [ ] 讨论结束、结论对齐后，提醒用户手动执行一次 /to-spec，把结论生成规格 issue。",
-			"- [ ] 规格 issue 生成后，再提醒用户手动执行一次 /to-tickets，把规格拆成实施 issue。",
+			"- [ ] 讨论结束、结论对齐后，提醒用户手动执行一次 /skill:to-spec，把结论生成规格 issue。",
+			"- [ ] 规格 issue 生成后，再提醒用户手动执行一次 /skill:to-tickets，把规格拆成实施 issue。",
 			"",
 			TOOLS,
 		}, "\n"),
