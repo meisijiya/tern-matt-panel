@@ -818,6 +818,62 @@ test("compose 复制失败不许报已复制", function()
 	ok(string.find(tostring(said[1][3]), "已复制", 1, true) == nil, "does not claim success")
 end)
 
+test("窗口半边派发子代理：提交、等待、写回 nextStepResult", function()
+	local winPane = 42
+	local asked: { string } = {}
+	local events: { { pane: number, id: string? } } = {}
+	local freshEvents: { { pane: number, id: string? } } = {}
+	local freshCx: any = {
+		pane = winPane,
+		session = {
+			event = function(_self: any, pane: number, ev: any)
+				table.insert(freshEvents, { pane = pane, id = ev and ev.id })
+			end,
+		},
+	}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function() end,
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function(_self: any, pane: number, ev: any)
+				table.insert(events, { pane = pane, id = ev and ev.id })
+			end,
+		},
+		agents = {
+			list = function() return { { pane = winPane, state = "idle" } } end,
+			ask = function(_self: any, _pane: number, text: string) table.insert(asked, text) end,
+			-- 等 290 秒后回来：回调会带来一个新的 cx
+			wait = function(_self: any, _agent: any, _opts: any)
+				local aw: any = {}
+				function aw:next(fn: any)
+					fn("| 票 | 建议 |", nil, freshCx)
+				end
+				return aw
+			end,
+		},
+	}
+
+	kvStore["action"] = { seq = 77, kind = "ask-subagent", pane = winPane, body = "派发正文", name = "问下一步" }
+	pollTick(cx)
+
+	eq(#asked, 1, "提交了一次")
+	eq(asked[1], "派发正文")
+	-- 结果必须写到宿主读的那个键上
+	local res = kvStore["nextStepResult"]
+	ok(type(res) == "table", "写了 nextStepResult")
+	eq(res.seq, 77)
+	eq(res.ok, true)
+	eq(res.text, "| 票 | 建议 |")
+	-- 重画事件必须用回调带来的新 cx（老 cx 在等待期间已失效）
+	eq(#freshEvents, 1, "用新 cx 发了重画事件")
+	eq(freshEvents[1].id, "main.refresh")
+end)
+
 --- 收一棵节点树里的按钮文字。
 local function buttonTexts(node: any, out: { string }): { string }
 	out = out or {}

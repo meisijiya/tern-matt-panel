@@ -16,6 +16,11 @@ local ACTION_KEY = "action"
 local RESULT_KEY = "result"
 -- 注入结果单独一个键：RESULT_KEY 已被前沿/版本摘要占着。
 local INJECT_RESULT_KEY = "inject_result"
+-- 问下一步的结果单独一个键：它和注入的 pendingSeq 语义不同，混用会互相覆盖。
+local NEXT_STEP_RESULT_KEY = "nextStepResult"
+-- 等子代理的上限必须小于宿主的看门狗（305 秒），否则宿主先判超时、
+-- 窗口晚到的答案会被当成过期丢掉。
+local SUBAGENT_WAIT_MS = 290000
 local REPO_KEY = "repo"
 -- 面板开的那个 pane：宿主开块时写进来，聚焦时往它戳自动刷新。
 local PANEL_KEY = "panel"
@@ -250,42 +255,44 @@ local function handleAction(cx: WindowCx)
 	-- 这里只负责提交与读回，判断与执行都在会话里。
 	if action.kind == "ask-subagent" then
 		local agent = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
-		local function finish(ok: boolean, text: string, err: string?)
+		-- 回写用「本次调用拿到的 cx」：窗口 handler 的 cx 只在当次有效，
+		-- agents:wait 的回调会带来一个新的 cx（等几十秒后老的已经不能用了）。
+		local function finish(c: WindowCx, ok: boolean, text: string, err: string?)
 			pcall(function()
-				tern.kv.set(INJECT_RESULT_KEY, {
+				tern.kv.set(NEXT_STEP_RESULT_KEY, {
 					seq = seq,
 					ok = ok,
 					name = tostring(action.name or ""),
 					error = err or "",
 					text = text,
-					-- 结果与注入共用回写键，但用 seq 区分；宿主只看 seq 对得上的那条
 				})
 			end)
 			pcall(function()
-				cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+				c.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
 			end)
 		end
 		if not agent then
 			local copyErr = copyOrErr(cx, action.body)
 			local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
 			cx:toast("info", "没有可用的 agent", tail)
-			finish(false, "", "没有可用的 agent（" .. tail .. "）")
+			finish(cx, false, "", "没有可用的 agent（" .. tail .. "）")
 			return
 		end
 		local err = sendToAgent(cx, agent, pasteText(action.body))
 		if err then
 			cx:toast("error", "派发失败：" .. tostring(action.name or ""), err)
-			finish(false, "", err)
+			finish(cx, false, "", err)
 			return
 		end
 		cx:toast("success", "已派给子代理")
 		-- agent 空闲后拿到最后一条回复（也就是子代理的结论）
-		cx.agents:wait(agent, { timeout = 600000 }):next(function(message: string?, waitErr: string?)
+		cx.agents:wait(agent, { timeout = SUBAGENT_WAIT_MS }):next(function(message: string?, waitErr: string?, freshCx: any)
+			local c: WindowCx = (freshCx or cx) :: WindowCx
 			if waitErr then
-				finish(false, "", tostring(waitErr))
+				finish(c, false, "", tostring(waitErr))
 				return
 			end
-			finish(true, tostring(message or ""), nil)
+			finish(c, true, tostring(message or ""), nil)
 		end)
 		return
 	end
