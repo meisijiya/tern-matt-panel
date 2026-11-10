@@ -1870,6 +1870,45 @@ test("切排序重拉失败：保留旧内容但不再用旧游标续拉", funct
 	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
 end)
 
+test("假数据翻页：50 → 100 → 120，去重且到末页按钮消失", function()
+	local st = pagedState(0)
+	local nodes2, nodes3 = {}, {}
+	for i = 151, 200 do
+		table.insert(nodes2, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	for i = 201, 220 do
+		table.insert(nodes3, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	jsonPayloads["P2"] = { data = { repository = { issues = {
+		nodes = nodes2, pageInfo = { hasNextPage = true, endCursor = "c2" },
+	} } } }
+	jsonPayloads["P3"] = { data = { repository = { issues = {
+		nodes = nodes3, pageInfo = { hasNextPage = false, endCursor = "c3" },
+	} } } }
+	-- 首屏也造 50 条，避免依赖 pagedState 的编号。
+	for i = 101, 150 do
+		table.insert(st.closedIssues, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	st.tickets = tracker.parseIssues(st.closedIssues)
+	processFixtures = { { match = "states:CLOSED", results = {
+		{ status = 0, stdout = "P2", stderr = "" },
+		{ status = 0, stdout = "P3", stderr = "" },
+	} } }
+	eq(#st.closedIssues, 50, "首屏 50")
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 100, "第一次续拉到 100")
+	ok(hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "还有下一页")
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 120, "第二次续拉到 120")
+	eq(st.closedHasNext, false, "末页")
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "末页按钮消失")
+	local seen = {}
+	for _, t in ipairs(st.closedIssues) do
+		ok(not seen[t.number], "票号重复：" .. tostring(t.number))
+		seen[t.number] = true
+	end
+end)
+
 test("续拉失败保留已加载内容并提示，不清屏", function()
 	local st = pagedState(2)
 	local before = #st.closedIssues
