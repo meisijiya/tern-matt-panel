@@ -128,6 +128,11 @@ function M.parseRemoteUrl(url: string): string?
 	u = (u:gsub("/+$", ""))
 	-- .git 后缀可有可无
 	local base = (u:gsub("%.git$", ""))
+	-- 面板输入框允许直接填 owner/repo（不带主机/协议）。
+	local bareOwner, bareRepo = string.match(base, "^([%w_.-]+)/([%w_.-]+)$")
+	if bareOwner and bareRepo then
+		return bareOwner .. "/" .. bareRepo
+	end
 	local owner, repo = string.match(base, "[:/]([%w_.-]+)/([%w_.-]+)$")
 	if owner and repo then
 		return owner .. "/" .. repo

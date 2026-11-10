@@ -522,6 +522,7 @@ end)
 
 test("util.parseRemoteUrl 认各种 remote 地址", function()
 	eq(util.parseRemoteUrl("git@github.com:meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "ssh")
+	eq(util.parseRemoteUrl("meisijiya/tern-matt-panel"), "meisijiya/tern-matt-panel", "bare owner/repo")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "https")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel"), "meisijiya/tern-matt-panel", "no .git suffix")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel/"), "meisijiya/tern-matt-panel", "trailing slash")
