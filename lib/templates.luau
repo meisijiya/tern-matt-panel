@@ -25,7 +25,6 @@ local ASK_BACK = ASK_BACK_BASE .. "\n- [ ] 反问走 /skill:grilling。"
 
 local USER_INPUT_NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 
-
 --- 四个票动作模板，按 wayfinder 票类型分（issue #9 决策）。
 --- task 不挂技能，只给票链接 + 执行指令；其余三类只调用对应技能。
 local TEMPLATES: { Template } = {
