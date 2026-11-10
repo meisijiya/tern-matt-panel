@@ -1188,10 +1188,12 @@ test("九个模板的主技能命令都在白名单内", function()
 end)
 
 test("九个模板末节都有用户输入声明", function()
+	local NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 	for _, t in ipairs(ALL_TEMPLATES) do
 		ok(string.find(t.body, USER_INPUT_MARK, 1, true) ~= nil, t.name .. " 有用户输入声明")
-		local stripped = string.gsub(t.body, USER_INPUT_MARK .. "按它执行；与上面冲突时以用户输入为准。", "")
-		ok(string.match(stripped, "%s*$") ~= nil, t.name .. " 的声明在末节")
+		-- 声明必须落在末节：去掉尾部空白后，正文以这句话结尾。
+		local tail = string.gsub(t.body, "%s+$", "")
+		ok(string.sub(tail, -#NOTE) == NOTE, t.name .. " 的声明在末节")
 	end
 end)
 
@@ -1399,7 +1401,7 @@ test("票动作注入的正文套信封且带票号", function()
 	local action = kvStore["action"]
 	ok(type(action) == "table", "写了注入请求")
 	eq(action.kind, "inject", "走注入")
-	eq(action.body, action.body, "正文存在")
+	ok(#action.body > 0, "正文非空")
 	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
 	ok(string.find(action.body, END_LINE, 1, true) ~= nil, "以结束行收尾")
 	eq(st.pendingSeq, action.seq, "一次动作只发一次注入请求")
