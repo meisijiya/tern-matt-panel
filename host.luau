@@ -302,7 +302,7 @@ local function decodeIssues(text: string): { any }?
 	return value
 end
 
---- 拉任务板：地图、票、依赖。用 gh 的 JSON 输出。
+--- 拉任务板：地图、票、依赖。用 `gh api graphql` 的游标分页输出。
 local function loadBoard(state: State, cx: BlockCx)
 	local now = nowSec()
 	if now and state.cooldownUntil and now < state.cooldownUntil then
@@ -986,7 +986,7 @@ local function boardView(state: State, cx: BlockCx): Node
 		end
 		local children: { Node } = { list }
 		-- 已关组是分页的：还有下一页且没到上限时，组内末尾给「加载更多」。
-		if g.closed and state.closedHasNext and #g.items < CLOSED_CAP then
+		if g.closed and state.closedHasNext and not state.loading and #g.items < CLOSED_CAP then
 			table.insert(children, ui.row({
 				ui.button(
 					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #g.items)),
@@ -1740,7 +1740,7 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "load-more-closed" then
-			if state.repo and state.closedHasNext and #state.closedIssues < CLOSED_CAP then
+			if state.repo and state.closedHasNext and not state.loading and #state.closedIssues < CLOSED_CAP then
 				fetchClosedPage(state, cx, state.repo, false, state.boardGen)
 			end
 			return

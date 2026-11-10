@@ -1762,6 +1762,9 @@ test("已关组有下一页时出现加载更多，点一次追加下一页", fu
 	local st = pagedState(1)
 	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
 	ok(hasLoadMore(texts), "组内末尾出现加载更多")
+	st.loading = true
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "刷新在途时不给续拉")
+	st.loading = false
 	jsonPayloads["PAGE2"] = { data = { repository = { issues = {
 		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
