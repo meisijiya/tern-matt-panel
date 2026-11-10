@@ -688,7 +688,7 @@ test("新增需求两条路、提 BUG、体检各调对技能", function()
 	ok(string.find(bug, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(bug, "bug 标签", 1, true) ~= nil, "要求打 bug 标签")
 	ok(string.find(bug, "查重", 1, true) ~= nil, "建单前查重")
-	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "四项填空在")
+	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "索取要素在")
 
 	local health = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" })
 	ok(string.find(health, "游离", 1, true) ~= nil, "说清什么算游离")
@@ -1100,7 +1100,7 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
 	eq(kvStore["action"].kind, "inject")
-	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带四项填空")
+	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带索取要素")
 
 	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
 	ok(string.find(kvStore["action"].body, "游离", 1, true) ~= nil, "体检正文带游离判据")
@@ -1308,6 +1308,89 @@ test("T4 每个模板都写清交付形状与可复核信息", function()
 			t.name .. " 写清可复核信息"
 		)
 	end
+end)
+
+--- T3：三个按钮模板（问下一步 / 提 BUG / 体检）按统一骨架排布，
+--- 公共措辞合并成一段，且各自写清场景化的交付形状。
+local T3_BUTTONS: { { name: string, body: string } } = {
+	{ name = "问下一步", body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) },
+	{ name = "提 BUG", body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) },
+	{ name = "体检", body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) },
+}
+
+local function countOf(text: string, needle: string): number
+	local n = 0
+	for _ in string.gmatch(text, needle) do
+		n = n + 1
+	end
+	return n
+end
+
+test("T3 三个按钮按统一骨架排布：目标 → 事实核验 → 边界 → 交付 → 反问", function()
+	eq(#T3_BUTTONS, 3, "三个按钮模板")
+	for _, t in ipairs(T3_BUTTONS) do
+		local goal = posOf(t.body, "## 目标")
+		local facts = posOf(t.body, "## 事实核验与工具（先查后问）")
+		local bound = posOf(t.body, "## 边界")
+		local deliver = posOf(t.body, "## 交付")
+		ok(goal > 0, t.name .. " 有目标段")
+		ok(facts > goal, t.name .. " 事实核验在目标之后")
+		ok(bound > facts, t.name .. " 边界在事实核验之后")
+		ok(deliver > bound, t.name .. " 交付在边界之后")
+		ok(posOf(t.body, ASK_MARK) > deliver, t.name .. " 反问在交付之后")
+	end
+end)
+
+test("T3 公共段合并成一段，同一要求不再两处重复", function()
+	for _, t in ipairs(T3_BUTTONS) do
+		eq(countOf(t.body, "## 事实核验与工具（先查后问）"), 1, t.name .. " 公共段恰好一次")
+		eq(countOf(t.body, "票的读写一律走 gh"), 1, t.name .. " gh 读写只写一次")
+		eq(countOf(t.body, "2~4 条可选做法"), 1, t.name .. " 收尾可选做法只写一次")
+		eq(countOf(t.body, "先读票正文、评论与仓内相关内容"), 1, t.name .. " 先读再问只写一次")
+		eq(countOf(t.body, "\n## 工具"), 0, t.name .. " 不再有单独的 ## 工具 段")
+		eq(countOf(t.body, "## 调查（先查后问）"), 0, t.name .. " 不再有单独的 ## 调查 段")
+	end
+end)
+
+test("T3 问下一步写死交付形状与判断顺序", function()
+	local body = T3_BUTTONS[1].body
+	ok(string.find(body, "最多 3 条", 1, true) ~= nil, "最多 3 条")
+	ok(string.find(body, "没核到的：", 1, true) ~= nil, "末行写没核到的")
+	ok(string.find(body, "没核到的：无", 1, true) ~= nil, "全都核到写无")
+	ok(string.find(body, "做什么 · 用哪个技能命令 · 第一步具体动作 · 一句依据", 1, true) ~= nil, "每条一行的四要素")
+	ok(string.find(body, "有坏的正", 1, true) ~= nil, "坏了的正优先")
+	ok(string.find(body, "有卡住的活", 1, true) ~= nil, "卡住的活优先")
+	ok(string.find(body, "能解锁下游最多", 1, true) ~= nil, "解锁下游最多")
+	ok(string.find(body, "盘问 > 调研 > 原型 > 执行", 1, true) ~= nil, "阶段顺序")
+end)
+
+test("T3 提 BUG 的索取要素各出现一次且不替报告人编", function()
+	local body = T3_BUTTONS[2].body
+	for _, part in ipairs({ "现象与影响范围", "期望", "复现步骤", "频率", "OS", "日志" }) do
+		eq(countOf(body, part), 1, "提 BUG 的要素「" .. part .. "」恰好一次")
+	end
+	ok(string.find(body, "不替报告人编", 1, true) ~= nil, "不替报告人编")
+	ok(string.find(body, "needs-info", 1, true) ~= nil, "缺的标 needs-info")
+	ok(string.find(body, "全扫一遍", 1, true) ~= nil, "查重要全扫")
+	ok(string.find(body, "--state open --label bug", 1, true) ~= nil, "扫 open 的 bug 票")
+	ok(string.find(body, "--state closed --label bug", 1, true) ~= nil, "扫 closed 的 bug 票")
+	ok(string.find(body, "这些是不是同一个问题", 1, true) ~= nil, "命中要问报告人")
+	ok(string.find(body, "在旧单下评论", 1, true) ~= nil, "同问题旧单开着则评论补信息")
+	ok(string.find(body, "按回归处理", 1, true) ~= nil, "同问题旧单已关则按回归新建")
+	ok(string.find(body, "查重记录", 1, true) ~= nil, "查重记录")
+end)
+
+test("T3 体检先出建议清单等点头，只做两种结构动作", function()
+	local body = T3_BUTTONS[3].body
+	ok(string.find(body, "只做两种结构动作", 1, true) ~= nil, "只做两种结构动作")
+	ok(string.find(body, "挂到合适的地图下", 1, true) ~= nil, "挂到地图下")
+	ok(string.find(body, "开一张新地图", 1, true) ~= nil, "开新地图")
+	ok(string.find(body, "等点头", 1, true) ~= nil, "等点头")
+	ok(string.find(body, "停下来等点头", 1, true) ~= nil, "写完停下来等点头")
+	ok(string.find(body, "不自动往票上写评论", 1, true) ~= nil, "不自动写评论")
+	ok(string.find(body, "一律写进建议", 1, true) ~= nil, "其余写进建议")
+	ok(string.find(body, "三条同时成立才算", 1, true) ~= nil, "什么算游离的判据")
+	ok(string.find(body, "Destination 与 Notes", 1, true) ~= nil, "挑地图的判据")
 end)
 
 -- -------------------------------------------------------------- report ----
