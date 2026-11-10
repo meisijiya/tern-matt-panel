@@ -2039,6 +2039,39 @@ test("点地图行按需拉正文并解析迷雾/范围外", function()
 	ok(string.find(text, "范围外", 1, true) ~= nil, "显示范围外节")
 end)
 
+test("刷新后仍在地图页：重建的 Map 会补拉正文", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "map"
+	st.mapSel = 1
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
+	jsonPayloads["OPEN_MAP"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["CLOSED_EMPTY"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_MAP", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "CLOSED_EMPTY", stderr = "" } },
+		{ match = "repos/me/repo/issues/1", result = { status = 0, stdout = "## 尚未明确\n- 补拉成功\n", stderr = "" } },
+	}
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	eq(#st.maps, 1, "刷新后地图还在")
+	eq(st.maps[1].bodyLoaded, true, "仍在地图页会补拉正文")
+	eq(st.maps[1].fog, "- 补拉成功", "迷雾重新解析")
+	local hit = false
+	for _, call in ipairs(processCalls) do
+		if string.find(table.concat(call.argv, " "), "repos/me/repo/issues/1", 1, true) then
+			hit = true
+		end
+	end
+	ok(hit, "刷新后发了地图正文请求")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

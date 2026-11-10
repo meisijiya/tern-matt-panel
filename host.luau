@@ -259,6 +259,7 @@ end
 --- 真正拉 issue 的那一步。
 local fetchIssues: (State, BlockCx, string, number) -> ()
 local fetchClosedPage: (State, BlockCx, string, boolean, number) -> ()
+local ensureMapBody: (State, BlockCx, string) -> ()
 
 --- 从 git remote 推断 owner/repo。
 --- 失败时把原因带回去：只回 nil，用户看到的永远是「没识别到」，不知道卡在哪。
@@ -496,6 +497,7 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 				state.closedCursor = nil
 				-- open 已经拉全了：已关页失败也要先把 open 侧显示出来。
 				rebuildBoard(state)
+				ensureMapBody(state, cx, repo)
 			end
 			cx:render()
 			return
@@ -512,6 +514,10 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 		state.closedHasNext = hasNext
 		state.loading = false
 		rebuildBoard(state)
+		if reset then
+			-- 刷新会重建 Map，正文标记回到未加载；仍在地图页就补拉一次。
+			ensureMapBody(state, cx, repo)
+		end
 		if #state.tickets == 0 then
 			state.message = "这个仓库还没有 issue"
 		end
@@ -1167,6 +1173,17 @@ local function loadMapBody(state: State, cx: BlockCx, repo: string, m: tracker.M
 		end
 		cx:render()
 	end)
+end
+
+--- 刷新后仍停在地图页时补拉当前地图正文。
+ensureMapBody = function(state: State, cx: BlockCx, repo: string)
+	if state.view ~= "map" then
+		return
+	end
+	local m = selectedMap(state)
+	if m then
+		loadMapBody(state, cx, repo, m)
+	end
 end
 
 --- 票详情区：描述、动作按钮、阻塞关系。
