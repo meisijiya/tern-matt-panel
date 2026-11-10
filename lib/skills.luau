@@ -114,7 +114,7 @@ function M.isHidden(skill: Skill): boolean
 end
 
 --- 列 root/skills/<category>/<skill>/SKILL.md，构造整包；根或 skills 目录不存在返回 nil。
-function M.readPackage(root: string): SkillPackage?
+function M.readPackage(root: string, version: any?): SkillPackage?
 	if not root or not (pcall(tern.fs.exists, root .. "/skills") and tern.fs.exists(root .. "/skills")) then
 		return nil
 	end
@@ -142,9 +142,13 @@ function M.readPackage(root: string): SkillPackage?
 			end
 		end
 	end
+	local ver = version
+	if type(ver) ~= "string" or ver == "" then
+		ver = paths.packageVersion(root)
+	end
 	return {
 		root = root,
-		version = paths.packageVersion(root),
+		version = ver,
 		skills = skills,
 	}
 end
