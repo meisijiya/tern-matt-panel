@@ -461,7 +461,7 @@ end
 --- 宿主不能自己下"成功"的结论：填入可能失败（没 agent、写不进去）。
 --- 所以这里只标"填入中"，等窗口半边把结果写回 INJECT_RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
-	if body:match("^%s*$") then
+	if body == "" then
 		state.message = "没有正文，不注入"
 		return
 	end
@@ -1548,7 +1548,7 @@ tern.block.define(BLOCK_ID, {
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
-				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.renderEntry(e, state.repo or "")), e.title)
+				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.renderEntry(e, state.repo or "（先识别仓库）")), e.title)
 			end
 			return
 		end

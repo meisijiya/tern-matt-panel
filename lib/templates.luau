@@ -11,7 +11,7 @@ export type Template = {
 }
 
 --- 共享反问小节：九个模板各引用一次。
---- 路由版（七个模板挂）与无路由版（grilling 入口、implement 入口）仅差「反问走 /skill:grilling」一行。
+--- 路由版（七个模板挂）与无路由版（盘问票动作、implement 入口）仅差「反问走 /skill:grilling」一行。
 local ASK_BACK_BASE = table.concat({
 	"## 反问（信息不全时先问）",
 	"- [ ] 结束行之后没有用户补充，或补充说不清对象/范围/验收标准时，先反问，不替用户猜。",
@@ -26,7 +26,7 @@ local ASK_BACK = ASK_BACK_BASE .. "\n- [ ] 反问走 /skill:grilling。"
 local USER_INPUT_NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 
 --- 四个票动作模板，按 wayfinder 票类型分（issue #9 决策）。
---- task 不挂技能，只给票链接 + 执行指令；其余三类只调用对应技能。
+--- 执行票挂 ASK_BACK（含 /skill:grilling），其余三类也只调用对应技能。
 local TEMPLATES: { Template } = {
 	{
 		id = "grilling",
@@ -177,8 +177,6 @@ M.NEXT_STEP = {
 		"仓库：{repo}",
 		"",
 		CHECK_AND_TOOLS,
-		"- [ ] 用 gh 读开放票与依赖（gh issue list --state open），再用 git status 看手上有没有半成品；不要凭记忆猜进度。",
-		"- [ ] 仓里这几处存在就先读，不存在就跳过，不要引用不存在的东西：GLOSSARY.md、docs/adr/、docs/spec/。",
 		"",
 		"## 边界",
 		"- [ ] 只做分析：不改仓库、不认领票、不关闭票、不建 PR、不提交。",
@@ -231,7 +229,7 @@ M.NEW_BUG = {
 		"- [ ] 相关日志或错误文本：报错原文，或关键片段。",
 		"",
 		"## 查重（建单前必做）",
-		"- [ ] 收齐「实际」后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",
+		"- [ ] 收齐现象描述后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",
 		"- [ ] 标题像的用 gh issue view 看正文；清单没取全就把这句写进查重记录。",
 		"- [ ] 有命中时先别下结论：把最多 3 个候选（编号、标题、像在哪）列给报告人，问一句「这些是不是同一个问题」，等到回答再决定。",
 		"- [ ] 同一个问题且旧单开着：不建新单，在旧单下评论补齐缺的要素（现象、步骤、环境），旧单不关。",
@@ -268,7 +266,6 @@ M.HEALTH_CHECK = {
 		"范围是整个仓库的开放票，不跟随面板当前的筛选。",
 		"",
 		CHECK_AND_TOOLS,
-		"- [ ] 读全仓开放票与依赖用 gh（gh issue list --state open、gh issue view）。",
 		"",
 		"## 边界",
 		"- [ ] 只做两种结构动作：建原生子议题边把票挂到合适的地图下；为人点过头的票开一张新地图。",
