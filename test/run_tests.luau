@@ -594,10 +594,30 @@ end)
 
 test("commands.buildTicketCommand", function()
 	local tpl = templates.TEMPLATES[4] -- task
-	local ticket = { url = "http://ticket", title = "MyTask" }
+	local ticket = { url = "http://ticket", title = "MyTask", number = 12 }
 	local out = commands.buildTicketCommand(ticket, tpl)
 	ok(string.find(out, "http://ticket", 1, true) ~= nil, "url in ticket cmd")
 	ok(string.find(out, "MyTask", 1, true) ~= nil, "title in ticket cmd")
+	ok(string.find(out, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
+	ok(string.find(out, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "有结束行")
+end)
+
+test("注入信封拼装", function()
+	local body = "第一行\n第二行"
+	local out = commands.buildInjectionBody("问下一步", body)
+	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====")
+	ok(string.find(out, "· #", 1, true) == nil, "没有票号时不带票号段")
+	local out2 = commands.buildInjectionBody("执行", body, 7)
+	ok(string.find(out2, "===== 注入开始 · tern-matt-panel · 执行 · #7 =====", 1, true) == 1, "有票号时带 · #编号")
+	eq(commands.buildInjectionBody("体检", ""), "", "正文为空不产出信封")
+	eq(commands.buildInjectionBody("体检", "   \n\t "), "", "正文只有空白不产出信封")
+end)
+
+test("技能单行注入不套信封", function()
+	local out = commands.buildSkillCommand({ name = "wayfinder" })
+	eq(out, "/skill:wayfinder")
+	ok(string.find(out, "=====", 1, true) == nil, "没有信封")
+	ok(string.find(out, "\n", 1, true) == nil, "仍是单行")
 end)
 
 test("templates.render 缺的占位符留原样", function()
@@ -668,7 +688,7 @@ test("新增需求两条路、提 BUG、体检各调对技能", function()
 	ok(string.find(bug, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(bug, "bug 标签", 1, true) ~= nil, "要求打 bug 标签")
 	ok(string.find(bug, "查重", 1, true) ~= nil, "建单前查重")
-	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "四项填空在")
+	ok(string.find(bug, "复现步骤", 1, true) ~= nil, "索取要素在")
 
 	local health = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" })
 	ok(string.find(health, "游离", 1, true) ~= nil, "说清什么算游离")
@@ -780,12 +800,15 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 	eq(res.seq, 5, "seq echoed")
 
 	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
-	-- 用户就没机会补内容了。
-	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = "第一行\n第二行", name = "多行" }
+	-- 用户就没机会补内容了。整段文本是信封包着的正文。
+	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 ====="
+	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
 	eq(#typed, 2, "多行正文也打进 pane")
-	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "以括号粘贴开头")
-	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "以括号粘贴收尾")
+	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
+	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "外层以括号粘贴收尾")
+	ok(string.find(typed[2].text, "===== 注入开始 · tern-matt-panel · 测试 =====", 1, true) ~= nil, "整段以开始行开头")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
 	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
 end)
 
@@ -938,10 +961,13 @@ test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	ok(type(action) == "table", "写了注入请求")
 	eq(action.kind, "inject", "走普通注入，不起子代理")
 	local body = action.body
-	ok(string.find(body, "/skill:ask-matt", 1, true) == 1, "首行是技能命令")
+	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 问下一步 =====", 1, true) == 1, "以开始行开头")
+	ok(string.find(body, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "以结束行收尾")
+	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "正文里有技能命令")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
 	ok(string.find(tostring(st.message), "填入中", 1, true) ~= nil, "提示填入中")
+	eq(st.pendingSeq, action.seq, "一次动作只发一次注入请求")
 end)
 
 --- 收一棵节点树里的全部文字（text 的 spans、button/badge 的 t、md 的 text）。
@@ -1074,7 +1100,7 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	local st = nextStepState()
 	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
 	eq(kvStore["action"].kind, "inject")
-	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带四项填空")
+	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带索取要素")
 
 	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
 	ok(string.find(kvStore["action"].body, "游离", 1, true) ~= nil, "体检正文带游离判据")
@@ -1084,6 +1110,326 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	eq(st.view, "board", "切到任务板")
 	eq(st.newDemand, true, "叫出两条路")
 	ok(kvStore["action"] == nil, "选择前不注入")
+end)
+
+--- 九个模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
+--- 末节有用户输入声明、反问路由正确。
+local ALL_TEMPLATES: { { name: string, body: string } } = {}
+for _, tpl in ipairs(templates.TEMPLATES) do
+	table.insert(ALL_TEMPLATES, {
+		name = tpl.title,
+		body = templates.render(tpl, { url = "http://x/1", title = "票标题" }),
+	})
+end
+table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
+for _, e in ipairs(templates.ENTRIES) do
+	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.renderEntry(e, "me/repo") })
+end
+
+local ASK_MARK = "## 反问（信息不全时先问）"
+local USER_INPUT_MARK = "结束行之后的文字是用户输入"
+local SKILL_WHITELIST = {
+	"/skill:ask-matt",
+	"/skill:wayfinder",
+	"/skill:grill-with-docs",
+	"/skill:prototype",
+	"/skill:research",
+	"/skill:grilling",
+	-- 收尾提醒用的既有技能名
+	"/skill:to-spec",
+	"/skill:to-tickets",
+}
+-- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
+local function findPlaceholder(body: string): string?
+	local hit = body:match("（[^）]*填[^）]*）")
+	if hit then
+		return hit
+	end
+	for line in string.gmatch(body, "[^\n]+") do
+		if string.match(line, "：$") and #line < 40 then
+			return line
+		end
+	end
+	return nil
+end
+
+test("九个模板都挂反问小节且只挂一次", function()
+	eq(#ALL_TEMPLATES, 9, "九个模板都收进来了")
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local n = 0
+		for _ in string.gmatch(t.body, ASK_MARK) do
+			n = n + 1
+		end
+		eq(n, 1, t.name .. " 的反问小节恰好一次")
+	end
+end)
+
+test("九个模板正文里没有待填空位", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local hit = findPlaceholder(t.body)
+		ok(hit == nil, t.name .. " 没有占位（命中：" .. tostring(hit) .. "）")
+	end
+end)
+
+test("九个模板的主技能命令都在白名单内", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		for cmd in string.gmatch(t.body, "/skill:[%w%-_]+") do
+			local allowed = false
+			for _, w in ipairs(SKILL_WHITELIST) do
+				if cmd == w then
+					allowed = true
+				end
+			end
+			ok(allowed, t.name .. " 的命令 " .. cmd .. " 在白名单内")
+		end
+	end
+end)
+
+test("九个模板末节都有用户输入声明", function()
+	local NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
+	for _, t in ipairs(ALL_TEMPLATES) do
+		ok(string.find(t.body, USER_INPUT_MARK, 1, true) ~= nil, t.name .. " 有用户输入声明")
+		-- 声明必须落在末节：去掉尾部空白后，正文以这句话结尾。
+		local tail = string.gsub(t.body, "%s+$", "")
+		ok(string.sub(tail, -#NOTE) == NOTE, t.name .. " 的声明在末节")
+	end
+end)
+
+test("反问路由：盘问与需求已明确不挂 grilling，其余七个挂", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local has = string.find(t.body, "/skill:grilling", 1, true) ~= nil
+		if t.name == "盘问" or t.name == "入口·需求已明确" then
+			ok(not has, t.name .. " 不挂 grilling")
+		else
+			ok(has, t.name .. " 挂 grilling")
+		end
+	end
+end)
+
+--- T4：六个模板（四个票动作 + 两个入口）按统一骨架排布，主技能命令正确，
+--- 交付形状写清，入口两条路由要点仍在。
+local SKELETON_ORDER = { "## 目标", "## 事实核验", "## 边界" }
+
+local function posOf(body: string, needle: string): number
+	return string.find(body, needle, 1, true) or -1
+end
+
+local T4_BODIES: { { name: string, body: string } } = {}
+for _, tpl in ipairs(templates.TEMPLATES) do
+	table.insert(T4_BODIES, { name = tpl.title, body = templates.render(tpl, { url = "http://x/1", title = "票标题" }) })
+end
+for _, e in ipairs(templates.ENTRIES) do
+	table.insert(T4_BODIES, { name = e.injectAction, body = (e.body:gsub("{repo}", "me/repo")) })
+end
+
+test("T4 六个模板的骨架段落顺序一致", function()
+	eq(#T4_BODIES, 6, "四个票动作 + 两个入口")
+	for _, t in ipairs(T4_BODIES) do
+		local last = -1
+		for _, mark in ipairs(SKELETON_ORDER) do
+			local p = posOf(t.body, mark)
+			ok(p > 0, t.name .. " 有段落 " .. mark)
+			ok(p > last, t.name .. " 的段落顺序 " .. mark)
+			last = p
+		end
+		local ask = posOf(t.body, ASK_MARK)
+		ok(ask > last, t.name .. " 的反问小节在骨架段落之后")
+		local deliver = posOf(t.body, "## 交付")
+		local judge = posOf(t.body, "## 判断与交付")
+		ok(deliver > 0 or judge > 0, t.name .. " 有交付形状段落")
+		ok(ask > deliver and ask > judge, t.name .. " 的交付形状在反问之前")
+	end
+end)
+
+test("T4 六个模板的主技能命令正确", function()
+	local expect = {
+		["盘问"] = "/skill:grill-with-docs",
+		["原型"] = "/skill:prototype",
+		["调研"] = "/skill:research",
+		["入口·还没想清楚"] = "/skill:wayfinder",
+		["入口·需求已明确"] = "/skill:grill-with-docs",
+	}
+	for _, t in ipairs(T4_BODIES) do
+		local want = expect[t.name]
+		if want then
+			ok(posOf(t.body, want) > 0, t.name .. " 用 " .. want)
+		end
+	end
+	-- 执行票不挂技能，只保留认领并执行、回报结论的指令
+	local task = templates.byId("task")
+	ok(task ~= nil, "执行票模板在")
+	local taskBody = templates.render(task :: any, { url = "http://x/1", title = "票标题" })
+	ok(string.find(taskBody, "/skill:grill-with-docs", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:prototype", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:research", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:wayfinder", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "认领并执行", 1, true) ~= nil, "执行票保留认领并执行")
+	ok(string.find(taskBody, "回报", 1, true) ~= nil, "执行票保留回报结论")
+end)
+
+test("T4 票动作模板带票链接，执行票带标题与先问不直接开工", function()
+	for _, tpl in ipairs(templates.TEMPLATES) do
+		local body = templates.render(tpl, { url = "http://x/1", title = "票标题" })
+		ok(string.find(body, "http://x/1", 1, true) ~= nil, tpl.title .. " 带票链接")
+	end
+	local task = templates.byId("task")
+	local taskBody = templates.render(task :: any, { url = "http://x/1", title = "票标题" })
+	ok(string.find(taskBody, "票标题", 1, true) ~= nil, "执行票带任务标题")
+	ok(string.find(taskBody, "先问", 1, true) ~= nil, "执行票要求先问")
+	ok(string.find(taskBody, "不直接开工", 1, true) ~= nil, "执行票要求不直接开工")
+end)
+
+test("T4 两个入口的路由要点仍在", function()
+	local explore = templates.entryById("explore")
+	local implement = templates.entryById("implement")
+	ok(explore ~= nil and implement ~= nil, "两个入口都在")
+	ok(string.find(explore.body, "blockedBy", 1, true) ~= nil, "explore 保留 blockedBy 判断")
+	ok(string.find(explore.body, "并行", 1, true) ~= nil, "explore 保留并行")
+	ok(string.find(explore.body, "串行", 1, true) ~= nil, "explore 保留串行")
+	ok(string.find(explore.body, "/skill:wayfinder", 1, true) ~= nil, "explore 走 wayfinder")
+	ok(string.find(implement.body, "/skill:grill-with-docs", 1, true) ~= nil, "implement 走 grill-with-docs")
+	ok(string.find(implement.body, "/skill:to-spec", 1, true) ~= nil, "implement 提醒 to-spec")
+	ok(string.find(implement.body, "/skill:to-tickets", 1, true) ~= nil, "implement 提醒 to-tickets")
+	ok(string.find(implement.body, "手动执行", 1, true) ~= nil, "implement 两步由用户手动执行")
+end)
+
+test("T4 每个模板都写清交付形状与可复核信息", function()
+	for _, t in ipairs(T4_BODIES) do
+		local body = t.body
+		ok(string.find(body, "条", 1, true) ~= nil, t.name .. " 写清产出几条")
+		ok(
+			string.find(body, "票号", 1, true) ~= nil or string.find(body, "文件", 1, true) ~= nil,
+			t.name .. " 写清可复核信息"
+		)
+	end
+end)
+
+--- T3：三个按钮模板（问下一步 / 提 BUG / 体检）按统一骨架排布，
+--- 公共措辞合并成一段，且各自写清场景化的交付形状。
+local T3_BUTTONS: { { name: string, body: string } } = {
+	{ name = "问下一步", body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) },
+	{ name = "提 BUG", body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) },
+	{ name = "体检", body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) },
+}
+
+local function countOf(text: string, needle: string): number
+	local n = 0
+	for _ in string.gmatch(text, needle) do
+		n = n + 1
+	end
+	return n
+end
+
+test("T3 三个按钮按统一骨架排布：目标 → 事实核验 → 边界 → 交付 → 反问", function()
+	eq(#T3_BUTTONS, 3, "三个按钮模板")
+	for _, t in ipairs(T3_BUTTONS) do
+		local goal = posOf(t.body, "## 目标")
+		local facts = posOf(t.body, "## 事实核验与工具（先查后问）")
+		local bound = posOf(t.body, "## 边界")
+		local deliver = posOf(t.body, "## 交付")
+		ok(goal > 0, t.name .. " 有目标段")
+		ok(facts > goal, t.name .. " 事实核验在目标之后")
+		ok(bound > facts, t.name .. " 边界在事实核验之后")
+		ok(deliver > bound, t.name .. " 交付在边界之后")
+		ok(posOf(t.body, ASK_MARK) > deliver, t.name .. " 反问在交付之后")
+	end
+end)
+
+test("T3 公共段合并成一段，同一要求不再两处重复", function()
+	for _, t in ipairs(T3_BUTTONS) do
+		eq(countOf(t.body, "## 事实核验与工具（先查后问）"), 1, t.name .. " 公共段恰好一次")
+		eq(countOf(t.body, "票的读写一律走 gh"), 1, t.name .. " gh 读写只写一次")
+		eq(countOf(t.body, "2~4 条可选做法"), 1, t.name .. " 收尾可选做法只写一次")
+		eq(countOf(t.body, "先读票正文、评论与仓内相关内容"), 1, t.name .. " 先读再问只写一次")
+		eq(countOf(t.body, "\n## 工具"), 0, t.name .. " 不再有单独的 ## 工具 段")
+		eq(countOf(t.body, "## 调查（先查后问）"), 0, t.name .. " 不再有单独的 ## 调查 段")
+	end
+end)
+
+test("T3 问下一步写死交付形状与判断顺序", function()
+	local body = T3_BUTTONS[1].body
+	ok(string.find(body, "最多 3 条", 1, true) ~= nil, "最多 3 条")
+	ok(string.find(body, "没核到的：", 1, true) ~= nil, "末行写没核到的")
+	ok(string.find(body, "没核到的：无", 1, true) ~= nil, "全都核到写无")
+	ok(string.find(body, "做什么 · 用哪个技能命令 · 第一步具体动作 · 一句依据", 1, true) ~= nil, "每条一行的四要素")
+	ok(string.find(body, "有坏的正", 1, true) ~= nil, "坏了的正优先")
+	ok(string.find(body, "有卡住的活", 1, true) ~= nil, "卡住的活优先")
+	ok(string.find(body, "能解锁下游最多", 1, true) ~= nil, "解锁下游最多")
+	ok(string.find(body, "盘问 > 调研 > 原型 > 执行", 1, true) ~= nil, "阶段顺序")
+end)
+
+test("T3 提 BUG 的索取要素各出现一次且不替报告人编", function()
+	local body = T3_BUTTONS[2].body
+	for _, part in ipairs({ "现象与影响范围", "期望", "复现步骤", "频率", "OS", "日志" }) do
+		eq(countOf(body, part), 1, "提 BUG 的要素「" .. part .. "」恰好一次")
+	end
+	ok(string.find(body, "不替报告人编", 1, true) ~= nil, "不替报告人编")
+	ok(string.find(body, "needs-info", 1, true) ~= nil, "缺的标 needs-info")
+	ok(string.find(body, "全扫一遍", 1, true) ~= nil, "查重要全扫")
+	ok(string.find(body, "--state open --label bug", 1, true) ~= nil, "扫 open 的 bug 票")
+	ok(string.find(body, "--state closed --label bug", 1, true) ~= nil, "扫 closed 的 bug 票")
+	ok(string.find(body, "这些是不是同一个问题", 1, true) ~= nil, "命中要问报告人")
+	ok(string.find(body, "在旧单下评论", 1, true) ~= nil, "同问题旧单开着则评论补信息")
+	ok(string.find(body, "按回归处理", 1, true) ~= nil, "同问题旧单已关则按回归新建")
+	ok(string.find(body, "查重记录", 1, true) ~= nil, "查重记录")
+end)
+
+test("T3 体检先出建议清单等点头，只做两种结构动作", function()
+	local body = T3_BUTTONS[3].body
+	ok(string.find(body, "只做两种结构动作", 1, true) ~= nil, "只做两种结构动作")
+	ok(string.find(body, "挂到合适的地图下", 1, true) ~= nil, "挂到地图下")
+	ok(string.find(body, "开一张新地图", 1, true) ~= nil, "开新地图")
+	ok(string.find(body, "等点头", 1, true) ~= nil, "等点头")
+	ok(string.find(body, "停下来等点头", 1, true) ~= nil, "写完停下来等点头")
+	ok(string.find(body, "不自动往票上写评论", 1, true) ~= nil, "不自动写评论")
+	ok(string.find(body, "一律写进建议", 1, true) ~= nil, "其余写进建议")
+	ok(string.find(body, "三条同时成立才算", 1, true) ~= nil, "什么算游离的判据")
+	ok(string.find(body, "Destination 与 Notes", 1, true) ~= nil, "挑地图的判据")
+end)
+
+--- 注入链路的端到端断言：票动作与两个入口都经统一出口，
+--- 载荷首尾是信封行，一次动作只发一次请求。
+local END_LINE = "===== 注入结束 · 下面写你自己的内容 ====="
+
+test("票动作注入的正文套信封且带票号", function()
+	local st = nextStepState()
+	st.ticket = st.tickets[1]
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "act:task" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject", "走注入")
+	ok(#action.body > 0, "正文非空")
+	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
+	ok(string.find(action.body, END_LINE, 1, true) ~= nil, "以结束行收尾")
+	eq(st.pendingSeq, action.seq, "一次动作只发一次注入请求")
+end)
+
+test("两个入口注入的正文套信封", function()
+	for _, case in ipairs({ { id = "explore", act = "入口·还没想清楚" }, { id = "implement", act = "入口·需求已明确" } }) do
+		local st = nextStepState()
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = "new:" .. case.id }, mkCx(120))
+		local action = kvStore["action"]
+		ok(type(action) == "table", case.id .. " 写了注入请求")
+		eq(action.kind, "inject", case.id .. " 走注入")
+		ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · " .. case.act .. " =====", 1, true) == 1, case.id .. " 以开始行开头")
+		ok(string.find(action.body, END_LINE, 1, true) ~= nil, case.id .. " 以结束行收尾")
+		eq(st.pendingSeq, action.seq, case.id .. " 一次动作只发一次注入请求")
+	end
+end)
+
+test("没识别到仓库时入口正文不留空的仓库填写行", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.repo = nil
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "new:explore" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	ok(string.find(action.body, "仓库：\n", 1, true) == nil, "没有空的仓库行")
+	ok(string.find(action.body, "（先识别仓库）", 1, true) ~= nil, "写明先识别仓库")
 end)
 
 -- -------------------------------------------------------------- report ----
