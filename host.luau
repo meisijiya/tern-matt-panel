@@ -171,15 +171,16 @@ end
 
 --- 装填技能面板：探测技能包，读清单，按泳道分组。
 local function loadSkills(state: State)
-	local root = paths.skillPackageRoot()
-	if not root then
+	local resolved = paths.resolvePackage()
+	if not resolved then
 		state.hasSkills = false
 		state.skills = {}
 		state.lanes = {}
 		state.skillVersion = nil
 		return
 	end
-	local pkg = skills.readPackage(root)
+	local root = resolved.root
+	local pkg = skills.readPackage(root, resolved.version)
 	if not pkg then
 		state.hasSkills = false
 		state.skills = {}

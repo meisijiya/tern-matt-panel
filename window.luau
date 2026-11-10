@@ -21,6 +21,8 @@ local POLL_MS = 300
 local lastAgent: number? = nil
 -- 已经处理过的请求序号，避免重复注入。
 local seenSeq = 0
+-- 版本胶囊缓存：加载时读一次，focus 时重读；formatter 只读缓存。
+local cachedVersion: string? = nil
 
 --- 聚焦的 pane 是不是一个 agent。
 local function agentPaneOf(cx: WindowCx): number?
@@ -294,7 +296,8 @@ tern.command({
 	title = "技能速览",
 	icon = "sparkle",
 	run = function(cx: WindowCx)
-		local root = paths.skillPackageRoot()
+		local resolved = paths.resolvePackage()
+		local root = resolved and resolved.root
 		if not root then
 			cx:toast(
 				"info",
@@ -303,7 +306,7 @@ tern.command({
 			)
 			return
 		end
-		local pkg = skills.readPackage(root)
+		local pkg = skills.readPackage(root, resolved and resolved.version)
 		if not pkg then
 			cx:toast("info", "读不到技能包", tostring(root))
 			return
@@ -344,9 +347,13 @@ tern.command({
 --- 胶囊只当插件入口：不显示任何数字。
 --- 数字会随「当前是哪个仓库」变，而胶囊是窗口级的，切 tab 后对不上就是错的。
 tern.chrome.status(function(_pane)
+	local text = "Matt"
+	if cachedVersion and cachedVersion ~= "" then
+		text = "Matt " .. cachedVersion
+	end
 	return {
 		{
-			text = "Matt",
+			text = text,
 			icon = "tasks",
 			command = "plugin.tern-matt-panel.panel",
 		},
@@ -373,6 +380,14 @@ local function pingPanelsInTab(cx: WindowCx, tab: number)
 end
 
 tern.on("focus", function(ev: any, cx)
+	-- 重读版本并刷新状态栏胶囊；读失败保留上次值。
+	pcall(function()
+		local resolved = paths.resolvePackage()
+		if resolved and resolved.version and resolved.version ~= "" then
+			cachedVersion = resolved.version
+		end
+	end)
+	pcall(function() tern.chrome.refresh() end)
 	rememberAgent(cx)
 	if ev and type(ev.tab) == "number" then
 		pingPanelsInTab(cx, ev.tab)
@@ -385,6 +400,15 @@ do
 	if ok and type(action) == "table" and type(action.seq) == "number" then
 		seenSeq = action.seq
 	end
+end
+
+do
+	pcall(function()
+		local resolved = paths.resolvePackage()
+		if resolved and resolved.version and resolved.version ~= "" then
+			cachedVersion = resolved.version
+		end
+	end)
 end
 
 -- 轮询从加载就开始：面板可以随时打开（也可能已经开着）。
