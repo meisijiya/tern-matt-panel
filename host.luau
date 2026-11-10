@@ -1094,6 +1094,9 @@ local function mapView(state: State, cx: BlockCx): Node
 	end
 
 	-- 迷雾与范围外：地图正文里 wayfinder 的两节，只呈现不解析
+	if not m.bodyLoaded then
+		table.insert(main, ui.text(ui.span("正在读地图正文…", "muted")))
+	end
 	if m.fog and m.fog ~= "" then
 		table.insert(main, ui.rule(ui.span("尚未明确（迷雾）")))
 		table.insert(main, ui.md(m.fog))
@@ -1133,6 +1136,34 @@ local function loadTicketBody(state: State, cx: BlockCx, t: tracker.Ticket)
 		else
 			state.ticketBody = ""
 			state.message = "取票正文失败：" .. tostring(if result then result.stderr else "无输出")
+		end
+		cx:render()
+	end)
+end
+
+--- 地图正文也只按需拉：列表查询不含 body，迷雾/范围外靠它解析。
+local function loadMapBody(state: State, cx: BlockCx, repo: string, m: tracker.Map)
+	if m.bodyLoaded or state.bodyLoading == m.number then
+		return
+	end
+	state.bodyLoading = m.number
+	tern.process.run({
+		"gh", "api",
+		string.format("repos/%s/issues/%d", repo, m.number),
+		"--jq", ".body",
+	}):next(function(result: any, _err: any, _cx: any)
+		state.bodyLoading = nil
+		if result ~= nil and result.status == 0 then
+			local body = tostring(result.stdout or "")
+			m.body = body
+			m.bodyLoaded = true
+			local sections = tracker.parseSections(body)
+			m.fog = sections.fog
+			m.outOfScope = sections.outOfScope
+		else
+			m.bodyLoaded = true
+			m.body = ""
+			state.message = "取地图正文失败：" .. tostring(if result then result.stderr else "无输出")
 		end
 		cx:render()
 	end)
@@ -1683,6 +1714,12 @@ tern.block.define(BLOCK_ID, {
 						state.mapSel = n
 						state.ticketSel = nil
 						state.view = "map"
+						if state.repo then
+							local m = selectedMap(state)
+							if m then
+								loadMapBody(state, cx, state.repo, m)
+							end
+						end
 						return
 					end
 					-- 票行：四组（可领 / 已认领 / 被阻塞 / 已关闭）与 Spec 都按票号找，

@@ -1031,6 +1031,9 @@ local function allText(node: any, out: { string }): { string }
 		if type(p.text) == "string" then
 			table.insert(out, p.text)
 		end
+		if type(p.label) == "table" and type(p.label.t) == "string" then
+			table.insert(out, p.label.t)
+		end
 	end
 	for _, kid in ipairs(node.c or {}) do
 		allText(kid, out)
@@ -2012,6 +2015,28 @@ test("刷新按游标拉完 open 所有页，再拉已关首屏", function()
 		end
 	end
 	eq(openCalls, 2, "open 确实发了两发")
+end)
+
+test("点地图行按需拉正文并解析迷雾/范围外", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	processFixtures = { {
+		match = "repos/me/repo/issues/1",
+		result = { status = 0, stdout = "## 尚未明确\n- 先做 A\n\n## 范围外\n- 不做 B\n", stderr = "" },
+	} }
+	processCalls = {}
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	eq(#processCalls, 1, "发了一次正文请求")
+	local argv = table.concat(processCalls[1].argv, " ")
+	ok(string.find(argv, "repos/me/repo/issues/1", 1, true) ~= nil, "按票号拉正文")
+	eq(st.maps[1].bodyLoaded, true)
+	eq(st.maps[1].fog, "- 先做 A", "解析尚未明确")
+	eq(st.maps[1].outOfScope, "- 不做 B", "解析范围外")
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "尚未明确（迷雾）", 1, true) ~= nil, "显示迷雾节")
+	ok(string.find(text, "范围外", 1, true) ~= nil, "显示范围外节")
 end)
 
 -- -------------------------------------------------------------- report ----

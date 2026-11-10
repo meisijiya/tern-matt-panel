@@ -36,6 +36,7 @@ export type Map = {
 	url: string,
 	state: string,
 	body: string,
+	bodyLoaded: boolean?, -- 正文是否已按需拉过（列表查询不含 body）
 	fog: string?,
 	outOfScope: string?,
 	tickets: { Ticket },
@@ -215,6 +216,7 @@ function M.parseMap(json: any): Map?
 		url = type(json.url) == "string" and json.url or "",
 		state = type(json.state) == "string" and json.state or "",
 		body = body,
+		bodyLoaded = false,
 		fog = sections.fog,
 		outOfScope = sections.outOfScope,
 		tickets = {},
