@@ -1303,6 +1303,10 @@ local function toolbar(state: State, cx: BlockCx): Node
 		{ label = "换仓库", icon = "repo", click = "pick-repo" },
 		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
+	-- 手动切过仓库时给一个出口：清掉覆盖，回到 cwd 的 remote。
+	if state.repoManual then
+		table.insert(buttons, { label = "重置仓库", icon = "back", click = "reset-repo" })
+	end
 	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。
 	if state.view == "board" then
 		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
@@ -1860,6 +1864,12 @@ tern.block.define(BLOCK_ID, {
 			loadSkills(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
+			return
+		end
+		if act == "reset-repo" then
+			tern.kv.set(REPO_KEY, { repo = "", pane = cx.pane })
+			state.message = "已恢复跟随当前目录"
+			loadBoard(state, cx)
 			return
 		end
 		if act == "pick-repo" then

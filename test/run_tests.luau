@@ -1081,6 +1081,7 @@ test("工具条 click 值全部有分支覆盖", function()
 	known["open-ticket"] = true
 	known["auto-reload"] = true
 	known["load-more-closed"] = true
+	known["reset-repo"] = true
 
 	local st = nextStepState()
 	st.view = "board"
@@ -2109,6 +2110,27 @@ test("手动值为空时回到 cwd 的 remote", function()
 	}
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.repo, "me/cwd", "空手动值回退 cwd")
+	eq(st.repoManual, false)
+end)
+
+test("重置仓库清掉手动值并回到 cwd", function()
+	kvStore["repo"] = { repo = "me/manual", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/manual")
+	panel.event(st, { ev = "action", act = "reset-repo" }, mkCx(120))
+	eq(kvStore["repo"].repo, "", "手动值已清")
+	eq(st.repo, "me/cwd", "回到 cwd 仓库")
 	eq(st.repoManual, false)
 end)
 

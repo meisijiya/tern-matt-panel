@@ -10,6 +10,7 @@ local commands = require("./lib/commands")
 local paths = require("./lib/paths")
 local skills = require("./lib/skills")
 local templates = require("./lib/templates")
+local util = require("./lib/util")
 
 local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
@@ -207,6 +208,12 @@ local function handleAction(cx: WindowCx)
 				cx:toast("info", "恢复跟随当前目录", "按刷新重新识别仓库")
 				return
 			end
+			local normalized = util.parseRemoteUrl(repo)
+			if not normalized then
+				cx:toast("error", "仓库格式不对", "填 owner/repo 或 GitHub 链接")
+				return
+			end
+			repo = normalized
 			-- 带上 pane：手动指定的仓库只对本窗口有效。
 			-- 不绑 pane 的话，所有窗口都会读到这一份，新项目里开面板会显示别的仓库。
 			tern.kv.set(REPO_KEY, { repo = repo, pane = pane })
