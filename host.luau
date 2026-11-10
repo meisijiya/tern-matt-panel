@@ -518,7 +518,7 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 		end
 		local base = if reset then {} else state.closedIssues
 		local merged = tracker.mergeIssues(base, page.issues)
-		local hasNext = page.hasNextPage
+		local hasNext = page.hasNextPage and page.endCursor ~= nil
 		if #merged >= CLOSED_CAP then
 			merged = tracker.capIssues(merged, CLOSED_CAP)
 			hasNext = false
@@ -1181,7 +1181,7 @@ local function loadMapBody(state: State, cx: BlockCx, repo: string, m: tracker.M
 			m.fog = sections.fog
 			m.outOfScope = sections.outOfScope
 		else
-			m.bodyLoaded = true
+			m.bodyLoaded = false
 			m.body = ""
 			state.message = "取地图正文失败：" .. tostring(if result then result.stderr else "无输出")
 		end

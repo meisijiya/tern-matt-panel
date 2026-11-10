@@ -82,26 +82,17 @@ test/          luau CLI 桩测试
 
 ## 任务板数据源
 
-GitHub issue，通过 `gh api graphql`。仓库默认跟随面板所在目录的 git remote 推断；「换仓库」可按窗口覆盖（存插件 kv，不跨窗口），「重置仓库」回到当前目录。v1 只读，不写票。任务板用游标分页：open 票全量翻页（前沿判定不能缺 OPEN 阻塞票），已关票首屏一页、按需「加载更多」。
+GitHub issue，通过 `gh api graphql`。仓库默认跟随面板所在目录的 git remote 推断；「换仓库」可按窗口覆盖（存插件 kv，不跨窗口），「重置仓库」回到当前目录。v1 只读，不写票。任务板的拉取、分页与失败退路以 [`docs/spec/v1.md`](docs/spec/v1.md) §7 为准。
 
 ## 开发
 
 ```bash
-bash test/build.sh <luau 路径>     # 纯逻辑单测
+bash test/all.sh --unit-only     # 单测 + luau-analyze
 ```
 
 改了 `lib/` 下的模块后要 `tern plugin unlink` 再 `link`：`require` 有缓存。
 
-真机验证：
-
-```bash
-tern --control <PORT> --dir <插件目录>     # 手动开一个受控窗口
-bash test/e2e.sh --port <PORT>            # 默认接这个窗口，不自己起
-bash test/all.sh                          # 单测 + e2e 全跑（e2e 没窗口就按环境不可用计）
-```
-
-e2e 默认只接已开的受控窗口：起窗口就是一份 GPU 与内存开销，连跑几轮会把机器拖垮。
-`--launch` 才会自己起，且跑完只关闭自己起的那个。
+真机验证只接受已开着的受控窗口，不自己起窗；完整步骤、`tern inspect` 核对 cwd、`ctl tree/pick` 与关窗命令见 [`docs/agents/dev.md`](docs/agents/dev.md)。
 
 ## 规格与依据
 

@@ -65,7 +65,8 @@ for cand in "$(dirname "$luau")/luau-analyze" "$(dirname "$luau")/luau-analyze.e
 	fi
 done
 if [ -z "$analyze" ]; then
-	echo "未跑未定义全局检查：$(dirname "$luau") 下没有 luau-analyze（同 luau releases）" >&2
+	echo "未定义全局检查无法执行：$(dirname "$luau") 下没有 luau-analyze（同 luau releases）" >&2
+	exit 1
 else
 	bad="$(cd "$repo" && "$analyze" --formatter=plain host.luau window.luau 2>&1 \
 		| grep "Unknown global" | grep -v "'tern'" || true)"

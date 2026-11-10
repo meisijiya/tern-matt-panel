@@ -13,3 +13,7 @@ Five canonical triage roles use the label names `needs-triage`, `needs-info`, `r
 ### Domain docs
 
 Single-context layout: root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
+### Development and e2e
+
+Unit gate, controlled-window e2e, ctl tree/pick, and the load-more fixture: `docs/agents/dev.md`.

@@ -443,6 +443,11 @@ test("tracker.parseSections", function()
 	local s2 = tracker.parseSections("no sections here")
 	eq(s2.fog, nil)
 	eq(s2.outOfScope, nil)
+	local onlyFog = tracker.parseSections("## 尚未明确\n- 只有迷雾\n")
+	eq(onlyFog.fog, "- 只有迷雾")
+	eq(onlyFog.outOfScope, nil, "缺范围外就是 nil")
+	local stopped = tracker.parseSections("## 尚未明确\n迷雾\n### 子标题\n不该进迷雾")
+	eq(stopped.fog, "迷雾", "子标题截断本节")
 end)
 
 test("tracker.computeFrontier", function()
@@ -1777,10 +1782,83 @@ test("已关组有下一页时出现加载更多，点一次追加下一页", fu
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "PAGE2", stderr = "" } } }
 	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
 	eq(#st.closedIssues, 2, "一页追加")
-	eq(st.closedIssues[2].number, 200)
+	eq(st.closedIssues[1].number, 101, "旧页在前")
+	eq(st.closedIssues[2].number, 200, "新页追加在后")
 	eq(st.closedHasNext, false, "上游没有下一页")
+	eq(st.closedLoading, false, "加载态复位")
 	eq(#st.tickets, 3, "票列表重建")
+	local argv = table.concat(processCalls[#processCalls].argv, " ")
+	ok(string.find(argv, "after=c1", 1, true) ~= nil, "续拉带旧游标：" .. argv)
+	ok(string.find(argv, "direction=DESC", 1, true) ~= nil, "默认最新在前")
+	ok(string.find(argv, "first:50", 1, true) ~= nil, "每页 50")
+	ok(string.find(argv, "states:CLOSED", 1, true) ~= nil, "只拉已关")
 	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "没有下一页时按钮消失")
+end)
+
+test("续拉缺 endCursor 时不保留下一页游标", function()
+	local st = pagedState(1)
+	jsonPayloads["NO_CURSOR"] = { data = { repository = { issues = {
+		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		pageInfo = { hasNextPage = true, endCursor = nil },
+	} } } }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "NO_CURSOR", stderr = "" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 2, "这一页仍追加")
+	eq(st.closedHasNext, false, "没有游标就不能继续翻")
+	eq(st.closedCursor, nil)
+end)
+
+test("续拉空页不改变现有票", function()
+	local st = pagedState(2)
+	jsonPayloads["EMPTY_PAGE"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_PAGE", stderr = "" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 2)
+	eq(st.closedHasNext, false)
+	eq(st.closedLoading, false)
+end)
+
+test("续拉在途时重复点击只发一次请求", function()
+	local st = pagedState(1)
+	jsonPayloads["SLOW"] = { data = { repository = { issues = {
+		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "SLOW", stderr = "" }, defer = true } }
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	local hits = 0
+	for _, call in ipairs(processCalls) do
+		if string.find(table.concat(call.argv, " "), "states:CLOSED", 1, true) then
+			hits += 1
+		end
+	end
+	eq(hits, 1, "在途时第二次点击被挡")
+	flushProcess()
+	eq(#st.closedIssues, 2)
+	eq(st.closedLoading, false)
+end)
+
+test("续拉坏页保持旧数据并复位加载态", function()
+	local st = pagedState(2)
+	jsonPayloads["BAD_PAGE"] = { data = {} }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "BAD_PAGE", stderr = "" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 2)
+	eq(st.closedLoading, false)
+	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
+end)
+
+test("续拉失败保留游标以便重试", function()
+	local st = pagedState(2)
+	processFixtures = { { match = "states:CLOSED", result = { status = 1, stdout = "", stderr = "boom" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(st.closedCursor, "c1", "游标没被清掉")
+	eq(st.closedHasNext, true, "还能重试")
+	eq(st.closedLoading, false)
 end)
 
 test("加载更多条数按已加载已关票算，不被顶层 spec 过滤影响", function()
@@ -2091,6 +2169,19 @@ test("手动指定仓库优先于 cwd 的 remote", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.repo, "me/manual", "手动值覆盖 cwd remote")
 	eq(st.repoManual, true)
+	local sawRemote = false
+	local sawManual = false
+	for _, call in ipairs(processCalls) do
+		local argv = table.concat(call.argv, " ")
+		if string.find(argv, "remote", 1, true) then
+			sawRemote = true
+		end
+		if string.find(argv, "owner=me", 1, true) and string.find(argv, "name=manual", 1, true) then
+			sawManual = true
+		end
+	end
+	ok(sawManual, "请求打到手动仓库")
+	ok(not sawRemote, "手动模式不再推断 cwd")
 	st.view = "board"
 	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
 	ok(string.find(text, "刷新仍用这个仓库", 1, true) ~= nil, "标出手动来源")
@@ -2129,10 +2220,87 @@ test("重置仓库清掉手动值并回到 cwd", function()
 	}
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.repo, "me/manual")
+	-- 造一点旧仓库状态：重置必须整份清掉，而不是只换标题。
+	st.tickets = { { number = 1, title = "old", body = "", state = "OPEN", url = "", labels = {}, assignees = {}, blockedBy = {}, isSpec = false } }
+	st.maps = { { number = 1, title = "old map", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.openIssues = { { number = 1 } }
+	st.closedIssues = { { number = 2 } }
+	st.closedCursor = "old"
+	st.closedHasNext = true
+	st.mapSel = 1
+	processCalls = {}
 	panel.event(st, { ev = "action", act = "reset-repo" }, mkCx(120))
 	eq(kvStore["repo"].repo, "", "手动值已清")
 	eq(st.repo, "me/cwd", "回到 cwd 仓库")
 	eq(st.repoManual, false)
+	eq(#st.tickets, 0, "旧票已清")
+	eq(#st.maps, 0, "旧地图已清")
+	eq(#st.openIssues, 0)
+	eq(#st.closedIssues, 0)
+	eq(st.closedCursor, nil)
+	eq(st.closedHasNext, false)
+	eq(st.mapSel, nil)
+	local sawCwd = false
+	for _, call in ipairs(processCalls) do
+		local argv = table.concat(call.argv, " ")
+		if string.find(argv, "owner=me", 1, true) and string.find(argv, "name=cwd", 1, true) then
+			sawCwd = true
+		end
+	end
+	ok(sawCwd, "重置后请求打到 cwd 仓库")
+end)
+
+test("地图正文失败可重试且不留半截", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	processFixtures = { {
+		match = "repos/me/repo/issues/1",
+		result = { status = 1, stdout = "", stderr = "boom" },
+	} }
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	eq(st.maps[1].bodyLoaded, false, "失败不标记已加载，允许重试")
+	eq(st.maps[1].body, "")
+	eq(st.maps[1].fog, nil)
+	ok(string.find(tostring(st.message), "取地图正文失败", 1, true) ~= nil, "提示失败")
+end)
+
+test("地图正文没有两节时不伪造内容", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	processFixtures = { {
+		match = "repos/me/repo/issues/1",
+		result = { status = 0, stdout = "普通正文，没有小节", stderr = "" },
+	} }
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	eq(st.maps[1].bodyLoaded, true)
+	eq(st.maps[1].fog, nil)
+	eq(st.maps[1].outOfScope, nil)
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "尚未明确（迷雾）", 1, true) == nil, "不显示空迷雾节")
+	ok(string.find(text, "范围外", 1, true) == nil, "不显示空范围外节")
+end)
+
+test("地图正文在途时重复点击只发一次请求", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	processFixtures = { {
+		match = "repos/me/repo/issues/1",
+		result = { status = 0, stdout = "## 尚未明确\n- 慢请求\n", stderr = "" },
+		defer = true,
+	} }
+	processCalls = {}
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	eq(#processCalls, 1, "只请求一次")
+	flushProcess()
+	eq(st.maps[1].bodyLoaded, true)
+	eq(st.maps[1].fog, "- 慢请求")
 end)
 
 -- -------------------------------------------------------------- report ----

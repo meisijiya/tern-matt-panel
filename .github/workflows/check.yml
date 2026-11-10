@@ -1,0 +1,28 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Luau
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'luau.zip'
+          Invoke-WebRequest -Uri 'https://github.com/luau-lang/luau/releases/latest/download/luau-windows.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath 'C:\tools\luau' -Force
+
+      - name: Unit tests
+        shell: bash
+        run: |
+          export PATH="/c/tools/luau:$PATH"
+          bash test/all.sh --unit-only
