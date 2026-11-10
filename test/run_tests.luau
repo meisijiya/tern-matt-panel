@@ -2072,6 +2072,46 @@ test("刷新后仍在地图页：重建的 Map 会补拉正文", function()
 	ok(hit, "刷新后发了地图正文请求")
 end)
 
+test("手动指定仓库优先于 cwd 的 remote", function()
+	kvStore["repo"] = { repo = "me/manual", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	processCalls = {}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/manual", "手动值覆盖 cwd remote")
+	eq(st.repoManual, true)
+	st.view = "board"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "刷新仍用这个仓库", 1, true) ~= nil, "标出手动来源")
+end)
+
+test("手动值为空时回到 cwd 的 remote", function()
+	kvStore["repo"] = { repo = "", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/cwd", "空手动值回退 cwd")
+	eq(st.repoManual, false)
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

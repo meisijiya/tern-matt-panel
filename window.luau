@@ -202,6 +202,9 @@ local function handleAction(cx: WindowCx)
 			repo = string.gsub(repo, "^%s+", "")
 			repo = string.gsub(repo, "%s+$", "")
 			if repo == "" then
+				-- 空串 = 恢复跟随当前目录的 git remote。
+				tern.kv.set(REPO_KEY, { repo = "", pane = pane })
+				cx:toast("info", "恢复跟随当前目录", "按刷新重新识别仓库")
 				return
 			end
 			-- 带上 pane：手动指定的仓库只对本窗口有效。

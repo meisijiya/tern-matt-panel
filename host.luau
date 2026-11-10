@@ -318,45 +318,33 @@ local function loadBoard(state: State, cx: BlockCx)
 	-- 否则「识别不到仓库」这种稳态会让节流永远不生效。
 	state.lastLoadAt = nowSec()
 	state.loading = true
-	-- 目录优先：面板跟着窗口所在项目走。
-	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
-	-- 用户在新项目开面板看到的却是上一个项目的票。
-	inferRepo(cx, function(found: string?, reason: string?)
+
+	--- 清空当前仓库的数据，用于识别不到仓库。
+	local function clearBoard(reason: string?)
+		state.loading = false
+		state.repo = nil
+		state.repoManual = false
+		state.tickets = {}
+		state.maps = {}
+		state.openIssues = {}
+		state.closedIssues = {}
+		state.closedCursor = nil
+		state.closedHasNext = false
+		state.closedLoading = false
+		state.ticket = nil
+		state.ticketBody = nil
+		state.mapSel = nil
+		state.ticketSel = nil
+		state.setupHint = reason or "当前目录没识别到 git remote"
+		state.fetchedAtSec = nil
+		state.legacyFetchedAt = nil
+		state.message = nil
+		cx:render()
+	end
+
+	--- 开始拉某个仓库。manual=true 表示来自「换仓库」，优先于 cwd 的 remote。
+	local function begin(repo: string, manual: boolean)
 		if gen ~= state.boardGen then
-			return
-		end
-		local repo = found
-		local manual = false
-		if not repo then
-			-- 只认「本窗口手动指定」的那一份。
-			-- 跨窗口共用的旧值会让新项目显示上一个项目的仓库 —— 那正是用户看到的怪象。
-			local ok, value = pcall(tern.kv.get, REPO_KEY)
-			if ok and type(value) == "table" and value.pane == cx.pane
-				and type(value.repo) == "string" and value.repo ~= "" then
-				repo = value.repo
-				manual = true
-			end
-		end
-		if not repo then
-			state.loading = false
-			state.repo = nil
-			-- 没识别到就清空，别把别的仓库的票挂在这个项目下面。
-			state.tickets = {}
-			state.maps = {}
-			state.openIssues = {}
-			state.closedIssues = {}
-			state.closedCursor = nil
-			state.closedHasNext = false
-			state.closedLoading = false
-			state.ticket = nil
-			state.ticketBody = nil
-			state.mapSel = nil
-			state.ticketSel = nil
-			state.setupHint = reason or "当前目录没识别到 git remote"
-			state.fetchedAtSec = nil
-			state.legacyFetchedAt = nil
-			state.message = nil
-			cx:render()
 			return
 		end
 		state.setupHint = nil
@@ -388,6 +376,32 @@ local function loadBoard(state: State, cx: BlockCx)
 				end
 			end
 		end)
+	end
+
+	-- 手动指定优先：用户点了「换仓库」就必须真的换，不能被 cwd 的 remote 盖回去。
+	-- 只认本窗口那份（pane 相同）；别的窗口的手动仓库与这里无关。
+	local manualRepo: string? = nil
+	do
+		local ok, value = pcall(tern.kv.get, REPO_KEY)
+		if ok and type(value) == "table" and value.pane == cx.pane
+			and type(value.repo) == "string" and value.repo ~= "" then
+			manualRepo = value.repo
+		end
+	end
+	if manualRepo then
+		begin(manualRepo, true)
+		return
+	end
+
+	inferRepo(cx, function(found: string?, reason: string?)
+		if gen ~= state.boardGen then
+			return
+		end
+		if not found then
+			clearBoard(reason)
+			return
+		end
+		begin(found, false)
 	end)
 end
 
@@ -812,7 +826,7 @@ local function boardView(state: State, cx: BlockCx): Node
 		table.insert(main, ui.text({
 			ui.span(state.repo, "strong"),
 			ui.span(if state.repoManual
-				then "  手动指定 · 当前目录没识别到 git remote"
+				then "  手动指定 · 刷新仍用这个仓库"
 				else "  来自当前目录的 git remote", "muted"),
 		}))
 	end
