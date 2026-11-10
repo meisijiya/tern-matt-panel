@@ -1210,19 +1210,13 @@ end)
 --- 交付形状写清，入口两条路由要点仍在。
 local SKELETON_ORDER = { "## 目标", "## 事实核验", "## 边界" }
 
-local function bodyOf(tpl: { body: string }, vars: { [string]: string }): string
-	return (tpl.body:gsub("{(%w+)}", function(key: string)
-		return vars[key] or ("{" .. key .. "}")
-	end))
-end
-
 local function posOf(body: string, needle: string): number
 	return string.find(body, needle, 1, true) or -1
 end
 
 local T4_BODIES: { { name: string, body: string } } = {}
 for _, tpl in ipairs(templates.TEMPLATES) do
-	table.insert(T4_BODIES, { name = tpl.title, body = bodyOf(tpl, { url = "http://x/1", title = "票标题" }) })
+	table.insert(T4_BODIES, { name = tpl.title, body = templates.render(tpl, { url = "http://x/1", title = "票标题" }) })
 end
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(T4_BODIES, { name = e.injectAction, body = (e.body:gsub("{repo}", "me/repo")) })
@@ -1264,7 +1258,7 @@ test("T4 六个模板的主技能命令正确", function()
 	-- 执行票不挂技能，只保留认领并执行、回报结论的指令
 	local task = templates.byId("task")
 	ok(task ~= nil, "执行票模板在")
-	local taskBody = bodyOf(task, { url = "http://x/1", title = "票标题" })
+	local taskBody = templates.render(task :: any, { url = "http://x/1", title = "票标题" })
 	ok(string.find(taskBody, "/skill:grill-with-docs", 1, true) == nil, "执行票不挂主技能")
 	ok(string.find(taskBody, "/skill:prototype", 1, true) == nil, "执行票不挂主技能")
 	ok(string.find(taskBody, "/skill:research", 1, true) == nil, "执行票不挂主技能")
@@ -1275,11 +1269,11 @@ end)
 
 test("T4 票动作模板带票链接，执行票带标题与先问不直接开工", function()
 	for _, tpl in ipairs(templates.TEMPLATES) do
-		local body = bodyOf(tpl, { url = "http://x/1", title = "票标题" })
+		local body = templates.render(tpl, { url = "http://x/1", title = "票标题" })
 		ok(string.find(body, "http://x/1", 1, true) ~= nil, tpl.title .. " 带票链接")
 	end
 	local task = templates.byId("task")
-	local taskBody = bodyOf(task, { url = "http://x/1", title = "票标题" })
+	local taskBody = templates.render(task :: any, { url = "http://x/1", title = "票标题" })
 	ok(string.find(taskBody, "票标题", 1, true) ~= nil, "执行票带任务标题")
 	ok(string.find(taskBody, "先问", 1, true) ~= nil, "执行票要求先问")
 	ok(string.find(taskBody, "不直接开工", 1, true) ~= nil, "执行票要求不直接开工")
@@ -1391,6 +1385,49 @@ test("T3 体检先出建议清单等点头，只做两种结构动作", function
 	ok(string.find(body, "一律写进建议", 1, true) ~= nil, "其余写进建议")
 	ok(string.find(body, "三条同时成立才算", 1, true) ~= nil, "什么算游离的判据")
 	ok(string.find(body, "Destination 与 Notes", 1, true) ~= nil, "挑地图的判据")
+end)
+
+--- 注入链路的端到端断言：票动作与两个入口都经统一出口，
+--- 载荷首尾是信封行，一次动作只发一次请求。
+local END_LINE = "===== 注入结束 · 下面写你自己的内容 ====="
+
+test("票动作注入的正文套信封且带票号", function()
+	local st = nextStepState()
+	st.ticket = st.tickets[1]
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "act:task" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject", "走注入")
+	eq(action.body, action.body, "正文存在")
+	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
+	ok(string.find(action.body, END_LINE, 1, true) ~= nil, "以结束行收尾")
+	eq(st.pendingSeq, action.seq, "一次动作只发一次注入请求")
+end)
+
+test("两个入口注入的正文套信封", function()
+	for _, case in ipairs({ { id = "explore", act = "入口·还没想清楚" }, { id = "implement", act = "入口·需求已明确" } }) do
+		local st = nextStepState()
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = "new:" .. case.id }, mkCx(120))
+		local action = kvStore["action"]
+		ok(type(action) == "table", case.id .. " 写了注入请求")
+		eq(action.kind, "inject", case.id .. " 走注入")
+		ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · " .. case.act .. " =====", 1, true) == 1, case.id .. " 以开始行开头")
+		ok(string.find(action.body, END_LINE, 1, true) ~= nil, case.id .. " 以结束行收尾")
+		eq(st.pendingSeq, action.seq, case.id .. " 一次动作只发一次注入请求")
+	end
+end)
+
+test("没识别到仓库时入口正文不留空的仓库填写行", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.repo = nil
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "new:explore" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	ok(string.find(action.body, "仓库：\n", 1, true) == nil, "没有空的仓库行")
+	ok(string.find(action.body, "（先识别仓库）", 1, true) ~= nil, "写明先识别仓库")
 end)
 
 -- -------------------------------------------------------------- report ----
