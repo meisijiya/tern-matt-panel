@@ -986,10 +986,11 @@ local function boardView(state: State, cx: BlockCx): Node
 		end
 		local children: { Node } = { list }
 		-- 已关组是分页的：还有下一页且没到上限时，组内末尾给「加载更多」。
-		if g.closed and state.closedHasNext and not state.loading and #g.items < CLOSED_CAP then
+		-- 条数用已加载的原始已关票数（含被四组过滤掉的顶层 spec），与游标口径一致。
+		if g.closed and state.closedHasNext and not state.loading and #state.closedIssues < CLOSED_CAP then
 			table.insert(children, ui.row({
 				ui.button(
-					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #g.items)),
+					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #state.closedIssues)),
 					{
 						icon = "refresh",
 						size = "sm",

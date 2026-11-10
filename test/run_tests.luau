@@ -1778,6 +1778,17 @@ test("已关组有下一页时出现加载更多，点一次追加下一页", fu
 	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "没有下一页时按钮消失")
 end)
 
+test("加载更多条数按已加载已关票算，不被顶层 spec 过滤影响", function()
+	local st = pagedState(1)
+	table.insert(st.closedIssues, {
+		number = 500, title = "closed spec", state = "CLOSED",
+		labels = { "ready-for-agent" }, assignees = {}, blockedBy = {},
+	})
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "加载更多（已 2 条）"), "条数用原始已关票数，不是过滤后的组数：" .. table.concat(texts, ","))
+end)
+
 test("已关组到 500 上限后不再显示加载更多", function()
 	local st = pagedState(500)
 	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "上限后按钮消失")
