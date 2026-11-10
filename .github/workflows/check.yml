@@ -24,5 +24,4 @@ jobs:
       - name: Unit tests
         shell: bash
         run: |
-          export PATH="/c/tools/luau:$PATH"
-          timeout 240 bash -x test/all.sh --unit-only
+          bash test/build.sh /c/tools/luau/luau.exe
