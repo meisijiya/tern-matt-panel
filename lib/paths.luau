@@ -24,9 +24,6 @@ end
 --- 从 omp 安装登记文本里取本技能包条目的 {installPath, version}。
 --- 只扫完整 JSON 对象（字符串值无嵌套）；半截/缺字段返回 nil；
 --- 多条目取第一个有 installPath 的条目。
---- 从 omp 安装登记文本里取本技能包条目的 {installPath, version}。
---- 只扫完整 JSON 对象（字符串值无嵌套）；半截/缺字段返回 nil；
---- 多条目取第一个有 installPath 的条目。
 function M.parseRegistryEntry(text: any, key: any): { installPath: string, version: string? }?
 	if type(text) ~= "string" or type(key) ~= "string" then
 		return nil
@@ -86,7 +83,8 @@ function M.parseRegistryEntry(text: any, key: any): { installPath: string, versi
 end
 
 --- 解析安装登记：登记副本优先；副本不存在回退市场克隆；再不行保留 cache/plugins 扫描。
-function M.resolvePackage(): { root: string, version: string? }?
+--- 第二个返回值 "registry-unreadable" 表示登记里有本包条目但读不出（调用方保留上次值）。
+function M.resolvePackage(): ({ root: string, version: string? }?, string?)
 	local home = M.home()
 	-- 1. 登记
 	local entry = nil
@@ -112,13 +110,13 @@ function M.resolvePackage(): { root: string, version: string? }?
 			end
 			return { root = root, version = version }
 		end
-		return nil
+		-- 副本不存在：继续往市场克隆回退。
 	end
-	-- key 存在但无有效条目 → nil（保留上次值）；key 不存在 → 市场回退
-	if regExists and hasKey then
-		return nil
+	-- key 存在但条目解析不出 → 读失败，保留上次值，不切换到别的副本。
+	if regExists and hasKey and entry == nil then
+		return nil, "registry-unreadable"
 	end
-	-- 登记文件不存在：市场克隆回退
+	-- 登记文件不存在或没有本包条目：市场克隆回退
 	if home then
 		local market = norm(home .. "/.omp/plugins/cache/marketplaces/mattpocock")
 		local exists = false

@@ -41,83 +41,56 @@ export type Map = {
 	tickets: { Ticket },
 }
 
---- 把 labels 字段统一成 {string}（gh 可能给字符串数组或 {name} 数组；GraphQL 给 {nodes={name}}）。
+--- 取 GraphQL 的 {nodes={…}} 包装里的数组；不是包装就当普通数组。
+--- GraphQL 连接的 labels / assignees / blockedBy 都是这个形状，
+--- gh 的 JSON 输出是扁平数组 —— 两种形状共用这一条路径，不写两套解析器。
+local function nodesOf(v: any): { any }
+	if type(v) ~= "table" then
+		return {}
+	end
+	if type(v.nodes) == "table" then
+		return v.nodes
+	end
+	return v
+end
+
+--- 把 labels 字段统一成 {string}（gh 给字符串数组或 {name} 数组，
+--- GraphQL 给 {nodes={{name=…}}}）。
 local function readLabels(v: any): { string }
 	local out: { string } = {}
-	local function collect(list: any)
-		if type(list) ~= "table" then
-			return
-		end
-		for _, l in ipairs(list) do
-			if type(l) == "string" then
-				table.insert(out, l)
-			elseif type(l) == "table" and type(l.name) == "string" then
-				table.insert(out, l.name)
-			end
+	for _, l in ipairs(nodesOf(v)) do
+		if type(l) == "string" then
+			table.insert(out, l)
+		elseif type(l) == "table" and type(l.name) == "string" then
+			table.insert(out, l.name)
 		end
 	end
-	if type(v) ~= "table" then
-		return out
-	end
-	if type(v.nodes) == "table" then
-		collect(v.nodes)
-		return out
-	end
-	collect(v)
 	return out
 end
 
---- 把 assignees 字段统一成 {login 字符串}（同上，接受 {nodes} 包装）。
+--- 把 assignees 字段统一成 {login 字符串}（扁平数组或 {nodes={{login=…}}}）。
 local function readAssignees(v: any): { string }
 	local out: { string } = {}
-	local function collect(list: any)
-		if type(list) ~= "table" then
-			return
-		end
-		for _, a in ipairs(list) do
-			if type(a) == "table" and type(a.login) == "string" then
-				table.insert(out, a.login)
-			elseif type(a) == "string" then
-				table.insert(out, a)
-			end
+	for _, a in ipairs(nodesOf(v)) do
+		if type(a) == "table" and type(a.login) == "string" then
+			table.insert(out, a.login)
+		elseif type(a) == "string" then
+			table.insert(out, a)
 		end
 	end
-	if type(v) ~= "table" then
-		return out
-	end
-	if type(v.nodes) == "table" then
-		collect(v.nodes)
-		return out
-	end
-	collect(v)
 	return out
 end
 
---- 把 blockedBy 字段统一成 {number}。
---- gh 的形状是 {nodes={{number=..}},totalCount=n}；也接受裸数字数组或 {number} 对象数组。
+--- 把 blockedBy 字段统一成 {number}（裸数字数组、{number} 对象数组或 {nodes={…}}）。
 local function readBlockedBy(v: any): { number }
 	local out: { number } = {}
-	local function collect(list: any)
-		if type(list) ~= "table" then
-			return
-		end
-		for _, b in ipairs(list) do
-			if type(b) == "number" then
-				table.insert(out, b)
-			elseif type(b) == "table" and type(b.number) == "number" then
-				table.insert(out, b.number)
-			end
+	for _, b in ipairs(nodesOf(v)) do
+		if type(b) == "number" then
+			table.insert(out, b)
+		elseif type(b) == "table" and type(b.number) == "number" then
+			table.insert(out, b.number)
 		end
 	end
-	if type(v) ~= "table" then
-		return out
-	end
-	-- gh 的包装形状：{nodes={...}}。
-	if type(v.nodes) == "table" then
-		collect(v.nodes)
-		return out
-	end
-	collect(v)
 	return out
 end
 

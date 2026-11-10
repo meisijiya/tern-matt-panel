@@ -185,14 +185,16 @@ end
 
 --- 装填技能面板：探测技能包，读清单，按泳道分组。
 local function loadSkills(state: State)
-	local resolved = paths.resolvePackage()
+	local resolved, err = paths.resolvePackage()
 	if not resolved then
-		if not state.hasSkills then
-			state.hasSkills = false
-			state.skills = {}
-			state.lanes = {}
-			state.skillVersion = nil
+		-- 登记读失败：保留上次值；确实没装：清空并显示安装提示。
+		if err then
+			return
 		end
+		state.hasSkills = false
+		state.skills = {}
+		state.lanes = {}
+		state.skillVersion = nil
 		return
 	end
 	local root = resolved.root
@@ -388,9 +390,8 @@ local function loadBoard(state: State, cx: BlockCx)
 	end)
 end
 
---- 已关票累积上限与 open 翻页安全上限。
+--- 已关票累积上限。
 local CLOSED_CAP = 500
-local OPEN_PAGE_CAP = 100
 
 --- GraphQL 查询：每页 50，排序方向由上游执行。states 只取 OPEN/CLOSED 两个字面量，
 --- 免得往 gh 传数组参数。after 省略时就是第一页。
@@ -490,6 +491,9 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 			state.loading = false
 			state.message = "已关票拉取失败：" .. tostring(if result then result.stderr else "无输出")
 			if reset then
+				-- 旧游标属于旧方向，不能继续拿来「加载更多」。
+				state.closedHasNext = false
+				state.closedCursor = nil
 				-- open 已经拉全了：已关页失败也要先把 open 侧显示出来。
 				rebuildBoard(state)
 			end
@@ -529,8 +533,8 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string, gen: number)
 	local acc: { any } = {}
 	local direction = tracker.orderDirection(state.sortNewest)
 
-	local step: (string?, number) -> ()
-	step = function(after: string?, pages: number)
+	local step: (string?) -> ()
+	step = function(after: string?)
 		local argv = graphqlArgv(repo, "OPEN", direction, after)
 		if not argv then
 			failLoad(state, cx, repo, "仓库名解析失败：" .. repo)
@@ -546,15 +550,16 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string, gen: number)
 				return
 			end
 			acc = tracker.mergeIssues(acc, page.issues)
-			if page.hasNextPage and pages < OPEN_PAGE_CAP then
-				step(page.endCursor, pages + 1)
+			-- 上游说有下一页且给了游标就继续；游标缺失时收尾，避免死循环。
+			if page.hasNextPage and page.endCursor then
+				step(page.endCursor)
 				return
 			end
 			state.openIssues = acc
 			fetchClosedPage(state, cx, repo, true, gen)
 		end)
 	end
-	step(nil, 1)
+	step(nil)
 end
 
 --- 写一条给窗口半边的指令。
@@ -919,12 +924,12 @@ local function boardView(state: State, cx: BlockCx): Node
 		{ title = "被阻塞", items = buckets.blocked, key = TICKET_LIST .. "_blocked",
 			hint = "没有阻塞的票", icon = "help", tone = "warning" },
 		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed",
-			hint = "没有关闭的票", icon = "file", tone = "muted" },
+			hint = "没有关闭的票", icon = "file", tone = "muted", closed = true },
 	}
 	-- 空组也要画：卡片标题上的「0 张」本身就是信息，少画一张卡用户就以为那一组不存在。
 	for _, g in ipairs(groups) do
 		-- 已关闭组按上游页序追加，不跨页重排；open 侧是全量，本地重排等价于全局序。
-		if g.title ~= "已关闭" then
+		if not g.closed then
 			g.items = tracker.sortByCreated(g.items, state.sortNewest)
 		end
 		local items: { any } = {}
@@ -976,12 +981,12 @@ local function boardView(state: State, cx: BlockCx): Node
 			if g.tone then g.tone else "strong"
 		)
 		-- 空组和已关闭组默认收起，别把界面撑满；有活的组展开。
-		if #g.items == 0 or g.title == "已关闭" then
+		if #g.items == 0 or g.closed then
 			props.collapsed = true
 		end
 		local children: { Node } = { list }
 		-- 已关组是分页的：还有下一页且没到上限时，组内末尾给「加载更多」。
-		if g.title == "已关闭" and state.closedHasNext and #g.items < 500 then
+		if g.closed and state.closedHasNext and #g.items < CLOSED_CAP then
 			table.insert(children, ui.row({
 				ui.button(
 					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #g.items)),
@@ -1732,7 +1737,7 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "load-more-closed" then
-			if state.repo and state.closedHasNext and #state.closedIssues < 500 then
+			if state.repo and state.closedHasNext and #state.closedIssues < CLOSED_CAP then
 				fetchClosedPage(state, cx, state.repo, false, state.boardGen)
 			end
 			return

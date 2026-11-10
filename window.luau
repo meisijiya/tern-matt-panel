@@ -382,9 +382,11 @@ end
 tern.on("focus", function(ev: any, cx)
 	-- 重读版本并刷新状态栏胶囊；读失败保留上次值。
 	pcall(function()
-		local resolved = paths.resolvePackage()
+		local resolved, err = paths.resolvePackage()
 		if resolved and resolved.version and resolved.version ~= "" then
 			cachedVersion = resolved.version
+		elseif not err then
+			cachedVersion = nil
 		end
 	end)
 	pcall(function() tern.chrome.refresh() end)

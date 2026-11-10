@@ -1563,13 +1563,30 @@ test("paths.resolvePackage 副本不存在回退市场", function()
 	local home = "C:/home2"
 	env.HOME = home
 	env.USERPROFILE = home
-	local regPath = home .. "/.omp/plugins/installed_plugins.json"
-	-- 登记文件不存在：回退市场
+	local key = paths.REGISTRY_KEY
+	-- 登记里有本包条目，但 installPath 指向的副本不存在 → 回退市场。
+	fsFiles[home .. "/.omp/plugins/installed_plugins.json"] =
+		'{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/gone","version":"1.3.5"}}'
 	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
 	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
-	local r = paths.resolvePackage()
+	local r, err = paths.resolvePackage()
 	ok(type(r) == "table", "返回表")
 	eq(r.version, "1.3.7")
+	eq(err, nil, "副本不存在不是读失败")
+end)
+
+test("paths.resolvePackage 半截登记保留上次值（unreadable）", function()
+	local home = "C:/home4"
+	env.HOME = home
+	env.USERPROFILE = home
+	local key = paths.REGISTRY_KEY
+	fsFiles[home .. "/.omp/plugins/installed_plugins.json"] =
+		'{"' .. key .. '":{"installPath":"/gone","version":"1.3.5"'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r, err = paths.resolvePackage()
+	eq(r, nil, "解析不出条目")
+	eq(err, "registry-unreadable", "调用方据此保留上次值")
 end)
 
 test("skills.readPackage 版本同根", function()
@@ -1815,6 +1832,25 @@ test("续拉在途时切排序：旧回调作废，不把旧方向页混进新�
 	flushProcess()
 	eq(#st.closedIssues, 1, "旧方向的续拉回调被世代号丢弃")
 	eq(st.closedIssues[1].number, 101)
+end)
+
+test("切排序重拉失败：保留旧内容但不再用旧游标续拉", function()
+	local st = pagedState(2)
+	jsonPayloads["OPEN_FAIL"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_FAIL", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 1, stdout = "", stderr = "boom" } },
+	}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(#st.closedIssues, 2, "旧已关内容保留")
+	eq(st.closedHasNext, false, "旧游标不能继续用")
+	eq(st.closedCursor, nil)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "不再显示加载更多")
+	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
 end)
 
 test("续拉失败保留已加载内容并提示，不清屏", function()
