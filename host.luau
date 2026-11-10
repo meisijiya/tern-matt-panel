@@ -75,6 +75,12 @@ type State = {
 	-- 任务板
 	maps: { tracker.Map },
 	tickets: { tracker.Ticket },
+	-- 拉取原始 issue（GraphQL nodes）：open 全量、已关分页累积。
+	openIssues: { any },
+	closedIssues: { any },
+	closedCursor: string?,
+	closedHasNext: boolean,
+	closedLoading: boolean,
 	-- 选中的地图号与票号
 	mapSel: number?,
 	ticketSel: number?,
@@ -125,6 +131,11 @@ local function blank(): State
 		showHidden = false,
 		maps = {},
 		tickets = {},
+		openIssues = {},
+		closedIssues = {},
+		closedCursor = nil,
+		closedHasNext = false,
+		closedLoading = false,
 		mapSel = nil,
 		ticketSel = nil,
 		ticket = nil,
@@ -216,6 +227,23 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	if value.repo ~= repo or type(value.issues) ~= "table" then
 		return false
 	end
+	local open: { any } = {}
+	local closed: { any } = {}
+	for _, issue in ipairs(value.issues) do
+		if type(issue) == "table" then
+			if issue.state == "OPEN" then
+				table.insert(open, issue)
+			else
+				table.insert(closed, issue)
+			end
+		end
+	end
+	state.openIssues = open
+	state.closedIssues = closed
+	state.closedCursor = nil
+	state.closedHasNext = false
+	state.closedLoading = false
+	state.loading = false
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
 	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
@@ -225,6 +253,7 @@ end
 
 --- 真正拉 issue 的那一步。
 local fetchIssues: (State, BlockCx, string) -> ()
+local fetchClosedPage: (State, BlockCx, string, boolean) -> ()
 
 --- 从 git remote 推断 owner/repo。
 --- 失败时把原因带回去：只回 nil，用户看到的永远是「没识别到」，不知道卡在哪。
@@ -305,6 +334,11 @@ local function loadBoard(state: State, cx: BlockCx)
 			-- 没识别到就清空，别把别的仓库的票挂在这个项目下面。
 			state.tickets = {}
 			state.maps = {}
+			state.openIssues = {}
+			state.closedIssues = {}
+			state.closedCursor = nil
+			state.closedHasNext = false
+			state.closedLoading = false
 			state.ticket = nil
 			state.ticketBody = nil
 			state.mapSel = nil
@@ -321,6 +355,11 @@ local function loadBoard(state: State, cx: BlockCx)
 			-- 换了仓库就把上一个仓库的数据清掉，别让旧票挂在新仓库名下。
 			state.tickets = {}
 			state.maps = {}
+			state.openIssues = {}
+			state.closedIssues = {}
+			state.closedCursor = nil
+			state.closedHasNext = false
+			state.closedLoading = false
 			state.ticket = nil
 			state.ticketBody = nil
 			state.mapSel = nil
@@ -343,78 +382,166 @@ local function loadBoard(state: State, cx: BlockCx)
 	end)
 end
 
---- 真正拉 issue 的那一步。
-fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	-- 刻意不拉 body：body 是成本大头（带正文的列表查询约 400 点/次）。
-	-- 这份字段实测约 4 点/次（3 次共耗 13 点），所以刷新成本不在配额，
-	-- 而在每次 spawn 一个 gh 子进程（约 2.8 秒）。body 改成点开某张票时
-	-- 用 REST 单独取（REST 不占 GraphQL 配额）。
-	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
-	tern.process.run({
-		"gh",
-		"issue",
-		"list",
-		"--repo",
-		repo,
-		"--state",
-		"all",
-		"--limit",
-		"200",
-		"--json",
-		fields,
-	}):next(function(result: any, _err: any, _cx: any)
-		if result == nil or result.status ~= 0 then
-			state.loading = false
-			local now2 = nowSec()
-			if now2 then
-				state.cooldownUntil = now2 + COOLDOWN_SEC
-			end
-			state.message = "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出")
-			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
-			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
-			if applyCachedIssues(state, repo) then
-				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
-				state.message = state.message
-					.. "（显示上次拉到的数据"
-					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
-					.. "）"
-			end
-			cx:render()
-			return
-		end
-		local issues = decodeIssues(tostring(result.stdout or ""))
-		if not issues then
-			state.loading = false
-			state.message = "gh 输出解析失败"
-			if applyCachedIssues(state, repo) then
-				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
-				state.message = state.message
-					.. "（显示上次拉到的数据"
-					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
-					.. "）"
-			end
-			cx:render()
-			return
-		end
-		state.tickets = tracker.parseIssues(issues)
-		state.maps = tracker.groupByMap(issues)
+--- 已关票累积上限与 open 翻页安全上限。
+local CLOSED_CAP = 500
+local OPEN_PAGE_CAP = 100
+
+--- GraphQL 查询：每页 50，排序方向由上游执行。states 只取 OPEN/CLOSED 两个字面量，
+--- 免得往 gh 传数组参数。after 省略时就是第一页。
+local function graphqlQuery(stateName: string): string
+	return table.concat({
+		"query($owner:String!,$name:String!,$direction:OrderDirection!,$after:String){",
+		"repository(owner:$owner,name:$name){issues(first:", tostring(tracker.PAGE_SIZE),
+		",states:", stateName, ",after:$after,orderBy:{field:CREATED_AT,direction:$direction}){",
+		"pageInfo{hasNextPage endCursor}",
+		"nodes{number title state url createdAt labels(first:50){nodes{name}}",
+		" assignees(first:10){nodes{login}} parent{number}",
+		" blockedBy(first:50){nodes{number}}}",
+		"}}}",
+	})
+end
+
+local function graphqlArgv(repo: string, stateName: string, direction: string, after: string?): { string }?
+	local owner, name = string.match(repo, "^([^/]+)/(.+)$")
+	if not owner or not name then
+		return nil
+	end
+	local argv = {
+		"gh", "api", "graphql",
+		"-f", "query=" .. graphqlQuery(stateName),
+		"-F", "owner=" .. owner,
+		"-F", "name=" .. name,
+		"-F", "direction=" .. direction,
+	}
+	if after and after ~= "" then
+		table.insert(argv, "-f")
+		table.insert(argv, "after=" .. after)
+	end
+	return argv
+end
+
+--- 从 gh 结果里取一页；失败返回 nil。
+local function readPage(result: any): { issues: { any }, hasNextPage: boolean, endCursor: string? }?
+	if result == nil or result.status ~= 0 then
+		return nil
+	end
+	local payload = decodeIssues(tostring(result.stdout or ""))
+	if not payload then
+		return nil
+	end
+	return tracker.parseIssuePage(payload)
+end
+
+--- 用当前 open/closed 原始票重建显示数据。
+local function rebuildBoard(state: State)
+	local all = tracker.mergeIssues(state.openIssues, state.closedIssues)
+	state.tickets = tracker.parseIssues(all)
+	state.maps = tracker.groupByMap(all)
+end
+
+--- 拉取失败：保留已看到的数据，冷却，必要时退到缓存。
+local function failLoad(state: State, cx: BlockCx, repo: string, message: string)
+	state.loading = false
+	local now = nowSec()
+	if now then
+		state.cooldownUntil = now + COOLDOWN_SEC
+	end
+	state.message = message
+	if applyCachedIssues(state, repo) then
+		state.message = state.message
+			.. "（显示上次拉到的数据"
+			.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
+			.. "）"
+	end
+	cx:render()
+end
+
+--- 已关票一页：reset 时成功后才替换，失败保留旧内容；否则续拉下一页。
+fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boolean)
+	if state.closedLoading then
+		return
+	end
+	if not reset and not state.closedHasNext then
+		return
+	end
+	local direction = tracker.orderDirection(state.sortNewest)
+	local argv = graphqlArgv(repo, "CLOSED", direction, if reset then nil else state.closedCursor)
+	if not argv then
 		state.loading = false
+		state.message = "仓库名解析失败：" .. repo
+		cx:render()
+		return
+	end
+	state.closedLoading = true
+	tern.process.run(argv):next(function(result: any)
+		state.closedLoading = false
+		local page = readPage(result)
+		if not page then
+			state.loading = false
+			state.message = "已关票拉取失败：" .. tostring(if result then result.stderr else "无输出")
+			if reset then
+				-- open 已经拉全了：已关页失败也要先把 open 侧显示出来。
+				rebuildBoard(state)
+			end
+			cx:render()
+			return
+		end
+		local base = if reset then {} else state.closedIssues
+		local merged = tracker.mergeIssues(base, page.issues)
+		local hasNext = page.hasNextPage
+		if #merged >= CLOSED_CAP then
+			merged = tracker.capIssues(merged, CLOSED_CAP)
+			hasNext = false
+		end
+		state.closedIssues = merged
+		state.closedCursor = page.endCursor
+		state.closedHasNext = hasNext
+		state.loading = false
+		rebuildBoard(state)
 		if #state.tickets == 0 then
 			state.message = "这个仓库还没有 issue"
 		end
-		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
-		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
-		-- 会把它当实时状态，据此做出已经过期的判断。
-		local now2 = nowSec()
-		state.fetchedAtSec = now2
+		-- 缓存带着时刻：拉取失败退到缓存时，接收方能判断这份数据是不是过期的。
+		local now = nowSec()
+		state.fetchedAtSec = now
 		state.legacyFetchedAt = nil
 		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
 			repo = repo,
-			issues = issues,
+			issues = tracker.mergeIssues(state.openIssues, state.closedIssues),
 			fetchedAtSec = state.fetchedAtSec,
 		})
 		cx:render()
 	end)
+end
+
+--- 刷新：open 全量翻页（前沿判定必须看到每张 OPEN 阻塞票），再拉已关首屏一页。
+fetchIssues = function(state: State, cx: BlockCx, repo: string)
+	local acc: { any } = {}
+	local direction = tracker.orderDirection(state.sortNewest)
+
+	local step: (string?, number) -> ()
+	step = function(after: string?, pages: number)
+		local argv = graphqlArgv(repo, "OPEN", direction, after)
+		if not argv then
+			failLoad(state, cx, repo, "仓库名解析失败：" .. repo)
+			return
+		end
+		tern.process.run(argv):next(function(result: any)
+			local page = readPage(result)
+			if not page then
+				failLoad(state, cx, repo, "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出"))
+				return
+			end
+			acc = tracker.mergeIssues(acc, page.issues)
+			if page.hasNextPage and pages < OPEN_PAGE_CAP then
+				step(page.endCursor, pages + 1)
+				return
+			end
+			state.openIssues = acc
+			fetchClosedPage(state, cx, repo, true)
+		end)
+	end
+	step(nil, 1)
 end
 
 --- 写一条给窗口半边的指令。
@@ -781,10 +908,12 @@ local function boardView(state: State, cx: BlockCx): Node
 		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed",
 			hint = "没有关闭的票", icon = "file", tone = "muted" },
 	}
+	-- 空组也要画：卡片标题上的「0 张」本身就是信息，少画一张卡用户就以为那一组不存在。
 	for _, g in ipairs(groups) do
-		-- 空组也要画：卡片标题上的「0 张」本身就是信息，
-		-- 少画一张卡用户就以为那一组不存在。
-		g.items = tracker.sortByCreated(g.items, state.sortNewest)
+		-- 已关闭组按上游页序追加，不跨页重排；open 侧是全量，本地重排等价于全局序。
+		if g.title ~= "已关闭" then
+			g.items = tracker.sortByCreated(g.items, state.sortNewest)
+		end
 		local items: { any } = {}
 		for _, t in ipairs(g.items) do
 			local who = if #t.assignees > 0 then "@" .. t.assignees[1] else nil

@@ -1600,6 +1600,101 @@ test("focus 后 chrome.refresh 被调", function()
 	ok(chromeRefreshes > before, "refresh 被调")
 end)
 
+test("tracker 解析 GraphQL nodes 形状的标签与受理人", function()
+	local t = tracker.parseIssue({
+		number = 7,
+		title = "x",
+		state = "OPEN",
+		labels = { nodes = { { name = "wayfinder:task" }, { name = "ready-for-agent" } } },
+		assignees = { nodes = { { login = "me" } } },
+	})
+	ok(t ~= nil)
+	eq(#t.labels, 2)
+	eq(t.labels[1], "wayfinder:task")
+	eq(t.assignees[1], "me")
+	eq(t.type, "task")
+	eq(t.isSpec, true)
+end)
+
+test("tracker.parseIssuePage 解析一页与分页信息", function()
+	local payload = {
+		data = { repository = { issues = {
+			nodes = { { number = 1 }, { number = 2 } },
+			pageInfo = { hasNextPage = true, endCursor = "c1" },
+		} } },
+	}
+	local page = tracker.parseIssuePage(payload)
+	ok(page ~= nil)
+	eq(#page.issues, 2)
+	eq(page.issues[2].number, 2)
+	eq(page.hasNextPage, true)
+	eq(page.endCursor, "c1", "转发游标")
+
+	local last = tracker.parseIssuePage({ data = { repository = { issues = {
+		nodes = { { number = 3 } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } })
+	eq(last.hasNextPage, false, "最后一页")
+
+	eq(tracker.parseIssuePage({}), nil, "坏形返回 nil")
+	eq(tracker.parseIssuePage({ data = { repository = { issues = {} } } }).hasNextPage, false, "缺 pageInfo 当作没有下一页")
+end)
+
+test("tracker.mergeIssues 按票号去重且保留先到顺序", function()
+	local a = { { number = 2, title = "a" }, { number = 1, title = "b" } }
+	local b = { { number = 1, title = "dup" }, { number = 3, title = "c" } }
+	local out = tracker.mergeIssues(a, b)
+	eq(#out, 3)
+	eq(out[1].number, 2)
+	eq(out[2].number, 1)
+	eq(out[2].title, "b", "同号保留先到的")
+	eq(out[3].number, 3)
+end)
+
+test("tracker.capIssues 截到上限", function()
+	local list = {}
+	for i = 1, 501 do
+		table.insert(list, { number = i })
+	end
+	local out = tracker.capIssues(list, 500)
+	eq(#out, 500)
+	eq(out[500].number, 500)
+	eq(#tracker.capIssues({ { number = 1 } }, 500), 1, "未超限原样返回")
+end)
+
+test("tracker.orderDirection 映射到上游排序", function()
+	eq(tracker.orderDirection(true), "DESC")
+	eq(tracker.orderDirection(false), "ASC")
+end)
+
+test("open 侧必须全量：阻塞票在 201 位时仍判定阻塞", function()
+	local tickets = {}
+	for i = 1, 202 do
+		tickets[i] = {
+			number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
+			labels = {}, assignees = {}, blockedBy = {}, type = nil, parent = nil,
+			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
+		}
+	end
+	tickets[1].blockedBy = { 201 }
+	local full = tracker.computeFrontier(tickets)
+	for _, t in ipairs(full) do
+		ok(t.number ~= 1, "被 201 位 OPEN 票阻塞的票不能进可领")
+	end
+	local partial = {}
+	for i = 1, 200 do
+		table.insert(partial, tickets[i])
+	end
+	local wrong = tracker.computeFrontier(partial)
+	local seen = false
+	for _, t in ipairs(wrong) do
+		if t.number == 1 then
+			seen = true
+		end
+	end
+	ok(seen, "丢掉 201 页就会把它误判成可领（证明必须全量）")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

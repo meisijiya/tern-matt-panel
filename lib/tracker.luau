@@ -41,11 +41,14 @@ export type Map = {
 	tickets: { Ticket },
 }
 
---- 把 labels 字段统一成 {string}（gh 可能给字符串数组或 {name} 数组）。
+--- 把 labels 字段统一成 {string}（gh 可能给字符串数组或 {name} 数组；GraphQL 给 {nodes={name}}）。
 local function readLabels(v: any): { string }
 	local out: { string } = {}
-	if type(v) == "table" then
-		for _, l in ipairs(v) do
+	local function collect(list: any)
+		if type(list) ~= "table" then
+			return
+		end
+		for _, l in ipairs(list) do
 			if type(l) == "string" then
 				table.insert(out, l)
 			elseif type(l) == "table" and type(l.name) == "string" then
@@ -53,14 +56,25 @@ local function readLabels(v: any): { string }
 			end
 		end
 	end
+	if type(v) ~= "table" then
+		return out
+	end
+	if type(v.nodes) == "table" then
+		collect(v.nodes)
+		return out
+	end
+	collect(v)
 	return out
 end
 
---- 把 assignees 字段统一成 {login 字符串}。
+--- 把 assignees 字段统一成 {login 字符串}（同上，接受 {nodes} 包装）。
 local function readAssignees(v: any): { string }
 	local out: { string } = {}
-	if type(v) == "table" then
-		for _, a in ipairs(v) do
+	local function collect(list: any)
+		if type(list) ~= "table" then
+			return
+		end
+		for _, a in ipairs(list) do
 			if type(a) == "table" and type(a.login) == "string" then
 				table.insert(out, a.login)
 			elseif type(a) == "string" then
@@ -68,6 +82,14 @@ local function readAssignees(v: any): { string }
 			end
 		end
 	end
+	if type(v) ~= "table" then
+		return out
+	end
+	if type(v.nodes) == "table" then
+		collect(v.nodes)
+		return out
+	end
+	collect(v)
 	return out
 end
 
@@ -400,6 +422,80 @@ function M.groupByMap(issues: { any }): { Map }
 		table.insert(ordered, m)
 	end
 	return ordered
+end
+
+--- 游标分页：每页条数与排序方向到 GraphQL 参数的映射。
+M.PAGE_SIZE = 50
+
+function M.orderDirection(newestFirst: boolean): string
+	return if newestFirst then "DESC" else "ASC"
+end
+
+--- 合并两批 issue，按 number 去重并保留先到顺序；后者同号不追加。
+function M.mergeIssues(existing: { any }, incoming: { any }): { any }
+	local out: { any } = table.clone(existing)
+	local seen: { [number]: boolean } = {}
+	for _, t in ipairs(existing) do
+		if type(t) == "table" and type(t.number) == "number" then
+			seen[t.number] = true
+		end
+	end
+	for _, t in ipairs(incoming) do
+		if type(t) == "table" and type(t.number) == "number" and not seen[t.number] then
+			seen[t.number] = true
+			table.insert(out, t)
+		end
+	end
+	return out
+end
+
+--- 截断到上限；已关票累积上限用。
+function M.capIssues(issues: { any }, cap: number): { any }
+	if #issues <= cap then
+		return issues
+	end
+	local out: { any } = {}
+	for i = 1, cap do
+		table.insert(out, issues[i])
+	end
+	return out
+end
+
+--- 解析 `gh api graphql` 的一页：只取 issues.nodes 与 pageInfo，nodes 原样留给 parseIssues/groupByMap。
+function M.parseIssuePage(payload: any): { issues: { any }, hasNextPage: boolean, endCursor: string? }?
+	if type(payload) ~= "table" then
+		return nil
+	end
+	local data = payload.data
+	if type(data) ~= "table" then
+		return nil
+	end
+	local repo = data.repository
+	if type(repo) ~= "table" then
+		return nil
+	end
+	local issues = repo.issues
+	if type(issues) ~= "table" then
+		return nil
+	end
+	local out: { any } = {}
+	if type(issues.nodes) == "table" then
+		for _, n in ipairs(issues.nodes) do
+			if type(n) == "table" then
+				table.insert(out, n)
+			end
+		end
+	end
+	local hasNext = false
+	local cursor: string? = nil
+	local info = issues.pageInfo
+	if type(info) == "table" then
+		hasNext = info.hasNextPage == true
+		if type(info.endCursor) == "string" then
+			cursor = info.endCursor
+		end
+	end
+	return { issues = out, hasNextPage = hasNext, endCursor = cursor }
 end
 
 return M
