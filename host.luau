@@ -1731,8 +1731,11 @@ tern.block.define(BLOCK_ID, {
 		if act == "toggle-sort" then
 			state.sortNewest = not state.sortNewest
 			state.message = if state.sortNewest then "最新在上" else "最早在上"
-			-- 换方向：已关组必须丢弃已加载页、从第一页重拉；loadBoard 会开新一代，
-			-- 在途的旧方向回调自动作废。
+			-- 换方向：旧游标立即作废，免得冷却/失败时「加载更多」接回旧方向。
+			state.boardGen += 1
+			state.closedHasNext = false
+			state.closedCursor = nil
+			-- 已关组从第一页按新方向重拉；open 组本地重排等价于全局序。
 			loadBoard(state, cx)
 			return
 		end

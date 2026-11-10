@@ -1834,6 +1834,20 @@ test("续拉在途时切排序：旧回调作废，不把旧方向页混进新�
 	eq(st.closedIssues[1].number, 101)
 end)
 
+test("冷却中切排序：旧游标作废，按钮消失", function()
+	local st = pagedState(2)
+	st.cooldownUntil = os.time() + 60
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(st.sortNewest, false)
+	eq(st.closedHasNext, false, "旧游标作废")
+	eq(st.closedCursor, nil)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "冷却中不显示加载更多")
+	for _, call in ipairs(processCalls) do
+		ok(string.find(table.concat(call.argv, " "), "states:CLOSED", 1, true) == nil, "冷却中不发已关请求")
+	end
+end)
+
 test("切排序重拉失败：保留旧内容但不再用旧游标续拉", function()
 	local st = pagedState(2)
 	jsonPayloads["OPEN_FAIL"] = { data = { repository = { issues = {
