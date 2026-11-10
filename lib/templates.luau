@@ -10,28 +10,78 @@ export type Template = {
 	body: string,
 }
 
+--- 共享反问小节：九个模板各引用一次。
+--- 路由版（七个模板挂）与无路由版（grilling 入口、implement 入口）仅差「反问走 /skill:grilling」一行。
+local ASK_BACK_BASE = table.concat({
+	"## 反问（信息不全时先问）",
+	"- [ ] 结束行之后没有用户补充，或补充说不清对象/范围/验收标准时，先反问，不替用户猜。",
+	"- [ ] 一次问 2~4 个，每个问题给一个你推荐的做法；等回答再动手。",
+	"- [ ] 能自己查到的事实（gh、git、仓内文档）自己去查，不要拿去问用户。",
+	"- [ ] 当前模板已在 grill-* 流程中时不重复调用 grilling。",
+	"- [ ] 时序：先跑主技能能自查能分析的部分，卡在「只有用户能答」的点时再反问。",
+}, "\n")
+
+local ASK_BACK = ASK_BACK_BASE .. "\n- [ ] 反问走 /skill:grilling。"
+
+local USER_INPUT_NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
+
+local TOOLS = table.concat({
+	"## 工具",
+	"- [ ] 票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
+	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
+}, "\n")
+
 --- 四个票动作模板，按 wayfinder 票类型分（issue #9 决策）。
 --- task 不挂技能，只给票链接 + 执行指令；其余三类只调用对应技能。
 local TEMPLATES: { Template } = {
 	{
 		id = "grilling",
 		title = "盘问",
-		body = "请使用 /skill:grill-with-docs 技能，对以下需求做盘问式审查，找出隐藏假设与尚未拍板的决策。\n需求链接：{url}",
+		body = table.concat({
+			"请使用 /skill:grill-with-docs 技能，对以下需求做盘问式审查，找出隐藏假设与尚未拍板的决策。",
+			"需求链接：{url}",
+			"",
+			ASK_BACK_BASE,
+			"",
+			USER_INPUT_NOTE,
+		}, "\n"),
 	},
 	{
 		id = "prototype",
 		title = "原型",
-		body = "请使用 /skill:prototype 技能，为以下需求快速做出可运行的原型，验证想法是否站得住。\n需求链接：{url}",
+		body = table.concat({
+			"请使用 /skill:prototype 技能，为以下需求快速做出可运行的原型，验证想法是否站得住。",
+			"需求链接：{url}",
+			"",
+			ASK_BACK,
+			"",
+			USER_INPUT_NOTE,
+		}, "\n"),
 	},
 	{
 		id = "research",
 		title = "调研",
-		body = "请使用 /skill:research 技能，围绕以下主题展开调研，给出结论与一手来源。\n需求链接：{url}",
+		body = table.concat({
+			"请使用 /skill:research 技能，围绕以下主题展开调研，给出结论与一手来源。",
+			"需求链接：{url}",
+			"",
+			ASK_BACK,
+			"",
+			USER_INPUT_NOTE,
+		}, "\n"),
 	},
 	{
 		id = "task",
 		title = "执行",
-		body = "请认领并执行以下任务，完成后回报结论。\n任务标题：{title}\n任务链接：{url}",
+		body = table.concat({
+			"请认领并执行以下任务，完成后回报结论。",
+			"任务标题：{title}",
+			"任务链接：{url}",
+			"",
+			ASK_BACK,
+			"",
+			USER_INPUT_NOTE,
+		}, "\n"),
 	},
 }
 M.TEMPLATES = TEMPLATES
@@ -46,12 +96,6 @@ local INVESTIGATION = table.concat({
 	"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
 	"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
 	"- [ ] 提问前用一句话说明已查阅范围。",
-}, "\n")
-
-local TOOLS = table.concat({
-	"## 工具",
-	"- [ ] 票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
-	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
 }, "\n")
 
 --- 「问下一步」：只调 ask-matt 技能，外加一段写清怎么想、怎么给的提示。
@@ -83,11 +127,17 @@ M.NEXT_STEP = {
 		"## 交付",
 		"- [ ] 最多 3 条，每条一行：做什么 · 用哪个技能命令 · 第一步具体动作 · 一句依据。",
 		"- [ ] 最后一行写「没核到的：…」；全都核到了就写「没核到的：无」。",
+		"",
+		TOOLS,
+		"",
+		ASK_BACK,
+		"",
+		USER_INPUT_NOTE,
 	}, "\n"),
 }
 
---- 「提 BUG」：按 wayfinder 规则建 bug 票，正文给报告人四项填空，
---- 建单前强制扫一遍已有 bug 票查重（关键词搜索会漏，必须全扫）。
+--- 「提 BUG」：按 wayfinder 规则建 bug 票；现象/期望/复现/环境从用户补充里取，
+--- 缺就标 needs-info 回问；建单前强制扫一遍已有 bug 票查重（关键词搜索会漏，必须全扫）。
 M.NEW_BUG = {
 	id = "new-bug",
 	title = "提 BUG",
@@ -102,13 +152,9 @@ M.NEW_BUG = {
 		"",
 		"## 澄清",
 		"- [ ] 有假设先用 grilling 澄清，不默认；已给的不重问。",
-		"- [ ] 四项全空时先回问报告人，不要替他编；只答出一部分就照常建单，缺的地方标 needs-info。",
+		"- [ ] 信息全空时先回问报告人，不要替他编；只答出一部分就照常建单，缺的地方标 needs-info。",
 		"",
-		"下面四项是帮报告人把情况说清楚的提示，不是四道必答题：知道多少写多少，说不清的可以空着。",
-		"实际（看到了什么现象；知道影响范围就一并写上）：",
-		"期望（原本预期是什么样；与实际看到的差异写清楚）：",
-		"复现步骤（能说清前置条件和场景就先写，再按编号步骤写；偶发的话写下大概频率）：",
-		"环境信息（知道的话写 OS 版本、软件版本、运行环境）：",
+		"现象、期望、复现步骤与环境这些信息从用户补充里取，缺了就标 needs-info 并回问，不替报告人编。",
 		"",
 		INVESTIGATION,
 		"",
@@ -127,6 +173,10 @@ M.NEW_BUG = {
 		"- [ ] 结论：新建 / 关联哪张旧单 / 按回归新建。",
 		"",
 		TOOLS,
+		"",
+		ASK_BACK,
+		"",
+		USER_INPUT_NOTE,
 	}, "\n"),
 }
 
@@ -166,6 +216,10 @@ M.HEALTH_CHECK = {
 		"GitHub 后端：用 gh 读票与依赖（gh issue list / gh issue view）；写边只用 gh 的 issue 依赖接口，其余写操作一概不做。",
 		"",
 		TOOLS,
+		"",
+		ASK_BACK,
+		"",
+		USER_INPUT_NOTE,
 	}, "\n"),
 }
 
@@ -198,7 +252,9 @@ local ENTRIES: { Entry } = {
 			"- [ ] 结束前把 blockedBy 再查一遍：不多不少、串行链条没断没绕圈、并行的票真能同时开工；对不上先把边改对。",
 			"- [ ] 建了新 map 就写明编号，并说清哪些 sub-issue 并行、哪些串行、谁等谁；没建成就写明下一步。",
 			"",
-			TOOLS,
+			ASK_BACK,
+			"",
+			USER_INPUT_NOTE,
 		}, "\n"),
 	},
 	{
@@ -217,13 +273,15 @@ local ENTRIES: { Entry } = {
 			INVESTIGATION,
 			"",
 			"## 需求",
-			"（在这里写清这一次要讨论什么）",
+			"描述性说明：用户补充里可能包含本次要讨论的内容、范围与验收标准；缺了就按 needs-info 标记并回问，不替用户猜。",
 			"",
 			"## 收尾（下面两步由用户手动执行，不要替他做）",
 			"- [ ] 讨论结束、结论对齐后，提醒用户手动执行一次 /skill:to-spec，把结论生成规格 issue。",
 			"- [ ] 规格 issue 生成后，再提醒用户手动执行一次 /skill:to-tickets，把规格拆成实施 issue。",
 			"",
-			TOOLS,
+			ASK_BACK_BASE,
+			"",
+			USER_INPUT_NOTE,
 		}, "\n"),
 	},
 }

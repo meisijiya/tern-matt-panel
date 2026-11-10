@@ -1112,6 +1112,100 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	ok(kvStore["action"] == nil, "选择前不注入")
 end)
 
+--- 九个模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
+--- 末节有用户输入声明、反问路由正确。
+local ALL_TEMPLATES: { { name: string, body: string } } = {}
+for _, tpl in ipairs(templates.TEMPLATES) do
+	table.insert(ALL_TEMPLATES, {
+		name = tpl.title,
+		body = templates.render(tpl, { url = "http://x/1", title = "票标题" }),
+	})
+end
+table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
+for _, e in ipairs(templates.ENTRIES) do
+	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.renderEntry(e, "me/repo") })
+end
+
+local ASK_MARK = "## 反问（信息不全时先问）"
+local USER_INPUT_MARK = "结束行之后的文字是用户输入"
+local SKILL_WHITELIST = {
+	"/skill:ask-matt",
+	"/skill:wayfinder",
+	"/skill:grill-with-docs",
+	"/skill:prototype",
+	"/skill:research",
+	"/skill:grilling",
+	-- 收尾提醒用的既有技能名
+	"/skill:to-spec",
+	"/skill:to-tickets",
+}
+-- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
+local function findPlaceholder(body: string): string?
+	local hit = body:match("（[^）]*填[^）]*）")
+	if hit then
+		return hit
+	end
+	for line in string.gmatch(body, "[^\n]+") do
+		if string.match(line, "：$") and #line < 40 then
+			return line
+		end
+	end
+	return nil
+end
+
+test("九个模板都挂反问小节且只挂一次", function()
+	eq(#ALL_TEMPLATES, 9, "九个模板都收进来了")
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local n = 0
+		for _ in string.gmatch(t.body, ASK_MARK) do
+			n = n + 1
+		end
+		eq(n, 1, t.name .. " 的反问小节恰好一次")
+	end
+end)
+
+test("九个模板正文里没有待填空位", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local hit = findPlaceholder(t.body)
+		ok(hit == nil, t.name .. " 没有占位（命中：" .. tostring(hit) .. "）")
+	end
+end)
+
+test("九个模板的主技能命令都在白名单内", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		for cmd in string.gmatch(t.body, "/skill:[%w%-_]+") do
+			local allowed = false
+			for _, w in ipairs(SKILL_WHITELIST) do
+				if cmd == w then
+					allowed = true
+				end
+			end
+			ok(allowed, t.name .. " 的命令 " .. cmd .. " 在白名单内")
+		end
+	end
+end)
+
+test("九个模板末节都有用户输入声明", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		ok(string.find(t.body, USER_INPUT_MARK, 1, true) ~= nil, t.name .. " 有用户输入声明")
+		local stripped = string.gsub(t.body, USER_INPUT_MARK .. "按它执行；与上面冲突时以用户输入为准。", "")
+		ok(string.match(stripped, "%s*$") ~= nil, t.name .. " 的声明在末节")
+	end
+end)
+
+test("反问路由：盘问与需求已明确不挂 grilling，其余七个挂", function()
+	for _, t in ipairs(ALL_TEMPLATES) do
+		local has = string.find(t.body, "/skill:grilling", 1, true) ~= nil
+		if t.name == "盘问" or t.name == "入口·需求已明确" then
+			ok(not has, t.name .. " 不挂 grilling")
+		else
+			ok(has, t.name .. " 挂 grilling")
+		end
+	end
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))
