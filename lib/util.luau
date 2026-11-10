@@ -135,4 +135,16 @@ function M.parseRemoteUrl(url: string): string?
 	return nil
 end
 
+--- 陈旧判据：只有 now/fetchedAt 都是 number 且 now - fetchedAt > threshold 才 true。
+function M.isStale(now: any, fetchedAt: any, threshold: number): boolean
+	if type(now) ~= "number" then
+		return false
+	end
+	if type(fetchedAt) ~= "number" then
+		return false
+	end
+	return (now - fetchedAt) > threshold
+end
+
+
 return M

@@ -43,7 +43,7 @@ local function fmtTime(t: number?): string?
 	end
 	return string.format("epoch %d", t)
 end
-
+local STALE_SEC = 7200
 --- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
 local COOLDOWN_SEC = 60
 
@@ -1124,8 +1124,18 @@ local function dockView(state: State): Node
 	}
 	local at = fetchedLabel(state)
 	if at then
-		table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+		local stale = false
+		local now = nowSec()
+		if now and state.fetchedAtSec then
+			stale = util.isStale(now, state.fetchedAtSec, STALE_SEC)
+		end
+		if stale then
+			table.insert(items, ui.text(ui.span("数据 " .. at .. " · 建议刷新", "error")))
+		else
+			table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+		end
 	end
+
 	if state.message then
 		table.insert(items, ui.text(ui.span(state.message, "accent")))
 	end
