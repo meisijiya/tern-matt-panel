@@ -1206,6 +1206,110 @@ test("反问路由：盘问与需求已明确不挂 grilling，其余七个挂",
 	end
 end)
 
+--- T4：六个模板（四个票动作 + 两个入口）按统一骨架排布，主技能命令正确，
+--- 交付形状写清，入口两条路由要点仍在。
+local SKELETON_ORDER = { "## 目标", "## 事实核验", "## 边界" }
+
+local function bodyOf(tpl: { body: string }, vars: { [string]: string }): string
+	return (tpl.body:gsub("{(%w+)}", function(key: string)
+		return vars[key] or ("{" .. key .. "}")
+	end))
+end
+
+local function posOf(body: string, needle: string): number
+	return string.find(body, needle, 1, true) or -1
+end
+
+local T4_BODIES: { { name: string, body: string } } = {}
+for _, tpl in ipairs(templates.TEMPLATES) do
+	table.insert(T4_BODIES, { name = tpl.title, body = bodyOf(tpl, { url = "http://x/1", title = "票标题" }) })
+end
+for _, e in ipairs(templates.ENTRIES) do
+	table.insert(T4_BODIES, { name = e.injectAction, body = (e.body:gsub("{repo}", "me/repo")) })
+end
+
+test("T4 六个模板的骨架段落顺序一致", function()
+	eq(#T4_BODIES, 6, "四个票动作 + 两个入口")
+	for _, t in ipairs(T4_BODIES) do
+		local last = -1
+		for _, mark in ipairs(SKELETON_ORDER) do
+			local p = posOf(t.body, mark)
+			ok(p > 0, t.name .. " 有段落 " .. mark)
+			ok(p > last, t.name .. " 的段落顺序 " .. mark)
+			last = p
+		end
+		local ask = posOf(t.body, ASK_MARK)
+		ok(ask > last, t.name .. " 的反问小节在骨架段落之后")
+		local deliver = posOf(t.body, "## 交付")
+		local judge = posOf(t.body, "## 判断与交付")
+		ok(deliver > 0 or judge > 0, t.name .. " 有交付形状段落")
+		ok(ask > deliver and ask > judge, t.name .. " 的交付形状在反问之前")
+	end
+end)
+
+test("T4 六个模板的主技能命令正确", function()
+	local expect = {
+		["盘问"] = "/skill:grill-with-docs",
+		["原型"] = "/skill:prototype",
+		["调研"] = "/skill:research",
+		["入口·还没想清楚"] = "/skill:wayfinder",
+		["入口·需求已明确"] = "/skill:grill-with-docs",
+	}
+	for _, t in ipairs(T4_BODIES) do
+		local want = expect[t.name]
+		if want then
+			ok(posOf(t.body, want) > 0, t.name .. " 用 " .. want)
+		end
+	end
+	-- 执行票不挂技能，只保留认领并执行、回报结论的指令
+	local task = templates.byId("task")
+	ok(task ~= nil, "执行票模板在")
+	local taskBody = bodyOf(task, { url = "http://x/1", title = "票标题" })
+	ok(string.find(taskBody, "/skill:grill-with-docs", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:prototype", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:research", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "/skill:wayfinder", 1, true) == nil, "执行票不挂主技能")
+	ok(string.find(taskBody, "认领并执行", 1, true) ~= nil, "执行票保留认领并执行")
+	ok(string.find(taskBody, "回报", 1, true) ~= nil, "执行票保留回报结论")
+end)
+
+test("T4 票动作模板带票链接，执行票带标题与先问不直接开工", function()
+	for _, tpl in ipairs(templates.TEMPLATES) do
+		local body = bodyOf(tpl, { url = "http://x/1", title = "票标题" })
+		ok(string.find(body, "http://x/1", 1, true) ~= nil, tpl.title .. " 带票链接")
+	end
+	local task = templates.byId("task")
+	local taskBody = bodyOf(task, { url = "http://x/1", title = "票标题" })
+	ok(string.find(taskBody, "票标题", 1, true) ~= nil, "执行票带任务标题")
+	ok(string.find(taskBody, "先问", 1, true) ~= nil, "执行票要求先问")
+	ok(string.find(taskBody, "不直接开工", 1, true) ~= nil, "执行票要求不直接开工")
+end)
+
+test("T4 两个入口的路由要点仍在", function()
+	local explore = templates.entryById("explore")
+	local implement = templates.entryById("implement")
+	ok(explore ~= nil and implement ~= nil, "两个入口都在")
+	ok(string.find(explore.body, "blockedBy", 1, true) ~= nil, "explore 保留 blockedBy 判断")
+	ok(string.find(explore.body, "并行", 1, true) ~= nil, "explore 保留并行")
+	ok(string.find(explore.body, "串行", 1, true) ~= nil, "explore 保留串行")
+	ok(string.find(explore.body, "/skill:wayfinder", 1, true) ~= nil, "explore 走 wayfinder")
+	ok(string.find(implement.body, "/skill:grill-with-docs", 1, true) ~= nil, "implement 走 grill-with-docs")
+	ok(string.find(implement.body, "/skill:to-spec", 1, true) ~= nil, "implement 提醒 to-spec")
+	ok(string.find(implement.body, "/skill:to-tickets", 1, true) ~= nil, "implement 提醒 to-tickets")
+	ok(string.find(implement.body, "手动执行", 1, true) ~= nil, "implement 两步由用户手动执行")
+end)
+
+test("T4 每个模板都写清交付形状与可复核信息", function()
+	for _, t in ipairs(T4_BODIES) do
+		local body = t.body
+		ok(string.find(body, "条", 1, true) ~= nil, t.name .. " 写清产出几条")
+		ok(
+			string.find(body, "票号", 1, true) ~= nil or string.find(body, "文件", 1, true) ~= nil,
+			t.name .. " 写清可复核信息"
+		)
+	end
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))
