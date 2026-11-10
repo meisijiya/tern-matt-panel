@@ -461,6 +461,10 @@ end
 --- 宿主不能自己下"成功"的结论：填入可能失败（没 agent、写不进去）。
 --- 所以这里只标"填入中"，等窗口半边把结果写回 INJECT_RESULT_KEY 再改口。
 local function inject(state: State, cx: BlockCx, body: string, name: string)
+	if body:match("^%s*$") then
+		state.message = "没有正文，不注入"
+		return
+	end
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
 	state.message = "填入中：" .. name
@@ -1544,7 +1548,7 @@ tern.block.define(BLOCK_ID, {
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
-				inject(state, cx, templates.renderEntry(e, state.repo or ""), e.title)
+				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.renderEntry(e, state.repo or "")), e.title)
 			end
 			return
 		end
@@ -1558,7 +1562,7 @@ tern.block.define(BLOCK_ID, {
 				state.message = "先识别到仓库，再问下一步"
 				return
 			end
-			inject(state, cx, templates.render(templates.NEXT_STEP, { repo = state.repo }), "问下一步")
+			inject(state, cx, commands.buildInjectionBody("问下一步", templates.render(templates.NEXT_STEP, { repo = state.repo })), "问下一步")
 			return
 		end
 		if act == "new-demand" then
@@ -1568,11 +1572,11 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "new-bug" then
-			inject(state, cx, templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" }), "提 BUG")
+			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" })), "提 BUG")
 			return
 		end
 		if act == "health-check" then
-			inject(state, cx, templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" }), "体检")
+			inject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" })), "体检")
 			return
 		end
 		if act == "auto-reload" then
