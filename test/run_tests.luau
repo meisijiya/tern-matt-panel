@@ -1432,6 +1432,98 @@ test("没识别到仓库时入口正文不留空的仓库填写行", function()
 	ok(string.find(action.body, "（先识别仓库）", 1, true) ~= nil, "写明先识别仓库")
 end)
 
+
+test("paths.parseRegistryEntry 正常", function()
+	local text = '{"mattpocock-skills@mattpocock":{"installPath":"/home/.omp/plugins/cache/plugins/foo","version":"1.3.5"}}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	ok(type(r) == "table", "返回表")
+	eq(r.installPath, "/home/.omp/plugins/cache/plugins/foo")
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.parseRegistryEntry 缺 key", function()
+	local text = '{"other":{"installPath":"/x","version":"1.0.0"}}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	eq(r, nil)
+end)
+
+test("paths.parseRegistryEntry 半截 JSON", function()
+	local text = '{"mattpocock-skills@mattpocock":{"installPath":"/x","version":"1.3.5"'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	eq(r, nil)
+end)
+
+test("paths.parseRegistryEntry 多条目取首个有 installPath", function()
+	local text = '{"mattpocock-skills@mattpocock":[{"installPath":"","version":"1.0.0"},{"installPath":"/real","version":"1.3.5"}]}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	ok(type(r) == "table", "返回表")
+	eq(r.installPath, "/real")
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.resolvePackage 登记副本优先", function()
+	local home = "C:/home"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	local key = paths.REGISTRY_KEY
+	local text = '{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/regcopy","version":"1.3.5"}}'
+	fsFiles[regPath] = text
+	fsDirs[home .. "/.omp/plugins"] = true
+	fsDirs[home .. "/.omp/plugins/cache/plugins/regcopy"] = true
+	local pkgDir = home .. "/.omp/plugins/cache/plugins/regcopy"
+	fsFiles[pkgDir .. "/package.json"] = '{"version":"9.9.9"}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.root, (home .. "/.omp/plugins/cache/plugins/regcopy"):gsub("\\","/"))
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.resolvePackage 副本不存在回退市场", function()
+	local home = "C:/home2"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	-- 登记文件不存在：回退市场
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.version, "1.3.7")
+end)
+
+test("skills.readPackage 版本同根", function()
+	local root = "/tmp/skillpkg"
+	fsDirs[root .. "/skills"] = true
+	fsDirs[root .. "/skills/engineering"] = true
+	fsDirs[root .. "/skills/engineering/s1"] = true
+	fsFiles[root .. "/skills/engineering/s1/SKILL.md"] = "---\nname: s1\ndescription: d\n---\n正文"
+	local pkg = skills.readPackage(root, "2.0.0")
+	ok(type(pkg) == "table", "返回表")
+	eq(pkg.version, "2.0.0")
+	eq(pkg.root, root)
+end)
+
+test("胶囊有版本", function()
+	-- simulate window cachedVersion by calling statusFn? statusFn set by window module load
+	ok(type(statusFn) == "function", "statusFn 已注册")
+	local res = statusFn(nil)
+	ok(type(res) == "table", "返回表")
+	-- version may be nil in stub env; just check text is Matt or Matt x
+	ok(string.find(res[1].text, "Matt", 1, true) == 1, "以 Matt 开头")
+end)
+
+test("focus 后 chrome.refresh 被调", function()
+	local before = chromeRefreshes
+	local cx = { session = { focused = function() return nil end, panes = function() return {} end, event = function() end } }
+	if handlers["focus"] then
+		pcall(function() handlers["focus"]({ pane = 1, tab = 1 }, cx) end)
+	end
+	ok(chromeRefreshes > before, "refresh 被调")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

@@ -108,8 +108,18 @@ function M.resolvePackage(): { root: string, version: string? }?
 			end
 			return { root = root, version = version }
 		end
+		return nil
 	end
-	-- 2. 市场克隆
+	-- 登记文件存在但无有效条目 → nil，不回落
+	local regExists = false
+	if home then
+		local regPath = home .. "/.omp/plugins/installed_plugins.json"
+		pcall(function() regExists = tern.fs.exists(regPath) end)
+	end
+	if regExists then
+		return nil
+	end
+	-- 登记文件不存在：市场克隆回退
 	if home then
 		local market = norm(home .. "/.omp/plugins/cache/marketplaces/mattpocock")
 		local exists = false

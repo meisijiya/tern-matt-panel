@@ -173,18 +173,22 @@ end
 local function loadSkills(state: State)
 	local resolved = paths.resolvePackage()
 	if not resolved then
-		state.hasSkills = false
-		state.skills = {}
-		state.lanes = {}
-		state.skillVersion = nil
+		if not state.hasSkills then
+			state.hasSkills = false
+			state.skills = {}
+			state.lanes = {}
+			state.skillVersion = nil
+		end
 		return
 	end
 	local root = resolved.root
 	local pkg = skills.readPackage(root, resolved.version)
 	if not pkg then
-		state.hasSkills = false
-		state.skills = {}
-		state.lanes = {}
+		if not state.hasSkills then
+			state.hasSkills = false
+			state.skills = {}
+			state.lanes = {}
+		end
 		return
 	end
 	state.hasSkills = true
