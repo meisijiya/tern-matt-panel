@@ -90,10 +90,14 @@ function M.resolvePackage(): { root: string, version: string? }?
 	local home = M.home()
 	-- 1. 登记
 	local entry = nil
+	local regExists = false
+	local hasKey = false
 	if home then
 		local regPath = home .. "/.omp/plugins/installed_plugins.json"
 		local ok, text = pcall(tern.fs.read, regPath)
 		if ok and type(text) == "string" then
+			regExists = true
+			hasKey = text:find(M.REGISTRY_KEY, 1, true) ~= nil
 			entry = M.parseRegistryEntry(text, M.REGISTRY_KEY)
 		end
 	end
@@ -110,13 +114,8 @@ function M.resolvePackage(): { root: string, version: string? }?
 		end
 		return nil
 	end
-	-- 登记文件存在但无有效条目 → nil，不回落
-	local regExists = false
-	if home then
-		local regPath = home .. "/.omp/plugins/installed_plugins.json"
-		pcall(function() regExists = tern.fs.exists(regPath) end)
-	end
-	if regExists then
+	-- key 存在但无有效条目 → nil（保留上次值）；key 不存在 → 市场回退
+	if regExists and hasKey then
 		return nil
 	end
 	-- 登记文件不存在：市场克隆回退

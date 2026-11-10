@@ -1481,6 +1481,19 @@ test("paths.resolvePackage 登记副本优先", function()
 	eq(r.version, "1.3.5")
 end)
 
+test("paths.resolvePackage 无本包 key 回退市场", function()
+	local home = "C:/home3"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	fsFiles[regPath] = '{"other-plugin":{"installPath":"/x","version":"1.0.0"}}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.version, "1.3.7")
+end)
+
 test("paths.resolvePackage 副本不存在回退市场", function()
 	local home = "C:/home2"
 	env.HOME = home
