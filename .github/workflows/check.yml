@@ -25,4 +25,4 @@ jobs:
         shell: bash
         run: |
           export PATH="/c/tools/luau:$PATH"
-          bash test/all.sh --unit-only
+          timeout 240 bash -x test/all.sh --unit-only
