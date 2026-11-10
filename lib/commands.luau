@@ -23,7 +23,7 @@ function M.buildInjectionBody(action: string, body: string, number: number?): st
 		head = head .. " · #" .. tostring(number)
 	end
 	head = head .. " ====="
-	return head .. "\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 ====="
+	return head .. "\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====\n"
 end
 --- 票注入内容：用对应类型模板渲染，填 url / title，再套统一信封。
 function M.buildTicketCommand(ticket: { url: string, title: string, number: number? }, tpl: templates.Template): string

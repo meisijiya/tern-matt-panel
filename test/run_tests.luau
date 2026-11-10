@@ -320,6 +320,16 @@ test("util.contains", function()
 	ok(not util.contains({ "a", "b" }, "z"))
 end)
 
+test("util.isStale 边界", function()
+	local now = 100000
+	ok(not util.isStale(now, now - 7199, 7200), "1h59m 不红")
+	ok(not util.isStale(now, now - 7200, 7200), "2h 整不红（严格大于）")
+	ok(util.isStale(now, now - 7201, 7200), "2h+1s 红")
+	ok(not util.isStale(now, "2026-11-10 10:00", 7200), "无秒数不红")
+	ok(not util.isStale(now, nil, 7200), "没有时刻不红")
+	ok(not util.isStale(nil, now - 9999, 7200), "没有当前时间不红")
+end)
+
 test("skills.parseFrontmatter", function()
 	local head = "name: wayfinder\ndescription: 路线图\nargument-hint: <topic>\ndisable-model-invocation: true"
 	local meta = skills.parseFrontmatter(head)
@@ -605,7 +615,7 @@ end)
 test("注入信封拼装", function()
 	local body = "第一行\n第二行"
 	local out = commands.buildInjectionBody("问下一步", body)
-	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====")
+	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====\n")
 	ok(string.find(out, "· #", 1, true) == nil, "没有票号时不带票号段")
 	local out2 = commands.buildInjectionBody("执行", body, 7)
 	ok(string.find(out2, "===== 注入开始 · tern-matt-panel · 执行 · #7 =====", 1, true) == 1, "有票号时带 · #编号")
@@ -801,12 +811,15 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 
 	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
 	-- 用户就没机会补内容了。整段文本是信封包着的正文。
-	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 ====="
+	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 =====\n"
 	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
 	eq(#typed, 2, "多行正文也打进 pane")
 	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
-	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "外层以括号粘贴收尾")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
+	eq(string.sub(typed[2].text, -6), "\27[201~", "括号粘贴以结束符收尾")
+	ok(string.find(string.sub(typed[2].text, -6), "\n", 1, true) == nil, "结束符之后没有换行")
+	ok(string.find(string.sub(typed[2].text, -6), "\r", 1, true) == nil, "结束符之后没有回车")
 	ok(string.find(typed[2].text, "===== 注入开始 · tern-matt-panel · 测试 =====", 1, true) ~= nil, "整段以开始行开头")
 	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
 	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
@@ -1086,6 +1099,40 @@ test("底部显示数据时刻，且刷新中不清空已有内容", function()
 	local mainText = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
 	ok(string.find(mainText, "正在拉取", 1, true) == nil, "有数据时不显示占位")
 	ok(string.find(mainText, "me/repo", 1, true) ~= nil, "旧内容还在")
+end)
+
+--- 找 dock 里第一个带「数据 」的 span，返回它的文字与样式。
+local function dataSpan(node: any): { t: string, s: string? }?
+	local p = node.p
+	if type(p) == "table" and type(p.spans) == "table" and type(p.spans.t) == "string" then
+		if string.find(p.spans.t, "数据 ", 1, true) == 1 then
+			return p.spans
+		end
+	end
+	for _, kid in ipairs(node.c or {}) do
+		local got = dataSpan(kid)
+		if got then
+			return got
+		end
+	end
+	return nil
+end
+
+test("数据超过两小时提示刷新，旧格式不提示", function()
+	local st = nextStepState()
+	st.view = "board"
+	st.fetchedAtSec = 0
+	local span = dataSpan(panel.view(st, mkCx(120)).dock)
+	ok(span ~= nil, "dock 有数据 span")
+	ok(string.find(span.t, "· 建议刷新", 1, true) ~= nil, "陈旧时提示刷新：" .. span.t)
+	eq(span.s, "error", "陈旧时用 error 样式")
+
+	st.fetchedAtSec = nil
+	st.legacyFetchedAt = "2026-11-10 10:00"
+	local span2 = dataSpan(panel.view(st, mkCx(120)).dock)
+	ok(span2 ~= nil, "旧格式也有数据 span")
+	ok(string.find(span2.t, "建议刷新", 1, true) == nil, "旧格式永不判陈旧：" .. span2.t)
+	eq(span2.s, "muted", "旧格式用 muted 样式")
 end)
 
 test("没识别到仓库时不给问下一步", function()
