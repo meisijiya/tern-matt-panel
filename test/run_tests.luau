@@ -46,8 +46,10 @@ local ternStub: any
 
 -- 按 argv 前缀路由的桩结果表：测试可注入 `omp -p` 的成功/失败/超时输出，
 -- 其余命令（git、gh）照旧返回空成功，不影响既有用例。
-local processFixtures: { { match: string, result: any, defer: boolean? } } = {}
+local processFixtures: { any } = {}
 local processCalls: { { argv: { string }, opts: any } } = {}
+-- 测试用 JSON 载荷：stdout 写 key，decode 返回对应表；避免在测试里写 JSON 解析器。
+local jsonPayloads: { [string]: any } = {}
 -- defer 的调用把回调挂在这里，测试用 flushProcess() 手动放行，
 -- 这样才能造出「结果还没回来时又点了一次」这种时序。
 local pendingFlush: { any } = {}
@@ -64,6 +66,11 @@ local function fixtureFor(argv: { string }): any
 	local joined = table.concat(argv, " ")
 	for _, f in ipairs(processFixtures) do
 		if string.find(joined, f.match, 1, true) then
+			if f.results then
+				f.index = (f.index or 0) + 1
+				local result = f.results[f.index] or f.results[#f.results]
+				return { result = result, defer = f.defer }
+			end
 			return f
 		end
 	end
@@ -220,6 +227,15 @@ ternStub = {
 	process = {
 		run = runProcess,
 	},
+	json = {
+		decode = function(text: string): any
+			local value = jsonPayloads[text]
+			if value == nil then
+				error("no json payload: " .. tostring(text))
+			end
+			return value
+		end,
+	},
 	log = function(...) end,
 }
 
@@ -236,6 +252,7 @@ local function reset()
 	processFixtures = {}
 	processCalls = {}
 	pendingFlush = {}
+	jsonPayloads = {}
 end
 
 reset()
@@ -1060,6 +1077,7 @@ test("工具条 click 值全部有分支覆盖", function()
 	known["copy-ticket"] = true
 	known["open-ticket"] = true
 	known["auto-reload"] = true
+	known["load-more-closed"] = true
 
 	local st = nextStepState()
 	st.view = "board"
@@ -1693,6 +1711,204 @@ test("open 侧必须全量：阻塞票在 201 位时仍判定阻塞", function()
 		end
 	end
 	ok(seen, "丢掉 201 页就会把它误判成可领（证明必须全量）")
+end)
+
+--- 分页状态：1 张 open + N 张已关，还有下一页。
+local function pagedState(closedCount: number?): any
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.openIssues = { { number = 1, title = "open", state = "OPEN" } }
+	st.closedIssues = {}
+	for i = 1, (closedCount or 1) do
+		table.insert(st.closedIssues, { number = 100 + i, title = "closed" .. i, state = "CLOSED" })
+	end
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	st.maps = {}
+	st.closedHasNext = true
+	st.closedCursor = "c1"
+	st.fetchedAtSec = os.time()
+	return st
+end
+
+--- 按钮文字里有「加载更多」前缀（标签带条数，不能用精确相等判断不存在）。
+local function hasLoadMore(texts: { string }): boolean
+	for _, t in ipairs(texts) do
+		if string.find(t, "加载更多", 1, true) == 1 then
+			return true
+		end
+	end
+	return false
+end
+
+test("已关组有下一页时出现加载更多，点一次追加下一页", function()
+	local st = pagedState(1)
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(hasLoadMore(texts), "组内末尾出现加载更多")
+	jsonPayloads["PAGE2"] = { data = { repository = { issues = {
+		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "PAGE2", stderr = "" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 2, "一页追加")
+	eq(st.closedIssues[2].number, 200)
+	eq(st.closedHasNext, false, "上游没有下一页")
+	eq(#st.tickets, 3, "票列表重建")
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "没有下一页时按钮消失")
+end)
+
+test("已关组到 500 上限后不再显示加载更多", function()
+	local st = pagedState(500)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "上限后按钮消失")
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#processCalls, 0, "上限后不再发请求")
+end)
+
+test("切排序丢弃已关页并按新方向重拉", function()
+	local st = pagedState(2)
+	jsonPayloads["OPEN_ASC"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["PAGE_ASC"] = { data = { repository = { issues = {
+		nodes = { { number = 300, title = "oldest", state = "CLOSED" } },
+		pageInfo = { hasNextPage = true, endCursor = "a1" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_ASC", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "PAGE_ASC", stderr = "" } },
+	}
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(st.sortNewest, false)
+	eq(#st.closedIssues, 1, "回到第一页")
+	eq(st.closedIssues[1].number, 300)
+	local last = ""
+	for _, call in ipairs(processCalls) do
+		local argv = table.concat(call.argv, " ")
+		if string.find(argv, "states:CLOSED", 1, true) then
+			last = argv
+		end
+	end
+	ok(string.find(last, "states:CLOSED", 1, true) ~= nil, "找到已关页请求")
+	ok(string.find(last, "direction=ASC", 1, true) ~= nil, "方向映射到上游：" .. last)
+	eq(st.closedCursor, "a1")
+	eq(st.closedHasNext, true)
+end)
+
+test("续拉在途时切排序：旧回调作废，不把旧方向页混进新序列", function()
+	local st = pagedState(1)
+	jsonPayloads["PAGE_OLD"] = { data = { repository = { issues = {
+		nodes = { { number = 999, title = "stale", state = "CLOSED" } },
+		pageInfo = { hasNextPage = false, endCursor = "old" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "PAGE_OLD", stderr = "" }, defer = true },
+	}
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	ok(st.closedLoading == true, "续拉在途")
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	flushProcess()
+	eq(#st.closedIssues, 1, "旧方向的续拉回调被世代号丢弃")
+	eq(st.closedIssues[1].number, 101)
+end)
+
+test("续拉失败保留已加载内容并提示，不清屏", function()
+	local st = pagedState(2)
+	local before = #st.closedIssues
+	processFixtures = { { match = "states:CLOSED", result = { status = 1, stdout = "", stderr = "boom" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, before, "已加载内容还在")
+	eq(#st.tickets, 3, "票列表没被清空")
+	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
+end)
+
+test("分页游标与条数不跨面板块持久化", function()
+	local st = pagedState(2)
+	local saved = panel.save(st)
+	eq(saved.closedCursor, nil)
+	eq(saved.closedHasNext, nil)
+	eq(saved.openIssues, nil)
+	eq(saved.closedIssues, nil)
+end)
+
+--- 找带指定 key 后缀的列表节点。
+local function listFor(node: any, suffix: string): any?
+	if type(node) ~= "table" then
+		return nil
+	end
+	local p = node.p
+	if node.k == "list" and type(p) == "table" and type(p.key) == "string"
+		and string.sub(p.key, -#suffix) == suffix then
+		return node
+	end
+	for _, kid in ipairs(node.c or {}) do
+		local got = listFor(kid, suffix)
+		if got then
+			return got
+		end
+	end
+	return nil
+end
+
+test("已关闭组保持上游顺序，open 组按创建时间本地排序", function()
+	local st = pagedState(0)
+	st.openIssues = {
+		{ number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
+		{ number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
+	}
+	st.closedIssues = {
+		{ number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
+		{ number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
+	}
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	local main = panel.view(st, mkCx(120)).main
+	local closed = listFor(main, "_closed")
+	eq(closed.c[1].label, "closed-old", "已关闭第一行是上游第一行")
+	eq(closed.c[2].label, "closed-new")
+	local open = listFor(main, "_claimable")
+	eq(open.c[1].label, "open-new", "open 组最新在前")
+end)
+
+test("刷新按游标拉完 open 所有页，再拉已关首屏", function()
+	jsonPayloads["OPEN1"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
+		pageInfo = { hasNextPage = true, endCursor = "c1" },
+	} } } }
+	jsonPayloads["OPEN2"] = { data = { repository = { issues = {
+		nodes = { { number = 3, title = "c", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } }
+	jsonPayloads["CLOSED1"] = { data = { repository = { issues = {
+		nodes = { { number = 9, title = "z", state = "CLOSED" } },
+		pageInfo = { hasNextPage = true, endCursor = "d1" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", results = {
+			{ status = 0, stdout = "OPEN1", stderr = "" },
+			{ status = 0, stdout = "OPEN2", stderr = "" },
+		} },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "CLOSED1", stderr = "" } },
+	}
+	processCalls = {}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(#st.openIssues, 3, "open 翻了两页")
+	eq(#st.closedIssues, 1, "已关首屏一页")
+	eq(#st.tickets, 4, "四张票都进了状态")
+	eq(st.closedHasNext, true, "已关还有下一页")
+	eq(st.closedCursor, "d1")
+	local openCalls = 0
+	for _, call in ipairs(processCalls) do
+		if string.find(table.concat(call.argv, " "), "states:OPEN", 1, true) then
+			openCalls += 1
+		end
+	end
+	eq(openCalls, 2, "open 确实发了两发")
 end)
 
 -- -------------------------------------------------------------- report ----

@@ -79,6 +79,8 @@ type State = {
 	openIssues: { any },
 	closedIssues: { any },
 	closedCursor: string?,
+	-- 任务板拉取世代：新刷新/切排序递增，旧回调据此丢弃，避免旧方向页混进新序列。
+	boardGen: number,
 	closedHasNext: boolean,
 	closedLoading: boolean,
 	-- 选中的地图号与票号
@@ -134,6 +136,7 @@ local function blank(): State
 		openIssues = {},
 		closedIssues = {},
 		closedCursor = nil,
+		boardGen = 0,
 		closedHasNext = false,
 		closedLoading = false,
 		mapSel = nil,
@@ -252,8 +255,8 @@ local function applyCachedIssues(state: State, repo: string): boolean
 end
 
 --- 真正拉 issue 的那一步。
-local fetchIssues: (State, BlockCx, string) -> ()
-local fetchClosedPage: (State, BlockCx, string, boolean) -> ()
+local fetchIssues: (State, BlockCx, string, number) -> ()
+local fetchClosedPage: (State, BlockCx, string, boolean, number) -> ()
 
 --- 从 git remote 推断 owner/repo。
 --- 失败时把原因带回去：只回 nil，用户看到的永远是「没识别到」，不知道卡在哪。
@@ -299,15 +302,15 @@ end
 
 --- 拉任务板：地图、票、依赖。用 gh 的 JSON 输出。
 local function loadBoard(state: State, cx: BlockCx)
-	if state.loading then
-		return
-	end
 	local now = nowSec()
 	if now and state.cooldownUntil and now < state.cooldownUntil then
 		state.message = string.format("上次拉取失败，%d 秒后再试", state.cooldownUntil - now)
 		cx:render()
 		return
 	end
+	-- 新一轮拉取：旧的在途回调随后都会被世代号丢弃，不能靠 loading 挡住。
+	state.boardGen += 1
+	local gen = state.boardGen
 	-- 记下发出时刻：自动刷新用它节流。放在所有早退之前，
 	-- 否则「识别不到仓库」这种稳态会让节流永远不生效。
 	state.lastLoadAt = nowSec()
@@ -316,6 +319,9 @@ local function loadBoard(state: State, cx: BlockCx)
 	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
 	-- 用户在新项目开面板看到的却是上一个项目的票。
 	inferRepo(cx, function(found: string?, reason: string?)
+		if gen ~= state.boardGen then
+			return
+		end
 		local repo = found
 		local manual = false
 		if not repo then
@@ -369,7 +375,7 @@ local function loadBoard(state: State, cx: BlockCx)
 		end
 		state.repo = repo
 		state.repoManual = manual
-		fetchIssues(state, cx, repo)
+		fetchIssues(state, cx, repo, gen)
 		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
 		tern.process.run({ "git", "-C", cx.cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
 			if result and result.status == 0 then
@@ -457,11 +463,12 @@ local function failLoad(state: State, cx: BlockCx, repo: string, message: string
 end
 
 --- 已关票一页：reset 时成功后才替换，失败保留旧内容；否则续拉下一页。
-fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boolean)
-	if state.closedLoading then
-		return
-	end
-	if not reset and not state.closedHasNext then
+--- 每次 reset 递增世代号：在途的续拉/旧刷新回调随后会被丢弃。
+fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boolean, gen: number)
+	if reset then
+		state.boardGen += 1
+		gen = state.boardGen
+	elseif state.closedLoading or not state.closedHasNext then
 		return
 	end
 	local direction = tracker.orderDirection(state.sortNewest)
@@ -474,6 +481,9 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 	end
 	state.closedLoading = true
 	tern.process.run(argv):next(function(result: any)
+		if gen ~= state.boardGen then
+			return
+		end
 		state.closedLoading = false
 		local page = readPage(result)
 		if not page then
@@ -515,7 +525,7 @@ fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boole
 end
 
 --- 刷新：open 全量翻页（前沿判定必须看到每张 OPEN 阻塞票），再拉已关首屏一页。
-fetchIssues = function(state: State, cx: BlockCx, repo: string)
+fetchIssues = function(state: State, cx: BlockCx, repo: string, gen: number)
 	local acc: { any } = {}
 	local direction = tracker.orderDirection(state.sortNewest)
 
@@ -527,6 +537,9 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 			return
 		end
 		tern.process.run(argv):next(function(result: any)
+			if gen ~= state.boardGen then
+				return
+			end
 			local page = readPage(result)
 			if not page then
 				failLoad(state, cx, repo, "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出"))
@@ -538,7 +551,7 @@ fetchIssues = function(state: State, cx: BlockCx, repo: string)
 				return
 			end
 			state.openIssues = acc
-			fetchClosedPage(state, cx, repo, true)
+			fetchClosedPage(state, cx, repo, true, gen)
 		end)
 	end
 	step(nil, 1)
@@ -966,7 +979,21 @@ local function boardView(state: State, cx: BlockCx): Node
 		if #g.items == 0 or g.title == "已关闭" then
 			props.collapsed = true
 		end
-		table.insert(main, ui.card(head, { list }, props))
+		local children: { Node } = { list }
+		-- 已关组是分页的：还有下一页且没到上限时，组内末尾给「加载更多」。
+		if g.title == "已关闭" and state.closedHasNext and #g.items < 500 then
+			table.insert(children, ui.row({
+				ui.button(
+					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #g.items)),
+					{
+						icon = "refresh",
+						size = "sm",
+						actions = { click = "load-more-closed" },
+					}
+				),
+			}))
+		end
+		table.insert(main, ui.card(head, children, props))
 	end
 
 	return ui.col(main)
@@ -1699,6 +1726,15 @@ tern.block.define(BLOCK_ID, {
 		if act == "toggle-sort" then
 			state.sortNewest = not state.sortNewest
 			state.message = if state.sortNewest then "最新在上" else "最早在上"
+			-- 换方向：已关组必须丢弃已加载页、从第一页重拉；loadBoard 会开新一代，
+			-- 在途的旧方向回调自动作废。
+			loadBoard(state, cx)
+			return
+		end
+		if act == "load-more-closed" then
+			if state.repo and state.closedHasNext and #state.closedIssues < 500 then
+				fetchClosedPage(state, cx, state.repo, false, state.boardGen)
+			end
 			return
 		end
 		if act == "next-step" then
