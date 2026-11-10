@@ -172,12 +172,13 @@ M.HEALTH_CHECK = {
 --- 仓库空的时候给两条路，对应参考实现的「探索地图 / 实施地图」二选一：
 --- 需求还没摸清走 wayfinder 画地图；需求已经明确直接 grill 收敛成 spec。
 --- 只甩一条 /wayfinder 会误导 —— 需求清楚的人不需要画地图。
-export type Entry = { id: string, title: string, hint: string, body: string }
+export type Entry = { id: string, title: string, injectAction: string, hint: string, body: string }
 
 local ENTRIES: { Entry } = {
 	{
 		id = "explore",
 		title = "还没想清楚：建路线图",
+		injectAction = "入口·还没想清楚",
 		hint = "跑 /skill:wayfinder 画一张地图，把未知与范围拆成决策票",
 		body = table.concat({
 			"/skill:wayfinder",
@@ -203,6 +204,7 @@ local ENTRIES: { Entry } = {
 	{
 		id = "implement",
 		title = "需求已明确：直接对齐",
+		injectAction = "入口·需求已明确",
 		hint = "跑 /skill:grill-with-docs 把需求问清，再 /skill:to-spec → /skill:to-tickets 拆成可做的票",
 		body = table.concat({
 			"/skill:grill-with-docs",
