@@ -10,6 +10,7 @@ local commands = require("./lib/commands")
 local paths = require("./lib/paths")
 local skills = require("./lib/skills")
 local templates = require("./lib/templates")
+local util = require("./lib/util")
 
 local KIND = "tern-matt-panel.matt"
 local ACTION_KEY = "action"
@@ -21,6 +22,8 @@ local POLL_MS = 300
 local lastAgent: number? = nil
 -- 已经处理过的请求序号，避免重复注入。
 local seenSeq = 0
+-- 版本胶囊缓存：加载时读一次，focus 时重读；formatter 只读缓存。
+local cachedVersion: string? = nil
 
 --- 聚焦的 pane 是不是一个 agent。
 local function agentPaneOf(cx: WindowCx): number?
@@ -200,8 +203,17 @@ local function handleAction(cx: WindowCx)
 			repo = string.gsub(repo, "^%s+", "")
 			repo = string.gsub(repo, "%s+$", "")
 			if repo == "" then
+				-- 空串 = 恢复跟随当前目录的 git remote。
+				tern.kv.set(REPO_KEY, { repo = "", pane = pane })
+				cx:toast("info", "恢复跟随当前目录", "按刷新重新识别仓库")
 				return
 			end
+			local normalized = util.parseRemoteUrl(repo)
+			if not normalized then
+				cx:toast("error", "仓库格式不对", "填 owner/repo 或 GitHub 链接")
+				return
+			end
+			repo = normalized
 			-- 带上 pane：手动指定的仓库只对本窗口有效。
 			-- 不绑 pane 的话，所有窗口都会读到这一份，新项目里开面板会显示别的仓库。
 			tern.kv.set(REPO_KEY, { repo = repo, pane = pane })
@@ -294,7 +306,8 @@ tern.command({
 	title = "技能速览",
 	icon = "sparkle",
 	run = function(cx: WindowCx)
-		local root = paths.skillPackageRoot()
+		local resolved = paths.resolvePackage()
+		local root = resolved and resolved.root
 		if not root then
 			cx:toast(
 				"info",
@@ -303,7 +316,7 @@ tern.command({
 			)
 			return
 		end
-		local pkg = skills.readPackage(root)
+		local pkg = skills.readPackage(root, resolved and resolved.version)
 		if not pkg then
 			cx:toast("info", "读不到技能包", tostring(root))
 			return
@@ -344,9 +357,13 @@ tern.command({
 --- 胶囊只当插件入口：不显示任何数字。
 --- 数字会随「当前是哪个仓库」变，而胶囊是窗口级的，切 tab 后对不上就是错的。
 tern.chrome.status(function(_pane)
+	local text = "Matt"
+	if cachedVersion and cachedVersion ~= "" then
+		text = "Matt " .. cachedVersion
+	end
 	return {
 		{
-			text = "Matt",
+			text = text,
 			icon = "tasks",
 			command = "plugin.tern-matt-panel.panel",
 		},
@@ -373,6 +390,16 @@ local function pingPanelsInTab(cx: WindowCx, tab: number)
 end
 
 tern.on("focus", function(ev: any, cx)
+	-- 重读版本并刷新状态栏胶囊；读失败保留上次值。
+	pcall(function()
+		local resolved, err = paths.resolvePackage()
+		if resolved and resolved.version and resolved.version ~= "" then
+			cachedVersion = resolved.version
+		elseif not err then
+			cachedVersion = nil
+		end
+	end)
+	pcall(function() tern.chrome.refresh() end)
 	rememberAgent(cx)
 	if ev and type(ev.tab) == "number" then
 		pingPanelsInTab(cx, ev.tab)
@@ -385,6 +412,15 @@ do
 	if ok and type(action) == "table" and type(action.seq) == "number" then
 		seenSeq = action.seq
 	end
+end
+
+do
+	pcall(function()
+		local resolved = paths.resolvePackage()
+		if resolved and resolved.version and resolved.version ~= "" then
+			cachedVersion = resolved.version
+		end
+	end)
 end
 
 -- 轮询从加载就开始：面板可以随时打开（也可能已经开着）。

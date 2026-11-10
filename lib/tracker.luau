@@ -36,66 +36,62 @@ export type Map = {
 	url: string,
 	state: string,
 	body: string,
+	bodyLoaded: boolean?, -- 正文是否已按需拉过（列表查询不含 body）
 	fog: string?,
 	outOfScope: string?,
 	tickets: { Ticket },
 }
 
---- 把 labels 字段统一成 {string}（gh 可能给字符串数组或 {name} 数组）。
+--- 取 GraphQL 的 {nodes={…}} 包装里的数组；不是包装就当普通数组。
+--- GraphQL 连接的 labels / assignees / blockedBy 都是这个形状，
+--- gh 的 JSON 输出是扁平数组 —— 两种形状共用这一条路径，不写两套解析器。
+local function nodesOf(v: any): { any }
+	if type(v) ~= "table" then
+		return {}
+	end
+	if type(v.nodes) == "table" then
+		return v.nodes
+	end
+	return v
+end
+
+--- 把 labels 字段统一成 {string}（gh 给字符串数组或 {name} 数组，
+--- GraphQL 给 {nodes={{name=…}}}）。
 local function readLabels(v: any): { string }
 	local out: { string } = {}
-	if type(v) == "table" then
-		for _, l in ipairs(v) do
-			if type(l) == "string" then
-				table.insert(out, l)
-			elseif type(l) == "table" and type(l.name) == "string" then
-				table.insert(out, l.name)
-			end
+	for _, l in ipairs(nodesOf(v)) do
+		if type(l) == "string" then
+			table.insert(out, l)
+		elseif type(l) == "table" and type(l.name) == "string" then
+			table.insert(out, l.name)
 		end
 	end
 	return out
 end
 
---- 把 assignees 字段统一成 {login 字符串}。
+--- 把 assignees 字段统一成 {login 字符串}（扁平数组或 {nodes={{login=…}}}）。
 local function readAssignees(v: any): { string }
 	local out: { string } = {}
-	if type(v) == "table" then
-		for _, a in ipairs(v) do
-			if type(a) == "table" and type(a.login) == "string" then
-				table.insert(out, a.login)
-			elseif type(a) == "string" then
-				table.insert(out, a)
-			end
+	for _, a in ipairs(nodesOf(v)) do
+		if type(a) == "table" and type(a.login) == "string" then
+			table.insert(out, a.login)
+		elseif type(a) == "string" then
+			table.insert(out, a)
 		end
 	end
 	return out
 end
 
---- 把 blockedBy 字段统一成 {number}。
---- gh 的形状是 {nodes={{number=..}},totalCount=n}；也接受裸数字数组或 {number} 对象数组。
+--- 把 blockedBy 字段统一成 {number}（裸数字数组、{number} 对象数组或 {nodes={…}}）。
 local function readBlockedBy(v: any): { number }
 	local out: { number } = {}
-	local function collect(list: any)
-		if type(list) ~= "table" then
-			return
-		end
-		for _, b in ipairs(list) do
-			if type(b) == "number" then
-				table.insert(out, b)
-			elseif type(b) == "table" and type(b.number) == "number" then
-				table.insert(out, b.number)
-			end
+	for _, b in ipairs(nodesOf(v)) do
+		if type(b) == "number" then
+			table.insert(out, b)
+		elseif type(b) == "table" and type(b.number) == "number" then
+			table.insert(out, b.number)
 		end
 	end
-	if type(v) ~= "table" then
-		return out
-	end
-	-- gh 的包装形状：{nodes={...}}。
-	if type(v.nodes) == "table" then
-		collect(v.nodes)
-		return out
-	end
-	collect(v)
 	return out
 end
 
@@ -220,6 +216,7 @@ function M.parseMap(json: any): Map?
 		url = type(json.url) == "string" and json.url or "",
 		state = type(json.state) == "string" and json.state or "",
 		body = body,
+		bodyLoaded = false,
 		fog = sections.fog,
 		outOfScope = sections.outOfScope,
 		tickets = {},
@@ -400,6 +397,80 @@ function M.groupByMap(issues: { any }): { Map }
 		table.insert(ordered, m)
 	end
 	return ordered
+end
+
+--- 游标分页：每页条数与排序方向到 GraphQL 参数的映射。
+M.PAGE_SIZE = 50
+
+function M.orderDirection(newestFirst: boolean): string
+	return if newestFirst then "DESC" else "ASC"
+end
+
+--- 合并两批 issue，按 number 去重并保留先到顺序；后者同号不追加。
+function M.mergeIssues(existing: { any }, incoming: { any }): { any }
+	local out: { any } = table.clone(existing)
+	local seen: { [number]: boolean } = {}
+	for _, t in ipairs(existing) do
+		if type(t) == "table" and type(t.number) == "number" then
+			seen[t.number] = true
+		end
+	end
+	for _, t in ipairs(incoming) do
+		if type(t) == "table" and type(t.number) == "number" and not seen[t.number] then
+			seen[t.number] = true
+			table.insert(out, t)
+		end
+	end
+	return out
+end
+
+--- 截断到上限；已关票累积上限用。
+function M.capIssues(issues: { any }, cap: number): { any }
+	if #issues <= cap then
+		return issues
+	end
+	local out: { any } = {}
+	for i = 1, cap do
+		table.insert(out, issues[i])
+	end
+	return out
+end
+
+--- 解析 `gh api graphql` 的一页：只取 issues.nodes 与 pageInfo，nodes 原样留给 parseIssues/groupByMap。
+function M.parseIssuePage(payload: any): { issues: { any }, hasNextPage: boolean, endCursor: string? }?
+	if type(payload) ~= "table" then
+		return nil
+	end
+	local data = payload.data
+	if type(data) ~= "table" then
+		return nil
+	end
+	local repo = data.repository
+	if type(repo) ~= "table" then
+		return nil
+	end
+	local issues = repo.issues
+	if type(issues) ~= "table" then
+		return nil
+	end
+	local out: { any } = {}
+	if type(issues.nodes) == "table" then
+		for _, n in ipairs(issues.nodes) do
+			if type(n) == "table" then
+				table.insert(out, n)
+			end
+		end
+	end
+	local hasNext = false
+	local cursor: string? = nil
+	local info = issues.pageInfo
+	if type(info) == "table" then
+		hasNext = info.hasNextPage == true
+		if type(info.endCursor) == "string" then
+			cursor = info.endCursor
+		end
+	end
+	return { issues = out, hasNextPage = hasNext, endCursor = cursor }
 end
 
 return M

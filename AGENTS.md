@@ -4,7 +4,7 @@
 
 ### Issue tracker
 
-Issues are tracked as GitHub issues in `meisijiya/tern-matt-panel` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked as GitHub issues in [meisijiya/tern-matt-panel](https://github.com/meisijiya/tern-matt-panel) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

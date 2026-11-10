@@ -43,7 +43,7 @@ local function fmtTime(t: number?): string?
 	end
 	return string.format("epoch %d", t)
 end
-
+local STALE_SEC = 7200
 --- 拉取失败后安静一会儿。限流期间连点刷新只会让恢复更慢。
 local COOLDOWN_SEC = 60
 
@@ -75,6 +75,14 @@ type State = {
 	-- 任务板
 	maps: { tracker.Map },
 	tickets: { tracker.Ticket },
+	-- 拉取原始 issue（GraphQL nodes）：open 全量、已关分页累积。
+	openIssues: { any },
+	closedIssues: { any },
+	closedCursor: string?,
+	-- 任务板拉取世代：新刷新/切排序递增，旧回调据此丢弃，避免旧方向页混进新序列。
+	boardGen: number,
+	closedHasNext: boolean,
+	closedLoading: boolean,
 	-- 选中的地图号与票号
 	mapSel: number?,
 	ticketSel: number?,
@@ -125,6 +133,12 @@ local function blank(): State
 		showHidden = false,
 		maps = {},
 		tickets = {},
+		openIssues = {},
+		closedIssues = {},
+		closedCursor = nil,
+		boardGen = 0,
+		closedHasNext = false,
+		closedLoading = false,
 		mapSel = nil,
 		ticketSel = nil,
 		ticket = nil,
@@ -171,19 +185,26 @@ end
 
 --- 装填技能面板：探测技能包，读清单，按泳道分组。
 local function loadSkills(state: State)
-	local root = paths.skillPackageRoot()
-	if not root then
+	local resolved, err = paths.resolvePackage()
+	if not resolved then
+		-- 登记读失败：保留上次值；确实没装：清空并显示安装提示。
+		if err then
+			return
+		end
 		state.hasSkills = false
 		state.skills = {}
 		state.lanes = {}
 		state.skillVersion = nil
 		return
 	end
-	local pkg = skills.readPackage(root)
+	local root = resolved.root
+	local pkg = skills.readPackage(root, resolved.version)
 	if not pkg then
-		state.hasSkills = false
-		state.skills = {}
-		state.lanes = {}
+		if not state.hasSkills then
+			state.hasSkills = false
+			state.skills = {}
+			state.lanes = {}
+		end
 		return
 	end
 	state.hasSkills = true
@@ -211,6 +232,23 @@ local function applyCachedIssues(state: State, repo: string): boolean
 	if value.repo ~= repo or type(value.issues) ~= "table" then
 		return false
 	end
+	local open: { any } = {}
+	local closed: { any } = {}
+	for _, issue in ipairs(value.issues) do
+		if type(issue) == "table" then
+			if issue.state == "OPEN" then
+				table.insert(open, issue)
+			else
+				table.insert(closed, issue)
+			end
+		end
+	end
+	state.openIssues = open
+	state.closedIssues = closed
+	state.closedCursor = nil
+	state.closedHasNext = false
+	state.closedLoading = false
+	state.loading = false
 	state.tickets = tracker.parseIssues(value.issues)
 	state.maps = tracker.groupByMap(value.issues)
 	state.fetchedAtSec = if type(value.fetchedAtSec) == "number" then value.fetchedAtSec else nil
@@ -219,7 +257,9 @@ local function applyCachedIssues(state: State, repo: string): boolean
 end
 
 --- 真正拉 issue 的那一步。
-local fetchIssues: (State, BlockCx, string) -> ()
+local fetchIssues: (State, BlockCx, string, number) -> ()
+local fetchClosedPage: (State, BlockCx, string, boolean, number) -> ()
+local ensureMapBody: (State, BlockCx, string) -> ()
 
 --- 从 git remote 推断 owner/repo。
 --- 失败时把原因带回去：只回 nil，用户看到的永远是「没识别到」，不知道卡在哪。
@@ -263,52 +303,48 @@ local function decodeIssues(text: string): { any }?
 	return value
 end
 
---- 拉任务板：地图、票、依赖。用 gh 的 JSON 输出。
+--- 拉任务板：地图、票、依赖。用 `gh api graphql` 的游标分页输出。
 local function loadBoard(state: State, cx: BlockCx)
-	if state.loading then
-		return
-	end
 	local now = nowSec()
 	if now and state.cooldownUntil and now < state.cooldownUntil then
 		state.message = string.format("上次拉取失败，%d 秒后再试", state.cooldownUntil - now)
 		cx:render()
 		return
 	end
+	-- 新一轮拉取：旧的在途回调随后都会被世代号丢弃，不能靠 loading 挡住。
+	state.boardGen += 1
+	local gen = state.boardGen
 	-- 记下发出时刻：自动刷新用它节流。放在所有早退之前，
 	-- 否则「识别不到仓库」这种稳态会让节流永远不生效。
 	state.lastLoadAt = nowSec()
 	state.loading = true
-	-- 目录优先：面板跟着窗口所在项目走。
-	-- kv 里的仓库跨窗口共享，优先用它会让每个新窗口都指向另一个项目的老仓库 ——
-	-- 用户在新项目开面板看到的却是上一个项目的票。
-	inferRepo(cx, function(found: string?, reason: string?)
-		local repo = found
-		local manual = false
-		if not repo then
-			-- 只认「本窗口手动指定」的那一份。
-			-- 跨窗口共用的旧值会让新项目显示上一个项目的仓库 —— 那正是用户看到的怪象。
-			local ok, value = pcall(tern.kv.get, REPO_KEY)
-			if ok and type(value) == "table" and value.pane == cx.pane
-				and type(value.repo) == "string" and value.repo ~= "" then
-				repo = value.repo
-				manual = true
-			end
-		end
-		if not repo then
-			state.loading = false
-			state.repo = nil
-			-- 没识别到就清空，别把别的仓库的票挂在这个项目下面。
-			state.tickets = {}
-			state.maps = {}
-			state.ticket = nil
-			state.ticketBody = nil
-			state.mapSel = nil
-			state.ticketSel = nil
-			state.setupHint = reason or "当前目录没识别到 git remote"
-			state.fetchedAtSec = nil
-			state.legacyFetchedAt = nil
-			state.message = nil
-			cx:render()
+
+	--- 清空当前仓库的数据，用于识别不到仓库。
+	local function clearBoard(reason: string?)
+		state.loading = false
+		state.repo = nil
+		state.repoManual = false
+		state.tickets = {}
+		state.maps = {}
+		state.openIssues = {}
+		state.closedIssues = {}
+		state.closedCursor = nil
+		state.closedHasNext = false
+		state.closedLoading = false
+		state.ticket = nil
+		state.ticketBody = nil
+		state.mapSel = nil
+		state.ticketSel = nil
+		state.setupHint = reason or "当前目录没识别到 git remote"
+		state.fetchedAtSec = nil
+		state.legacyFetchedAt = nil
+		state.message = nil
+		cx:render()
+	end
+
+	--- 开始拉某个仓库。manual=true 表示来自「换仓库」，优先于 cwd 的 remote。
+	local function begin(repo: string, manual: boolean)
+		if gen ~= state.boardGen then
 			return
 		end
 		state.setupHint = nil
@@ -316,6 +352,11 @@ local function loadBoard(state: State, cx: BlockCx)
 			-- 换了仓库就把上一个仓库的数据清掉，别让旧票挂在新仓库名下。
 			state.tickets = {}
 			state.maps = {}
+			state.openIssues = {}
+			state.closedIssues = {}
+			state.closedCursor = nil
+			state.closedHasNext = false
+			state.closedLoading = false
 			state.ticket = nil
 			state.ticketBody = nil
 			state.mapSel = nil
@@ -325,7 +366,7 @@ local function loadBoard(state: State, cx: BlockCx)
 		end
 		state.repo = repo
 		state.repoManual = manual
-		fetchIssues(state, cx, repo)
+		fetchIssues(state, cx, repo, gen)
 		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
 		tern.process.run({ "git", "-C", cx.cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
 			if result and result.status == 0 then
@@ -335,81 +376,210 @@ local function loadBoard(state: State, cx: BlockCx)
 				end
 			end
 		end)
+	end
+
+	-- 手动指定优先：用户点了「换仓库」就必须真的换，不能被 cwd 的 remote 盖回去。
+	-- 只认本窗口那份（pane 相同）；别的窗口的手动仓库与这里无关。
+	local manualRepo: string? = nil
+	do
+		local ok, value = pcall(tern.kv.get, REPO_KEY)
+		if ok and type(value) == "table" and value.pane == cx.pane
+			and type(value.repo) == "string" and value.repo ~= "" then
+			manualRepo = value.repo
+		end
+	end
+	if manualRepo then
+		begin(manualRepo, true)
+		return
+	end
+
+	inferRepo(cx, function(found: string?, reason: string?)
+		if gen ~= state.boardGen then
+			return
+		end
+		if not found then
+			clearBoard(reason)
+			return
+		end
+		begin(found, false)
 	end)
 end
 
---- 真正拉 issue 的那一步。
-fetchIssues = function(state: State, cx: BlockCx, repo: string)
-	-- 刻意不拉 body：body 是成本大头（带正文的列表查询约 400 点/次）。
-	-- 这份字段实测约 4 点/次（3 次共耗 13 点），所以刷新成本不在配额，
-	-- 而在每次 spawn 一个 gh 子进程（约 2.8 秒）。body 改成点开某张票时
-	-- 用 REST 单独取（REST 不占 GraphQL 配额）。
-	local fields = "number,title,state,url,labels,assignees,parent,blockedBy,createdAt"
-	tern.process.run({
-		"gh",
-		"issue",
-		"list",
-		"--repo",
-		repo,
-		"--state",
-		"all",
-		"--limit",
-		"200",
-		"--json",
-		fields,
-	}):next(function(result: any, _err: any, _cx: any)
-		if result == nil or result.status ~= 0 then
-			state.loading = false
-			local now2 = nowSec()
-			if now2 then
-				state.cooldownUntil = now2 + COOLDOWN_SEC
-			end
-			state.message = "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出")
-			-- 拉取失败不该把用户已经看到的数据清空 —— 退到上次成功的缓存。
-			-- 常见触发是 GitHub 限流，缓存让面板继续可用。
-			if applyCachedIssues(state, repo) then
-				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
-				state.message = state.message
-					.. "（显示上次拉到的数据"
-					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
-					.. "）"
-			end
-			cx:render()
-			return
-		end
-		local issues = decodeIssues(tostring(result.stdout or ""))
-		if not issues then
-			state.loading = false
-			state.message = "gh 输出解析失败"
-			if applyCachedIssues(state, repo) then
-				-- 明确标成缓存：提示词会带上这个时刻，接收方据此判断要不要重新核实
-				state.message = state.message
-					.. "（显示上次拉到的数据"
-					.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
-					.. "）"
-			end
-			cx:render()
-			return
-		end
-		state.tickets = tracker.parseIssues(issues)
-		state.maps = tracker.groupByMap(issues)
+--- 已关票累积上限。
+local CLOSED_CAP = 500
+
+--- GraphQL 查询：每页 50，排序方向由上游执行。states 只取 OPEN/CLOSED 两个字面量，
+--- 免得往 gh 传数组参数。after 省略时就是第一页。
+local function graphqlQuery(stateName: string): string
+	return table.concat({
+		"query($owner:String!,$name:String!,$direction:OrderDirection!,$after:String){",
+		"repository(owner:$owner,name:$name){issues(first:", tostring(tracker.PAGE_SIZE),
+		",states:", stateName, ",after:$after,orderBy:{field:CREATED_AT,direction:$direction}){",
+		"pageInfo{hasNextPage endCursor}",
+		"nodes{number title state url createdAt labels(first:50){nodes{name}}",
+		" assignees(first:10){nodes{login}} parent{number}",
+		" blockedBy(first:50){nodes{number}}}",
+		"}}}",
+	})
+end
+
+local function graphqlArgv(repo: string, stateName: string, direction: string, after: string?): { string }?
+	local owner, name = string.match(repo, "^([^/]+)/(.+)$")
+	if not owner or not name then
+		return nil
+	end
+	local argv = {
+		"gh", "api", "graphql",
+		"-f", "query=" .. graphqlQuery(stateName),
+		"-F", "owner=" .. owner,
+		"-F", "name=" .. name,
+		"-F", "direction=" .. direction,
+	}
+	if after and after ~= "" then
+		table.insert(argv, "-f")
+		table.insert(argv, "after=" .. after)
+	end
+	return argv
+end
+
+--- 从 gh 结果里取一页；失败返回 nil。
+local function readPage(result: any): { issues: { any }, hasNextPage: boolean, endCursor: string? }?
+	if result == nil or result.status ~= 0 then
+		return nil
+	end
+	local payload = decodeIssues(tostring(result.stdout or ""))
+	if not payload then
+		return nil
+	end
+	return tracker.parseIssuePage(payload)
+end
+
+--- 用当前 open/closed 原始票重建显示数据。
+local function rebuildBoard(state: State)
+	local all = tracker.mergeIssues(state.openIssues, state.closedIssues)
+	state.tickets = tracker.parseIssues(all)
+	state.maps = tracker.groupByMap(all)
+end
+
+--- 拉取失败：保留已看到的数据，冷却，必要时退到缓存。
+local function failLoad(state: State, cx: BlockCx, repo: string, message: string)
+	state.loading = false
+	local now = nowSec()
+	if now then
+		state.cooldownUntil = now + COOLDOWN_SEC
+	end
+	state.message = message
+	if applyCachedIssues(state, repo) then
+		state.message = state.message
+			.. "（显示上次拉到的数据"
+			.. (if fetchedLabel(state) then "，" .. fetchedLabel(state) else "")
+			.. "）"
+	end
+	cx:render()
+end
+
+--- 已关票一页：reset 时成功后才替换，失败保留旧内容；否则续拉下一页。
+--- 每次 reset 递增世代号：在途的续拉/旧刷新回调随后会被丢弃。
+fetchClosedPage = function(state: State, cx: BlockCx, repo: string, reset: boolean, gen: number)
+	if reset then
+		state.boardGen += 1
+		gen = state.boardGen
+	elseif state.closedLoading or not state.closedHasNext then
+		return
+	end
+	local direction = tracker.orderDirection(state.sortNewest)
+	local argv = graphqlArgv(repo, "CLOSED", direction, if reset then nil else state.closedCursor)
+	if not argv then
 		state.loading = false
+		state.message = "仓库名解析失败：" .. repo
+		cx:render()
+		return
+	end
+	state.closedLoading = true
+	tern.process.run(argv):next(function(result: any)
+		if gen ~= state.boardGen then
+			return
+		end
+		state.closedLoading = false
+		local page = readPage(result)
+		if not page then
+			state.loading = false
+			state.message = "已关票拉取失败：" .. tostring(if result then result.stderr else "无输出")
+			if reset then
+				-- 旧游标属于旧方向，不能继续拿来「加载更多」。
+				state.closedHasNext = false
+				state.closedCursor = nil
+				-- open 已经拉全了：已关页失败也要先把 open 侧显示出来。
+				rebuildBoard(state)
+				ensureMapBody(state, cx, repo)
+			end
+			cx:render()
+			return
+		end
+		local base = if reset then {} else state.closedIssues
+		local merged = tracker.mergeIssues(base, page.issues)
+		local hasNext = page.hasNextPage
+		if #merged >= CLOSED_CAP then
+			merged = tracker.capIssues(merged, CLOSED_CAP)
+			hasNext = false
+		end
+		state.closedIssues = merged
+		state.closedCursor = page.endCursor
+		state.closedHasNext = hasNext
+		state.loading = false
+		rebuildBoard(state)
+		if reset then
+			-- 刷新会重建 Map，正文标记回到未加载；仍在地图页就补拉一次。
+			ensureMapBody(state, cx, repo)
+		end
 		if #state.tickets == 0 then
 			state.message = "这个仓库还没有 issue"
 		end
-		-- 存一份缓存：拉取失败时（多半是限流）退到这里，别让面板变空白。
-		-- 缓存带上时刻：退到缓存时提示词要能说清「这份数据是几点的」，否则接收方
-		-- 会把它当实时状态，据此做出已经过期的判断。
-		local now2 = nowSec()
-		state.fetchedAtSec = now2
+		-- 缓存带着时刻：拉取失败退到缓存时，接收方能判断这份数据是不是过期的。
+		local now = nowSec()
+		state.fetchedAtSec = now
 		state.legacyFetchedAt = nil
 		pcall(tern.kv.set, ISSUES_CACHE_KEY, {
 			repo = repo,
-			issues = issues,
+			issues = tracker.mergeIssues(state.openIssues, state.closedIssues),
 			fetchedAtSec = state.fetchedAtSec,
 		})
 		cx:render()
 	end)
+end
+
+--- 刷新：open 全量翻页（前沿判定必须看到每张 OPEN 阻塞票），再拉已关首屏一页。
+fetchIssues = function(state: State, cx: BlockCx, repo: string, gen: number)
+	local acc: { any } = {}
+	local direction = tracker.orderDirection(state.sortNewest)
+
+	local step: (string?) -> ()
+	step = function(after: string?)
+		local argv = graphqlArgv(repo, "OPEN", direction, after)
+		if not argv then
+			failLoad(state, cx, repo, "仓库名解析失败：" .. repo)
+			return
+		end
+		tern.process.run(argv):next(function(result: any)
+			if gen ~= state.boardGen then
+				return
+			end
+			local page = readPage(result)
+			if not page then
+				failLoad(state, cx, repo, "gh 拉取失败：" .. tostring(if result then result.stderr else "无输出"))
+				return
+			end
+			acc = tracker.mergeIssues(acc, page.issues)
+			-- 上游说有下一页且给了游标就继续；游标缺失时收尾，避免死循环。
+			if page.hasNextPage and page.endCursor then
+				step(page.endCursor)
+				return
+			end
+			state.openIssues = acc
+			fetchClosedPage(state, cx, repo, true, gen)
+		end)
+	end
+	step(nil)
 end
 
 --- 写一条给窗口半边的指令。
@@ -656,7 +826,7 @@ local function boardView(state: State, cx: BlockCx): Node
 		table.insert(main, ui.text({
 			ui.span(state.repo, "strong"),
 			ui.span(if state.repoManual
-				then "  手动指定 · 当前目录没识别到 git remote"
+				then "  手动指定 · 刷新仍用这个仓库"
 				else "  来自当前目录的 git remote", "muted"),
 		}))
 	end
@@ -774,12 +944,14 @@ local function boardView(state: State, cx: BlockCx): Node
 		{ title = "被阻塞", items = buckets.blocked, key = TICKET_LIST .. "_blocked",
 			hint = "没有阻塞的票", icon = "help", tone = "warning" },
 		{ title = "已关闭", items = buckets.closed, key = TICKET_LIST .. "_closed",
-			hint = "没有关闭的票", icon = "file", tone = "muted" },
+			hint = "没有关闭的票", icon = "file", tone = "muted", closed = true },
 	}
+	-- 空组也要画：卡片标题上的「0 张」本身就是信息，少画一张卡用户就以为那一组不存在。
 	for _, g in ipairs(groups) do
-		-- 空组也要画：卡片标题上的「0 张」本身就是信息，
-		-- 少画一张卡用户就以为那一组不存在。
-		g.items = tracker.sortByCreated(g.items, state.sortNewest)
+		-- 已关闭组按上游页序追加，不跨页重排；open 侧是全量，本地重排等价于全局序。
+		if not g.closed then
+			g.items = tracker.sortByCreated(g.items, state.sortNewest)
+		end
 		local items: { any } = {}
 		for _, t in ipairs(g.items) do
 			local who = if #t.assignees > 0 then "@" .. t.assignees[1] else nil
@@ -829,10 +1001,25 @@ local function boardView(state: State, cx: BlockCx): Node
 			if g.tone then g.tone else "strong"
 		)
 		-- 空组和已关闭组默认收起，别把界面撑满；有活的组展开。
-		if #g.items == 0 or g.title == "已关闭" then
+		if #g.items == 0 or g.closed then
 			props.collapsed = true
 		end
-		table.insert(main, ui.card(head, { list }, props))
+		local children: { Node } = { list }
+		-- 已关组是分页的：还有下一页且没到上限时，组内末尾给「加载更多」。
+		-- 条数用已加载的原始已关票数（含被四组过滤掉的顶层 spec），与游标口径一致。
+		if g.closed and state.closedHasNext and not state.loading and #state.closedIssues < CLOSED_CAP then
+			table.insert(children, ui.row({
+				ui.button(
+					(if state.closedLoading then "加载中…" else string.format("加载更多（已 %d 条）", #state.closedIssues)),
+					{
+						icon = "refresh",
+						size = "sm",
+						actions = { click = "load-more-closed" },
+					}
+				),
+			}))
+		end
+		table.insert(main, ui.card(head, children, props))
 	end
 
 	return ui.col(main)
@@ -927,6 +1114,9 @@ local function mapView(state: State, cx: BlockCx): Node
 	end
 
 	-- 迷雾与范围外：地图正文里 wayfinder 的两节，只呈现不解析
+	if not m.bodyLoaded then
+		table.insert(main, ui.text(ui.span("正在读地图正文…", "muted")))
+	end
 	if m.fog and m.fog ~= "" then
 		table.insert(main, ui.rule(ui.span("尚未明确（迷雾）")))
 		table.insert(main, ui.md(m.fog))
@@ -969,6 +1159,45 @@ local function loadTicketBody(state: State, cx: BlockCx, t: tracker.Ticket)
 		end
 		cx:render()
 	end)
+end
+
+--- 地图正文也只按需拉：列表查询不含 body，迷雾/范围外靠它解析。
+local function loadMapBody(state: State, cx: BlockCx, repo: string, m: tracker.Map)
+	if m.bodyLoaded or state.bodyLoading == m.number then
+		return
+	end
+	state.bodyLoading = m.number
+	tern.process.run({
+		"gh", "api",
+		string.format("repos/%s/issues/%d", repo, m.number),
+		"--jq", ".body",
+	}):next(function(result: any, _err: any, _cx: any)
+		state.bodyLoading = nil
+		if result ~= nil and result.status == 0 then
+			local body = tostring(result.stdout or "")
+			m.body = body
+			m.bodyLoaded = true
+			local sections = tracker.parseSections(body)
+			m.fog = sections.fog
+			m.outOfScope = sections.outOfScope
+		else
+			m.bodyLoaded = true
+			m.body = ""
+			state.message = "取地图正文失败：" .. tostring(if result then result.stderr else "无输出")
+		end
+		cx:render()
+	end)
+end
+
+--- 刷新后仍停在地图页时补拉当前地图正文。
+ensureMapBody = function(state: State, cx: BlockCx, repo: string)
+	if state.view ~= "map" then
+		return
+	end
+	local m = selectedMap(state)
+	if m then
+		loadMapBody(state, cx, repo, m)
+	end
 end
 
 --- 票详情区：描述、动作按钮、阻塞关系。
@@ -1074,6 +1303,10 @@ local function toolbar(state: State, cx: BlockCx): Node
 		{ label = "换仓库", icon = "repo", click = "pick-repo" },
 		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
+	-- 手动切过仓库时给一个出口：清掉覆盖，回到 cwd 的 remote。
+	if state.repoManual then
+		table.insert(buttons, { label = "重置仓库", icon = "back", click = "reset-repo" })
+	end
 	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。
 	if state.view == "board" then
 		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
@@ -1124,8 +1357,18 @@ local function dockView(state: State): Node
 	}
 	local at = fetchedLabel(state)
 	if at then
-		table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+		local stale = false
+		local now = nowSec()
+		if now and state.fetchedAtSec then
+			stale = util.isStale(now, state.fetchedAtSec, STALE_SEC)
+		end
+		if stale then
+			table.insert(items, ui.text(ui.span("数据 " .. at .. " · 建议刷新", "error")))
+		else
+			table.insert(items, ui.text(ui.span("数据 " .. at, "muted")))
+		end
 	end
+
 	if state.message then
 		table.insert(items, ui.text(ui.span(state.message, "accent")))
 	end
@@ -1506,6 +1749,12 @@ tern.block.define(BLOCK_ID, {
 						state.mapSel = n
 						state.ticketSel = nil
 						state.view = "map"
+						if state.repo then
+							local m = selectedMap(state)
+							if m then
+								loadMapBody(state, cx, state.repo, m)
+							end
+						end
 						return
 					end
 					-- 票行：四组（可领 / 已认领 / 被阻塞 / 已关闭）与 Spec 都按票号找，
@@ -1555,6 +1804,18 @@ tern.block.define(BLOCK_ID, {
 		if act == "toggle-sort" then
 			state.sortNewest = not state.sortNewest
 			state.message = if state.sortNewest then "最新在上" else "最早在上"
+			-- 换方向：旧游标立即作废，免得冷却/失败时「加载更多」接回旧方向。
+			state.boardGen += 1
+			state.closedHasNext = false
+			state.closedCursor = nil
+			-- 已关组从第一页按新方向重拉；open 组本地重排等价于全局序。
+			loadBoard(state, cx)
+			return
+		end
+		if act == "load-more-closed" then
+			if state.repo and state.closedHasNext and not state.loading and #state.closedIssues < CLOSED_CAP then
+				fetchClosedPage(state, cx, state.repo, false, state.boardGen)
+			end
 			return
 		end
 		if act == "next-step" then
@@ -1603,6 +1864,12 @@ tern.block.define(BLOCK_ID, {
 			loadSkills(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
+			return
+		end
+		if act == "reset-repo" then
+			tern.kv.set(REPO_KEY, { repo = "", pane = cx.pane })
+			state.message = "已恢复跟随当前目录"
+			loadBoard(state, cx)
 			return
 		end
 		if act == "pick-repo" then

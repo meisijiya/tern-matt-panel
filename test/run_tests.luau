@@ -46,8 +46,10 @@ local ternStub: any
 
 -- 按 argv 前缀路由的桩结果表：测试可注入 `omp -p` 的成功/失败/超时输出，
 -- 其余命令（git、gh）照旧返回空成功，不影响既有用例。
-local processFixtures: { { match: string, result: any, defer: boolean? } } = {}
+local processFixtures: { any } = {}
 local processCalls: { { argv: { string }, opts: any } } = {}
+-- 测试用 JSON 载荷：stdout 写 key，decode 返回对应表；避免在测试里写 JSON 解析器。
+local jsonPayloads: { [string]: any } = {}
 -- defer 的调用把回调挂在这里，测试用 flushProcess() 手动放行，
 -- 这样才能造出「结果还没回来时又点了一次」这种时序。
 local pendingFlush: { any } = {}
@@ -64,6 +66,11 @@ local function fixtureFor(argv: { string }): any
 	local joined = table.concat(argv, " ")
 	for _, f in ipairs(processFixtures) do
 		if string.find(joined, f.match, 1, true) then
+			if f.results then
+				f.index = (f.index or 0) + 1
+				local result = f.results[f.index] or f.results[#f.results]
+				return { result = result, defer = f.defer }
+			end
 			return f
 		end
 	end
@@ -220,6 +227,15 @@ ternStub = {
 	process = {
 		run = runProcess,
 	},
+	json = {
+		decode = function(text: string): any
+			local value = jsonPayloads[text]
+			if value == nil then
+				error("no json payload: " .. tostring(text))
+			end
+			return value
+		end,
+	},
 	log = function(...) end,
 }
 
@@ -236,6 +252,7 @@ local function reset()
 	processFixtures = {}
 	processCalls = {}
 	pendingFlush = {}
+	jsonPayloads = {}
 end
 
 reset()
@@ -318,6 +335,16 @@ end)
 test("util.contains", function()
 	ok(util.contains({ "a", "b" }, "b"))
 	ok(not util.contains({ "a", "b" }, "z"))
+end)
+
+test("util.isStale 边界", function()
+	local now = 100000
+	ok(not util.isStale(now, now - 7199, 7200), "1h59m 不红")
+	ok(not util.isStale(now, now - 7200, 7200), "2h 整不红（严格大于）")
+	ok(util.isStale(now, now - 7201, 7200), "2h+1s 红")
+	ok(not util.isStale(now, "2026-11-10 10:00", 7200), "无秒数不红")
+	ok(not util.isStale(now, nil, 7200), "没有时刻不红")
+	ok(not util.isStale(nil, now - 9999, 7200), "没有当前时间不红")
 end)
 
 test("skills.parseFrontmatter", function()
@@ -495,6 +522,7 @@ end)
 
 test("util.parseRemoteUrl 认各种 remote 地址", function()
 	eq(util.parseRemoteUrl("git@github.com:meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "ssh")
+	eq(util.parseRemoteUrl("meisijiya/tern-matt-panel"), "meisijiya/tern-matt-panel", "bare owner/repo")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel.git"), "meisijiya/tern-matt-panel", "https")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel"), "meisijiya/tern-matt-panel", "no .git suffix")
 	eq(util.parseRemoteUrl("https://github.com/meisijiya/tern-matt-panel/"), "meisijiya/tern-matt-panel", "trailing slash")
@@ -605,7 +633,7 @@ end)
 test("注入信封拼装", function()
 	local body = "第一行\n第二行"
 	local out = commands.buildInjectionBody("问下一步", body)
-	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====")
+	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====\n")
 	ok(string.find(out, "· #", 1, true) == nil, "没有票号时不带票号段")
 	local out2 = commands.buildInjectionBody("执行", body, 7)
 	ok(string.find(out2, "===== 注入开始 · tern-matt-panel · 执行 · #7 =====", 1, true) == 1, "有票号时带 · #编号")
@@ -801,12 +829,15 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 
 	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
 	-- 用户就没机会补内容了。整段文本是信封包着的正文。
-	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 ====="
+	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 =====\n"
 	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
 	eq(#typed, 2, "多行正文也打进 pane")
 	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
-	ok(string.find(typed[2].text, "\27[201~", 1, true) ~= nil, "外层以括号粘贴收尾")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
+	eq(string.sub(typed[2].text, -6), "\27[201~", "括号粘贴以结束符收尾")
+	ok(string.find(string.sub(typed[2].text, -6), "\n", 1, true) == nil, "结束符之后没有换行")
+	ok(string.find(string.sub(typed[2].text, -6), "\r", 1, true) == nil, "结束符之后没有回车")
 	ok(string.find(typed[2].text, "===== 注入开始 · tern-matt-panel · 测试 =====", 1, true) ~= nil, "整段以开始行开头")
 	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
 	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
@@ -1001,6 +1032,9 @@ local function allText(node: any, out: { string }): { string }
 		if type(p.text) == "string" then
 			table.insert(out, p.text)
 		end
+		if type(p.label) == "table" and type(p.label.t) == "string" then
+			table.insert(out, p.label.t)
+		end
 	end
 	for _, kid in ipairs(node.c or {}) do
 		allText(kid, out)
@@ -1047,6 +1081,8 @@ test("工具条 click 值全部有分支覆盖", function()
 	known["copy-ticket"] = true
 	known["open-ticket"] = true
 	known["auto-reload"] = true
+	known["load-more-closed"] = true
+	known["reset-repo"] = true
 
 	local st = nextStepState()
 	st.view = "board"
@@ -1086,6 +1122,40 @@ test("底部显示数据时刻，且刷新中不清空已有内容", function()
 	local mainText = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
 	ok(string.find(mainText, "正在拉取", 1, true) == nil, "有数据时不显示占位")
 	ok(string.find(mainText, "me/repo", 1, true) ~= nil, "旧内容还在")
+end)
+
+--- 找 dock 里第一个带「数据 」的 span，返回它的文字与样式。
+local function dataSpan(node: any): { t: string, s: string? }?
+	local p = node.p
+	if type(p) == "table" and type(p.spans) == "table" and type(p.spans.t) == "string" then
+		if string.find(p.spans.t, "数据 ", 1, true) == 1 then
+			return p.spans
+		end
+	end
+	for _, kid in ipairs(node.c or {}) do
+		local got = dataSpan(kid)
+		if got then
+			return got
+		end
+	end
+	return nil
+end
+
+test("数据超过两小时提示刷新，旧格式不提示", function()
+	local st = nextStepState()
+	st.view = "board"
+	st.fetchedAtSec = 0
+	local span = dataSpan(panel.view(st, mkCx(120)).dock)
+	ok(span ~= nil, "dock 有数据 span")
+	ok(string.find(span.t, "· 建议刷新", 1, true) ~= nil, "陈旧时提示刷新：" .. span.t)
+	eq(span.s, "error", "陈旧时用 error 样式")
+
+	st.fetchedAtSec = nil
+	st.legacyFetchedAt = "2026-11-10 10:00"
+	local span2 = dataSpan(panel.view(st, mkCx(120)).dock)
+	ok(span2 ~= nil, "旧格式也有数据 span")
+	ok(string.find(span2.t, "建议刷新", 1, true) == nil, "旧格式永不判陈旧：" .. span2.t)
+	eq(span2.s, "muted", "旧格式用 muted 样式")
 end)
 
 test("没识别到仓库时不给问下一步", function()
@@ -1430,6 +1500,639 @@ test("没识别到仓库时入口正文不留空的仓库填写行", function()
 	ok(type(action) == "table", "写了注入请求")
 	ok(string.find(action.body, "仓库：\n", 1, true) == nil, "没有空的仓库行")
 	ok(string.find(action.body, "（先识别仓库）", 1, true) ~= nil, "写明先识别仓库")
+end)
+
+
+test("paths.parseRegistryEntry 正常", function()
+	local text = '{"mattpocock-skills@mattpocock":{"installPath":"/home/.omp/plugins/cache/plugins/foo","version":"1.3.5"}}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	ok(type(r) == "table", "返回表")
+	eq(r.installPath, "/home/.omp/plugins/cache/plugins/foo")
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.parseRegistryEntry 缺 key", function()
+	local text = '{"other":{"installPath":"/x","version":"1.0.0"}}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	eq(r, nil)
+end)
+
+test("paths.parseRegistryEntry 半截 JSON", function()
+	local text = '{"mattpocock-skills@mattpocock":{"installPath":"/x","version":"1.3.5"'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	eq(r, nil)
+end)
+
+test("paths.parseRegistryEntry 多条目取首个有 installPath", function()
+	local text = '{"mattpocock-skills@mattpocock":[{"installPath":"","version":"1.0.0"},{"installPath":"/real","version":"1.3.5"}]}'
+	local r = paths.parseRegistryEntry(text, "mattpocock-skills@mattpocock")
+	ok(type(r) == "table", "返回表")
+	eq(r.installPath, "/real")
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.resolvePackage 登记副本优先", function()
+	local home = "C:/home"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	local key = paths.REGISTRY_KEY
+	local text = '{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/regcopy","version":"1.3.5"}}'
+	fsFiles[regPath] = text
+	fsDirs[home .. "/.omp/plugins"] = true
+	fsDirs[home .. "/.omp/plugins/cache/plugins/regcopy"] = true
+	local pkgDir = home .. "/.omp/plugins/cache/plugins/regcopy"
+	fsFiles[pkgDir .. "/package.json"] = '{"version":"9.9.9"}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.root, (home .. "/.omp/plugins/cache/plugins/regcopy"):gsub("\\","/"))
+	eq(r.version, "1.3.5")
+end)
+
+test("paths.resolvePackage 无本包 key 回退市场", function()
+	local home = "C:/home3"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	fsFiles[regPath] = '{"other-plugin":{"installPath":"/x","version":"1.0.0"}}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.version, "1.3.7")
+end)
+
+test("paths.resolvePackage 副本不存在回退市场", function()
+	local home = "C:/home2"
+	env.HOME = home
+	env.USERPROFILE = home
+	local key = paths.REGISTRY_KEY
+	-- 登记里有本包条目，但 installPath 指向的副本不存在 → 回退市场。
+	fsFiles[home .. "/.omp/plugins/installed_plugins.json"] =
+		'{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/gone","version":"1.3.5"}}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r, err = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.version, "1.3.7")
+	eq(err, nil, "副本不存在不是读失败")
+end)
+
+test("paths.resolvePackage 半截登记保留上次值（unreadable）", function()
+	local home = "C:/home4"
+	env.HOME = home
+	env.USERPROFILE = home
+	local key = paths.REGISTRY_KEY
+	fsFiles[home .. "/.omp/plugins/installed_plugins.json"] =
+		'{"' .. key .. '":{"installPath":"/gone","version":"1.3.5"'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r, err = paths.resolvePackage()
+	eq(r, nil, "解析不出条目")
+	eq(err, "registry-unreadable", "调用方据此保留上次值")
+end)
+
+test("skills.readPackage 版本同根", function()
+	local root = "/tmp/skillpkg"
+	fsDirs[root .. "/skills"] = true
+	fsDirs[root .. "/skills/engineering"] = true
+	fsDirs[root .. "/skills/engineering/s1"] = true
+	fsFiles[root .. "/skills/engineering/s1/SKILL.md"] = "---\nname: s1\ndescription: d\n---\n正文"
+	local pkg = skills.readPackage(root, "2.0.0")
+	ok(type(pkg) == "table", "返回表")
+	eq(pkg.version, "2.0.0")
+	eq(pkg.root, root)
+end)
+
+test("胶囊无版本", function()
+	ok(type(statusFn) == "function", "statusFn 已注册")
+	local res = statusFn(nil)
+	ok(type(res) == "table", "返回表")
+	eq(res[1].text, "Matt", "无版本时只显示 Matt")
+end)
+
+test("focus 后版本更新", function()
+	local home = "C:/home"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	local key = paths.REGISTRY_KEY
+	local text = '{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/regcopy","version":"1.3.5"}}'
+	fsFiles[regPath] = text
+	fsDirs[home .. "/.omp/plugins/cache/plugins/regcopy"] = true
+	fsFiles[home .. "/.omp/plugins/cache/plugins/regcopy/package.json"] = '{"version":"9.9.9"}'
+	local cx = { session = { focused = function() return nil end, panes = function() return {} end, event = function() end } }
+	if handlers["focus"] then
+		pcall(function() handlers["focus"]({ pane = 1, tab = 1 }, cx) end)
+	end
+	local res = statusFn(nil)
+	eq(res[1].text, "Matt 1.3.5", "focus 后胶囊显示登记版本")
+end)
+
+test("focus 后 chrome.refresh 被调", function()
+	local before = chromeRefreshes
+	local cx = { session = { focused = function() return nil end, panes = function() return {} end, event = function() end } }
+	if handlers["focus"] then
+		pcall(function() handlers["focus"]({ pane = 1, tab = 1 }, cx) end)
+	end
+	ok(chromeRefreshes > before, "refresh 被调")
+end)
+
+test("tracker 解析 GraphQL nodes 形状的标签与受理人", function()
+	local t = tracker.parseIssue({
+		number = 7,
+		title = "x",
+		state = "OPEN",
+		labels = { nodes = { { name = "wayfinder:task" }, { name = "ready-for-agent" } } },
+		assignees = { nodes = { { login = "me" } } },
+	})
+	ok(t ~= nil)
+	eq(#t.labels, 2)
+	eq(t.labels[1], "wayfinder:task")
+	eq(t.assignees[1], "me")
+	eq(t.type, "task")
+	eq(t.isSpec, true)
+end)
+
+test("tracker.parseIssuePage 解析一页与分页信息", function()
+	local payload = {
+		data = { repository = { issues = {
+			nodes = { { number = 1 }, { number = 2 } },
+			pageInfo = { hasNextPage = true, endCursor = "c1" },
+		} } },
+	}
+	local page = tracker.parseIssuePage(payload)
+	ok(page ~= nil)
+	eq(#page.issues, 2)
+	eq(page.issues[2].number, 2)
+	eq(page.hasNextPage, true)
+	eq(page.endCursor, "c1", "转发游标")
+
+	local last = tracker.parseIssuePage({ data = { repository = { issues = {
+		nodes = { { number = 3 } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } })
+	eq(last.hasNextPage, false, "最后一页")
+
+	eq(tracker.parseIssuePage({}), nil, "坏形返回 nil")
+	eq(tracker.parseIssuePage({ data = { repository = { issues = {} } } }).hasNextPage, false, "缺 pageInfo 当作没有下一页")
+end)
+
+test("tracker.mergeIssues 按票号去重且保留先到顺序", function()
+	local a = { { number = 2, title = "a" }, { number = 1, title = "b" } }
+	local b = { { number = 1, title = "dup" }, { number = 3, title = "c" } }
+	local out = tracker.mergeIssues(a, b)
+	eq(#out, 3)
+	eq(out[1].number, 2)
+	eq(out[2].number, 1)
+	eq(out[2].title, "b", "同号保留先到的")
+	eq(out[3].number, 3)
+end)
+
+test("tracker.capIssues 截到上限", function()
+	local list = {}
+	for i = 1, 501 do
+		table.insert(list, { number = i })
+	end
+	local out = tracker.capIssues(list, 500)
+	eq(#out, 500)
+	eq(out[500].number, 500)
+	eq(#tracker.capIssues({ { number = 1 } }, 500), 1, "未超限原样返回")
+end)
+
+test("tracker.orderDirection 映射到上游排序", function()
+	eq(tracker.orderDirection(true), "DESC")
+	eq(tracker.orderDirection(false), "ASC")
+end)
+
+test("open 侧必须全量：阻塞票在 201 位时仍判定阻塞", function()
+	local tickets = {}
+	for i = 1, 202 do
+		tickets[i] = {
+			number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
+			labels = {}, assignees = {}, blockedBy = {}, type = nil, parent = nil,
+			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
+		}
+	end
+	tickets[1].blockedBy = { 201 }
+	local full = tracker.computeFrontier(tickets)
+	for _, t in ipairs(full) do
+		ok(t.number ~= 1, "被 201 位 OPEN 票阻塞的票不能进可领")
+	end
+	local partial = {}
+	for i = 1, 200 do
+		table.insert(partial, tickets[i])
+	end
+	local wrong = tracker.computeFrontier(partial)
+	local seen = false
+	for _, t in ipairs(wrong) do
+		if t.number == 1 then
+			seen = true
+		end
+	end
+	ok(seen, "丢掉 201 页就会把它误判成可领（证明必须全量）")
+end)
+
+--- 分页状态：1 张 open + N 张已关，还有下一页。
+local function pagedState(closedCount: number?): any
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.openIssues = { { number = 1, title = "open", state = "OPEN" } }
+	st.closedIssues = {}
+	for i = 1, (closedCount or 1) do
+		table.insert(st.closedIssues, { number = 100 + i, title = "closed" .. i, state = "CLOSED" })
+	end
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	st.maps = {}
+	st.closedHasNext = true
+	st.closedCursor = "c1"
+	st.fetchedAtSec = os.time()
+	return st
+end
+
+--- 按钮文字里有「加载更多」前缀（标签带条数，不能用精确相等判断不存在）。
+local function hasLoadMore(texts: { string }): boolean
+	for _, t in ipairs(texts) do
+		if string.find(t, "加载更多", 1, true) == 1 then
+			return true
+		end
+	end
+	return false
+end
+
+test("已关组有下一页时出现加载更多，点一次追加下一页", function()
+	local st = pagedState(1)
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(hasLoadMore(texts), "组内末尾出现加载更多")
+	st.loading = true
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "刷新在途时不给续拉")
+	st.loading = false
+	jsonPayloads["PAGE2"] = { data = { repository = { issues = {
+		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } }
+	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "PAGE2", stderr = "" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 2, "一页追加")
+	eq(st.closedIssues[2].number, 200)
+	eq(st.closedHasNext, false, "上游没有下一页")
+	eq(#st.tickets, 3, "票列表重建")
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "没有下一页时按钮消失")
+end)
+
+test("加载更多条数按已加载已关票算，不被顶层 spec 过滤影响", function()
+	local st = pagedState(1)
+	table.insert(st.closedIssues, {
+		number = 500, title = "closed spec", state = "CLOSED",
+		labels = { "ready-for-agent" }, assignees = {}, blockedBy = {},
+	})
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "加载更多（已 2 条）"), "条数用原始已关票数，不是过滤后的组数：" .. table.concat(texts, ","))
+end)
+
+test("已关组到 500 上限后不再显示加载更多", function()
+	local st = pagedState(500)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "上限后按钮消失")
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#processCalls, 0, "上限后不再发请求")
+end)
+
+test("切排序丢弃已关页并按新方向重拉", function()
+	local st = pagedState(2)
+	jsonPayloads["OPEN_ASC"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["PAGE_ASC"] = { data = { repository = { issues = {
+		nodes = { { number = 300, title = "oldest", state = "CLOSED" } },
+		pageInfo = { hasNextPage = true, endCursor = "a1" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_ASC", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "PAGE_ASC", stderr = "" } },
+	}
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(st.sortNewest, false)
+	eq(#st.closedIssues, 1, "回到第一页")
+	eq(st.closedIssues[1].number, 300)
+	local last = ""
+	for _, call in ipairs(processCalls) do
+		local argv = table.concat(call.argv, " ")
+		if string.find(argv, "states:CLOSED", 1, true) then
+			last = argv
+		end
+	end
+	ok(string.find(last, "states:CLOSED", 1, true) ~= nil, "找到已关页请求")
+	ok(string.find(last, "direction=ASC", 1, true) ~= nil, "方向映射到上游：" .. last)
+	eq(st.closedCursor, "a1")
+	eq(st.closedHasNext, true)
+end)
+
+test("续拉在途时切排序：旧回调作废，不把旧方向页混进新序列", function()
+	local st = pagedState(1)
+	jsonPayloads["PAGE_OLD"] = { data = { repository = { issues = {
+		nodes = { { number = 999, title = "stale", state = "CLOSED" } },
+		pageInfo = { hasNextPage = false, endCursor = "old" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "PAGE_OLD", stderr = "" }, defer = true },
+	}
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	ok(st.closedLoading == true, "续拉在途")
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	flushProcess()
+	eq(#st.closedIssues, 1, "旧方向的续拉回调被世代号丢弃")
+	eq(st.closedIssues[1].number, 101)
+end)
+
+test("冷却中切排序：旧游标作废，按钮消失", function()
+	local st = pagedState(2)
+	st.cooldownUntil = os.time() + 60
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(st.sortNewest, false)
+	eq(st.closedHasNext, false, "旧游标作废")
+	eq(st.closedCursor, nil)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "冷却中不显示加载更多")
+	for _, call in ipairs(processCalls) do
+		ok(string.find(table.concat(call.argv, " "), "states:CLOSED", 1, true) == nil, "冷却中不发已关请求")
+	end
+end)
+
+test("切排序重拉失败：保留旧内容但不再用旧游标续拉", function()
+	local st = pagedState(2)
+	jsonPayloads["OPEN_FAIL"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_FAIL", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 1, stdout = "", stderr = "boom" } },
+	}
+	panel.event(st, { ev = "action", act = "toggle-sort" }, mkCx(120))
+	eq(#st.closedIssues, 2, "旧已关内容保留")
+	eq(st.closedHasNext, false, "旧游标不能继续用")
+	eq(st.closedCursor, nil)
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "不再显示加载更多")
+	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
+end)
+
+test("假数据翻页：50 → 100 → 120，去重且到末页按钮消失", function()
+	local st = pagedState(0)
+	local nodes2, nodes3 = {}, {}
+	for i = 151, 200 do
+		table.insert(nodes2, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	for i = 201, 220 do
+		table.insert(nodes3, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	jsonPayloads["P2"] = { data = { repository = { issues = {
+		nodes = nodes2, pageInfo = { hasNextPage = true, endCursor = "c2" },
+	} } } }
+	jsonPayloads["P3"] = { data = { repository = { issues = {
+		nodes = nodes3, pageInfo = { hasNextPage = false, endCursor = "c3" },
+	} } } }
+	-- 首屏也造 50 条，避免依赖 pagedState 的编号。
+	for i = 101, 150 do
+		table.insert(st.closedIssues, { number = i, title = "c" .. i, state = "CLOSED" })
+	end
+	st.tickets = tracker.parseIssues(st.closedIssues)
+	processFixtures = { { match = "states:CLOSED", results = {
+		{ status = 0, stdout = "P2", stderr = "" },
+		{ status = 0, stdout = "P3", stderr = "" },
+	} } }
+	eq(#st.closedIssues, 50, "首屏 50")
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 100, "第一次续拉到 100")
+	ok(hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "还有下一页")
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, 120, "第二次续拉到 120")
+	eq(st.closedHasNext, false, "末页")
+	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "末页按钮消失")
+	local seen = {}
+	for _, t in ipairs(st.closedIssues) do
+		ok(not seen[t.number], "票号重复：" .. tostring(t.number))
+		seen[t.number] = true
+	end
+end)
+
+test("续拉失败保留已加载内容并提示，不清屏", function()
+	local st = pagedState(2)
+	local before = #st.closedIssues
+	processFixtures = { { match = "states:CLOSED", result = { status = 1, stdout = "", stderr = "boom" } } }
+	panel.event(st, { ev = "action", act = "load-more-closed" }, mkCx(120))
+	eq(#st.closedIssues, before, "已加载内容还在")
+	eq(#st.tickets, 3, "票列表没被清空")
+	ok(string.find(tostring(st.message), "已关票拉取失败", 1, true) ~= nil, "提示失败")
+end)
+
+test("分页游标与条数不跨面板块持久化", function()
+	local st = pagedState(2)
+	local saved = panel.save(st)
+	eq(saved.closedCursor, nil)
+	eq(saved.closedHasNext, nil)
+	eq(saved.openIssues, nil)
+	eq(saved.closedIssues, nil)
+end)
+
+--- 找带指定 key 后缀的列表节点。
+local function listFor(node: any, suffix: string): any?
+	if type(node) ~= "table" then
+		return nil
+	end
+	local p = node.p
+	if node.k == "list" and type(p) == "table" and type(p.key) == "string"
+		and string.sub(p.key, -#suffix) == suffix then
+		return node
+	end
+	for _, kid in ipairs(node.c or {}) do
+		local got = listFor(kid, suffix)
+		if got then
+			return got
+		end
+	end
+	return nil
+end
+
+test("已关闭组保持上游顺序，open 组按创建时间本地排序", function()
+	local st = pagedState(0)
+	st.openIssues = {
+		{ number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
+		{ number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
+	}
+	st.closedIssues = {
+		{ number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
+		{ number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
+	}
+	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
+	local main = panel.view(st, mkCx(120)).main
+	local closed = listFor(main, "_closed")
+	eq(closed.c[1].label, "closed-old", "已关闭第一行是上游第一行")
+	eq(closed.c[2].label, "closed-new")
+	local open = listFor(main, "_claimable")
+	eq(open.c[1].label, "open-new", "open 组最新在前")
+end)
+
+test("刷新按游标拉完 open 所有页，再拉已关首屏", function()
+	jsonPayloads["OPEN1"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
+		pageInfo = { hasNextPage = true, endCursor = "c1" },
+	} } } }
+	jsonPayloads["OPEN2"] = { data = { repository = { issues = {
+		nodes = { { number = 3, title = "c", state = "OPEN" } },
+		pageInfo = { hasNextPage = false, endCursor = "c2" },
+	} } } }
+	jsonPayloads["CLOSED1"] = { data = { repository = { issues = {
+		nodes = { { number = 9, title = "z", state = "CLOSED" } },
+		pageInfo = { hasNextPage = true, endCursor = "d1" },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", results = {
+			{ status = 0, stdout = "OPEN1", stderr = "" },
+			{ status = 0, stdout = "OPEN2", stderr = "" },
+		} },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "CLOSED1", stderr = "" } },
+	}
+	processCalls = {}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(#st.openIssues, 3, "open 翻了两页")
+	eq(#st.closedIssues, 1, "已关首屏一页")
+	eq(#st.tickets, 4, "四张票都进了状态")
+	eq(st.closedHasNext, true, "已关还有下一页")
+	eq(st.closedCursor, "d1")
+	local openCalls = 0
+	for _, call in ipairs(processCalls) do
+		if string.find(table.concat(call.argv, " "), "states:OPEN", 1, true) then
+			openCalls += 1
+		end
+	end
+	eq(openCalls, 2, "open 确实发了两发")
+end)
+
+test("点地图行按需拉正文并解析迷雾/范围外", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	processFixtures = { {
+		match = "repos/me/repo/issues/1",
+		result = { status = 0, stdout = "## 尚未明确\n- 先做 A\n\n## 范围外\n- 不做 B\n", stderr = "" },
+	} }
+	processCalls = {}
+	panel.event(st, { ev = "select", item = "main.1.123.1" }, mkCx(120))
+	eq(#processCalls, 1, "发了一次正文请求")
+	local argv = table.concat(processCalls[1].argv, " ")
+	ok(string.find(argv, "repos/me/repo/issues/1", 1, true) ~= nil, "按票号拉正文")
+	eq(st.maps[1].bodyLoaded, true)
+	eq(st.maps[1].fog, "- 先做 A", "解析尚未明确")
+	eq(st.maps[1].outOfScope, "- 不做 B", "解析范围外")
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "尚未明确（迷雾）", 1, true) ~= nil, "显示迷雾节")
+	ok(string.find(text, "范围外", 1, true) ~= nil, "显示范围外节")
+end)
+
+test("刷新后仍在地图页：重建的 Map 会补拉正文", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "map"
+	st.mapSel = 1
+	st.repo = "me/repo"
+	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
+	jsonPayloads["OPEN_MAP"] = { data = { repository = { issues = {
+		nodes = { { number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
+		pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["CLOSED_EMPTY"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "OPEN_MAP", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "CLOSED_EMPTY", stderr = "" } },
+		{ match = "repos/me/repo/issues/1", result = { status = 0, stdout = "## 尚未明确\n- 补拉成功\n", stderr = "" } },
+	}
+	processCalls = {}
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	eq(#st.maps, 1, "刷新后地图还在")
+	eq(st.maps[1].bodyLoaded, true, "仍在地图页会补拉正文")
+	eq(st.maps[1].fog, "- 补拉成功", "迷雾重新解析")
+	local hit = false
+	for _, call in ipairs(processCalls) do
+		if string.find(table.concat(call.argv, " "), "repos/me/repo/issues/1", 1, true) then
+			hit = true
+		end
+	end
+	ok(hit, "刷新后发了地图正文请求")
+end)
+
+test("手动指定仓库优先于 cwd 的 remote", function()
+	kvStore["repo"] = { repo = "me/manual", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	processCalls = {}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/manual", "手动值覆盖 cwd remote")
+	eq(st.repoManual, true)
+	st.view = "board"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "刷新仍用这个仓库", 1, true) ~= nil, "标出手动来源")
+end)
+
+test("手动值为空时回到 cwd 的 remote", function()
+	kvStore["repo"] = { repo = "", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/cwd", "空手动值回退 cwd")
+	eq(st.repoManual, false)
+end)
+
+test("重置仓库清掉手动值并回到 cwd", function()
+	kvStore["repo"] = { repo = "me/manual", pane = 7 }
+	jsonPayloads["EMPTY_O"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	jsonPayloads["EMPTY_C"] = { data = { repository = { issues = {
+		nodes = {}, pageInfo = { hasNextPage = false, endCursor = nil },
+	} } } }
+	processFixtures = {
+		{ match = "remote", result = { status = 0, stdout = "https://github.com/me/cwd.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY_O", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY_C", stderr = "" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.repo, "me/manual")
+	panel.event(st, { ev = "action", act = "reset-repo" }, mkCx(120))
+	eq(kvStore["repo"].repo, "", "手动值已清")
+	eq(st.repo, "me/cwd", "回到 cwd 仓库")
+	eq(st.repoManual, false)
 end)
 
 -- -------------------------------------------------------------- report ----
