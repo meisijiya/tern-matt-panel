@@ -1528,6 +1528,19 @@ test("paths.resolvePackage 登记副本优先", function()
 	eq(r.version, "1.3.5")
 end)
 
+test("paths.resolvePackage 无本包 key 回退市场", function()
+	local home = "C:/home3"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	fsFiles[regPath] = '{"other-plugin":{"installPath":"/x","version":"1.0.0"}}'
+	fsDirs[home .. "/.omp/plugins/cache/marketplaces/mattpocock"] = true
+	fsFiles[home .. "/.omp/plugins/cache/marketplaces/mattpocock/package.json"] = '{"version":"1.3.7"}'
+	local r = paths.resolvePackage()
+	ok(type(r) == "table", "返回表")
+	eq(r.version, "1.3.7")
+end)
+
 test("paths.resolvePackage 副本不存在回退市场", function()
 	local home = "C:/home2"
 	env.HOME = home
@@ -1553,13 +1566,29 @@ test("skills.readPackage 版本同根", function()
 	eq(pkg.root, root)
 end)
 
-test("胶囊有版本", function()
-	-- simulate window cachedVersion by calling statusFn? statusFn set by window module load
+test("胶囊无版本", function()
 	ok(type(statusFn) == "function", "statusFn 已注册")
 	local res = statusFn(nil)
 	ok(type(res) == "table", "返回表")
-	-- version may be nil in stub env; just check text is Matt or Matt x
-	ok(string.find(res[1].text, "Matt", 1, true) == 1, "以 Matt 开头")
+	eq(res[1].text, "Matt", "无版本时只显示 Matt")
+end)
+
+test("focus 后版本更新", function()
+	local home = "C:/home"
+	env.HOME = home
+	env.USERPROFILE = home
+	local regPath = home .. "/.omp/plugins/installed_plugins.json"
+	local key = paths.REGISTRY_KEY
+	local text = '{"' .. key .. '":{"installPath":"' .. home .. '/.omp/plugins/cache/plugins/regcopy","version":"1.3.5"}}'
+	fsFiles[regPath] = text
+	fsDirs[home .. "/.omp/plugins/cache/plugins/regcopy"] = true
+	fsFiles[home .. "/.omp/plugins/cache/plugins/regcopy/package.json"] = '{"version":"9.9.9"}'
+	local cx = { session = { focused = function() return nil end, panes = function() return {} end, event = function() end } }
+	if handlers["focus"] then
+		pcall(function() handlers["focus"]({ pane = 1, tab = 1 }, cx) end)
+	end
+	local res = statusFn(nil)
+	eq(res[1].text, "Matt 1.3.5", "focus 后胶囊显示登记版本")
 end)
 
 test("focus 后 chrome.refresh 被调", function()
