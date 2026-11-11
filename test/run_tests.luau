@@ -1204,7 +1204,7 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	ok(kvStore["action"] == nil, "选择前不注入")
 end)
 
---- 九个模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
+--- 模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
 --- 末节有用户输入声明、反问路由正确。
 local ALL_TEMPLATES: { { name: string, body: string } } = {}
 for _, tpl in ipairs(templates.TEMPLATES) do
@@ -1216,6 +1216,7 @@ end
 table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.renderEntry(e, "me/repo") })
 end
@@ -1232,6 +1233,13 @@ local SKILL_WHITELIST = {
 	-- 收尾提醒用的既有技能名
 	"/skill:to-spec",
 	"/skill:to-tickets",
+	-- 收尾动作引用的技能：审 diff、交付、复盘、可视化、交接、选路
+	"/skill:code-review",
+	"/skill:pr",
+	"/skill:retro",
+	"/skill:answer-me-with-html",
+	"/skill:handoff",
+	"/skill:forge-router",
 }
 -- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
 local function findPlaceholder(body: string): string?
@@ -1247,8 +1255,8 @@ local function findPlaceholder(body: string): string?
 	return nil
 end
 
-test("九个模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 9, "九个模板都收进来了")
+test("每条模板都挂反问小节且只挂一次", function()
+	eq(#ALL_TEMPLATES, 10, "十条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -1258,14 +1266,14 @@ test("九个模板都挂反问小节且只挂一次", function()
 	end
 end)
 
-test("九个模板正文里没有待填空位", function()
+test("每条模板正文里没有待填空位", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local hit = findPlaceholder(t.body)
 		ok(hit == nil, t.name .. " 没有占位（命中：" .. tostring(hit) .. "）")
 	end
 end)
 
-test("九个模板的主技能命令都在白名单内", function()
+test("模板里的技能命令都在白名单内", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		for cmd in string.gmatch(t.body, "/skill:[%w%-_]+") do
 			local allowed = false
@@ -1279,7 +1287,7 @@ test("九个模板的主技能命令都在白名单内", function()
 	end
 end)
 
-test("九个模板末节都有用户输入声明", function()
+test("每条模板末节都有用户输入声明", function()
 	local NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 	for _, t in ipairs(ALL_TEMPLATES) do
 		ok(string.find(t.body, USER_INPUT_MARK, 1, true) ~= nil, t.name .. " 有用户输入声明")
@@ -1289,10 +1297,10 @@ test("九个模板末节都有用户输入声明", function()
 	end
 end)
 
-test("反问路由：盘问与需求已明确不挂 grilling，其余七个挂", function()
+test("反问路由：盘问、需求已明确、收尾不挂 grilling，其余挂", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local has = string.find(t.body, "/skill:grilling", 1, true) ~= nil
-		if t.name == "盘问" or t.name == "入口·需求已明确" then
+		if t.name == "盘问" or t.name == "入口·需求已明确" or t.name == "收尾" then
 			ok(not has, t.name .. " 不挂 grilling")
 		else
 			ok(has, t.name .. " 挂 grilling")
@@ -2620,6 +2628,98 @@ test("收尾：缺装外部包时仍注入并说明缺口", function()
 	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
 	ok(kvStore["action"] ~= nil, "缺装也照样注入")
 	ok(string.find(tostring(st.message), "未装", 1, true) ~= nil, "提示哪套没装")
+end)
+
+
+test("模板口径：每条都有角色句与第一性原理，技能命令前后留空格", function()
+	local bodies: { { name: string, body: string } } = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { name = t.title, body = templates.render(t, { url = "http://x", title = "T" }) })
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK, templates.WRAP_UP }) do
+		table.insert(bodies, { name = t.title, body = templates.render(t, { repo = "me/repo", root = "D:/r" }) })
+	end
+	eq(#bodies, 8, "票动作四条 + 按钮四条")
+	for _, b in ipairs(bodies) do
+		ok(string.find(b.body, "从第一性原理出发。", 1, true) ~= nil, b.name .. " 缺第一性原理")
+		ok(string.find(b.body, "你是这个仓库的资深工程师", 1, true) ~= nil, b.name .. " 缺角色句")
+	end
+end)
+
+test("模板口径：三个按钮共用工具段，且引用了选路表", function()
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK }) do
+		local body = templates.render(t, { repo = "me/repo" })
+		ok(string.find(body, "/skill:forge-router 的选路表", 1, true) ~= nil, t.title .. " 缺选路表")
+		ok(string.find(body, "## 事实核验与工具（先查后问）", 1, true) ~= nil, t.title .. " 缺工具段")
+	end
+end)
+
+test("收尾模板：顺序是 目标 → 触发语义 → 越权禁令 → 七段 → 反问", function()
+	local body = templates.WRAP_UP.body
+	local goal = string.find(body, "## 目标", 1, true)
+	local trig = string.find(body, "## 触发语义", 1, true)
+	local bound = string.find(body, "## 越权禁令", 1, true)
+	local seg1 = string.find(body, "## 第 1 段", 1, true)
+	local ask = string.find(body, "## 反问", 1, true)
+	ok(goal and trig and bound and seg1 and ask, "五段都在")
+	ok(goal < trig and trig < bound and bound < seg1 and seg1 < ask, "顺序要串起来")
+end)
+
+test("模板口径：小节顺序一致（目标 → 核验 → 边界 → 交付）", function()
+	local all = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(all, t)
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK }) do
+		table.insert(all, t)
+	end
+	-- 收尾是多阶段模板，四段锚点换成它自己的顺序，见下一条用例。
+	for _, t in ipairs(all) do
+		local body = t.body
+		local goal = string.find(body, "## 目标", 1, true)
+		local check = string.find(body, "## 事实核验", 1, true) or string.find(body, "## 事实核验与工具", 1, true)
+		ok(goal ~= nil, t.title .. " 缺目标段")
+		ok(check ~= nil, t.title .. " 缺核验段")
+		ok(goal < check, t.title .. " 目标应在核验前")
+		local boundary = string.find(body, "## 边界", 1, true)
+		ok(boundary ~= nil, t.title .. " 缺边界段")
+		ok(check < boundary, t.title .. " 核验应在边界前")
+		local deliver = string.find(body, "## 交付", 1, true)
+		ok(deliver ~= nil, t.title .. " 缺交付段")
+		ok(boundary < deliver, t.title .. " 边界应在交付前")
+	end
+end)
+
+
+test("模板口径：每个占位符都在行内带了说明", function()
+	local bodies: { { name: string, body: string } } = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { name = t.title, body = t.body })
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK, templates.WRAP_UP }) do
+		table.insert(bodies, { name = t.title, body = t.body })
+	end
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(bodies, { name = e.injectAction, body = e.body })
+	end
+	for _, b in ipairs(bodies) do
+		-- 每个占位符至少要有一行「说明：{占位符}」的独立写法；
+		-- 正文里顺带出现（比如 gh issue view {url}）不算说明。
+		local keys: { [string]: boolean } = {}
+		for key in string.gmatch(b.body, "{(%w+)}") do
+			keys[key] = true
+		end
+		for key in pairs(keys) do
+			local labelled = false
+			for line in string.gmatch(b.body, "[^\n]+") do
+				local trimmed = (string.gsub(line, "%s+$", ""))
+				if string.sub(trimmed, -(#key + 2)) == "{" .. key .. "}" and string.find(trimmed, "：", 1, true) then
+					labelled = true
+				end
+			end
+			ok(labelled, b.name .. " 的占位符 {" .. key .. "} 没有行内说明")
+		end
+	end
 end)
 
 -- -------------------------------------------------------------- report ----
