@@ -2510,7 +2510,7 @@ test("packs.withCheck 五种状态与失败保留上次", function()
 	local failed1 = packs.withCheck(ok1, nil, true, "11:00")
 	eq(failed1.status, "检查失败 · 上次 10:00")
 	eq(failed1.latest, "0.5.0", "失败时保留上次结果")
-	eq(packs.withCheck(base, nil, true, "11:00").status, "检查失败", "从没成功过就不写上次")
+	eq(packs.withCheck(base, nil, true, nil).status, "检查失败", "从没成功过就不写上次")
 	eq(packs.withCheck(packs.stateOf(p, false, nil), "9.9.9", false, "10:00").status, "未装")
 end)
 
@@ -2794,6 +2794,51 @@ test("技能包：登记里没有时回退插件缓存里的同名副本", funct
 	eq(by["answer-me-with-html"].status, "已装")
 	eq(by["answer-me-with-html"].version, "0.5.10")
 	eq(by["mattpocock"].status, "未装")
+end)
+
+
+test("技能包：检查失败后再刷新仍保留上次查到的上游版本", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].latest, "0.6.0")
+	-- 上游查不到（release 与 tags 都失败）
+	st.packsCheckedAt = nil
+	processFixtures = {}
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local afterFail = packsBy(st)["omp-skill-forge"]
+	eq(afterFail.latest, "0.6.0", "失败也保住已查到的版本")
+	-- 再点工具条刷新：重新探测不能把版本号清掉
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].latest, "0.6.0", "reload 后还在")
+end)
+
+test("技能包：release 查不到时回退 tags", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 1, stdout = "", stderr = "Not Found" } },
+		{ match = "/tags", result = { status = 0, stdout = "v0.7.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local p = packsBy(st)["omp-skill-forge"]
+	eq(p.latest, "0.7.0", "从 tags 拿到版本")
+	eq(p.status, "待更新")
+end)
+
+test("技能包刷新结束后给结论，不停在「检查上游版本」", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local m = tostring(st.message)
+	ok(string.find(m, "已查 3 套", 1, true) ~= nil, "给出结论：" .. m)
+	ok(string.find(m, "待更新", 1, true) ~= nil, "带上待更新套数")
 end)
 
 -- -------------------------------------------------------------- report ----

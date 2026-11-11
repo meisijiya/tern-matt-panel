@@ -167,8 +167,12 @@ function M.withCheck(ps: PackState, remote: string?, failed: boolean, checkedAt:
 		return out
 	end
 	if failed then
-		out.status = if ps.checkedAt
-			then "检查失败 · 上次 " .. ps.checkedAt
+		-- 失败也要保住已知的上游版本与上次成功时刻：
+		-- 点刷新失败后再点工具条刷新，卡片不能凭空丢掉版本号。
+		out.latest = remote or ps.latest
+		out.checkedAt = ps.checkedAt or checkedAt
+		out.status = if out.checkedAt
+			then "检查失败 · 上次 " .. out.checkedAt
 			else "检查失败"
 		return out
 	end

@@ -325,28 +325,68 @@ local function checkPacks(state: State, cx: BlockCx)
 		return
 	end
 	local checked = 0
+	local remaining = 0
 	state.message = "检查上游版本…"
+
+	--- 每次查完一套就收敛一次；全部回来时把「检查中」换成结论。
+	local function finish(id: string, tag: string?)
+		for i, cur in ipairs(state.packs) do
+			if cur.id == id then
+				local failed = tag == nil
+				local label = if failed then cur.checkedAt else fmtTime(nowSec())
+				state.packs[i] = packs.withCheck(cur, tag, failed, label)
+			end
+		end
+		remaining -= 1
+		if remaining > 0 then
+			cx:render()
+			return
+		end
+		local outdated, failedCount = 0, 0
+		for _, cur in ipairs(state.packs) do
+			if cur.status == "待更新" then
+				outdated += 1
+			elseif string.find(cur.status, "检查失败", 1, true) then
+				failedCount += 1
+			end
+		end
+		state.message = string.format("已查 %d 套 · %d 套待更新", checked, outdated)
+		if failedCount > 0 then
+			state.message ..= string.format(" · %d 套检查失败", failedCount)
+		end
+		cx:render()
+	end
+
 	for _, ps in ipairs(state.packs) do
 		if not ps.installed then
 			continue
 		end
 		checked += 1
+		remaining += 1
 		local id = ps.id
+		local repo = ps.repo
+		--- 先查 release；只打 tag 的仓库查不到 release，回退 tags。
+		local function onTags(result: any)
+			local tag: string? = nil
+			if result and result.status == 0 then
+				tag = packs.tagFromOutput(tostring(result.stdout or ""))
+			end
+			finish(id, tag)
+		end
 		tern.process.run({
-			"gh", "api", "repos/" .. ps.repo .. "/releases/latest", "--jq", ".tag_name",
+			"gh", "api", "repos/" .. repo .. "/releases/latest", "--jq", ".tag_name",
 		}):next(function(result: any)
 			local tag: string? = nil
 			if result and result.status == 0 then
 				tag = packs.tagFromOutput(tostring(result.stdout or ""))
 			end
-			local failed = tag == nil
-			local label = fmtTime(nowSec())
-			for i, cur in ipairs(state.packs) do
-				if cur.id == id then
-					state.packs[i] = packs.withCheck(cur, tag, failed, label)
-				end
+			if tag then
+				finish(id, tag)
+				return
 			end
-			cx:render()
+			tern.process.run({
+				"gh", "api", "repos/" .. repo .. "/tags", "--jq", ".[0].name",
+			}):next(onTags)
 		end)
 	end
 	-- 只在真的发出检查时开始计时：一套都没装就别浪费下一个五分钟。
@@ -969,10 +1009,15 @@ local function packsView(state: State): Node
 				actions = { click = "copy-pack-install:" .. p.id },
 			}),
 		}))
-		table.insert(main, ui.card({
+		local head: { any } = {
 			ui.span(p.title, "strong"),
 			ui.span("  " .. packs.versionLabel(p.version), "muted"),
-		}, kids, {
+		}
+		-- 「待更新」要能看出升到哪一版，否则用户只知道有新版。
+		if p.latest then
+			table.insert(head, ui.span("  → 上游 " .. p.latest, "muted"))
+		end
+		table.insert(main, ui.card(head, kids, {
 			icon = "tasks",
 			meta = ui.span(p.status, if p.installed then "muted" else "warning"),
 		}))

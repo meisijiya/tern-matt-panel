@@ -502,12 +502,13 @@ case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
 cat > "$TMP/packs.sc" <<EOF
 wait 100
 EOF
-case_run "技能包视图列出三套外部包" "$TMP/packs.sc" \
+case_run "技能包视图列出三套外部包，刷新按钮能点" "$TMP/packs.sc" \
 	"click-btn-until:技能包:外部技能包:15000" \
 	"has:mattpocock 技能组" \
 	"has:answer-me-with-html" \
 	"has:omp-skill-forge" \
-	"has:刷新版本"
+	"has:刷新版本" \
+	"click-btn-until:刷新版本:上游:15000"
 
 # ---------------------------------------------------------------- 汇总 ----
 
