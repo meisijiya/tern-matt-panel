@@ -1041,6 +1041,21 @@ local function allText(node: any, out: { string }): { string }
 			table.insert(out, p.label.t)
 		end
 	end
+	-- 卡片标题走 node.head，不在 p 里；不读它就会漏掉卡名。
+	local head = node.head
+	if type(head) == "table" then
+		if type(head.t) == "string" then
+			table.insert(out, head.t)
+		else
+			for _, sp in ipairs(head) do
+				if type(sp) == "string" then
+					table.insert(out, sp)
+				elseif type(sp) == "table" and type(sp.t) == "string" then
+					table.insert(out, sp.t)
+				end
+			end
+		end
+	end
 	for _, kid in ipairs(node.c or {}) do
 		allText(kid, out)
 	end
@@ -1052,6 +1067,7 @@ end
 local ACTION_CASES = {
 	{ act = "view-skills", want = function(st: any) return st.view == "skills" end },
 	{ act = "view-board", want = function(st: any) return st.view == "board" end },
+	{ act = "view-packs", want = function(st: any) return st.view == "packs" end },
 	{ act = "toggle-sort", want = function(st: any, before: any) return st.sortNewest ~= before.sortNewest end },
 	{ act = "reload", want = function(st: any) return st.message == "已刷新" end },
 	{ act = "pick-repo", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "pick-repo" end },
@@ -2301,6 +2317,138 @@ test("地图正文在途时重复点击只发一次请求", function()
 	flushProcess()
 	eq(st.maps[1].bodyLoaded, true)
 	eq(st.maps[1].fog, "- 慢请求")
+end)
+
+
+-- ------------------------------------------------------------ 外部技能包 ----
+
+--- 文本里是否出现过某段话（文本收集器按 span 切开，版本号常带着缩进）。
+local function hasText(list: { string }, needle: string): boolean
+	for _, v in ipairs(list) do
+		if string.find(v, needle, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+test("packs 清单：三套、id 唯一、都带仓库与安装指引", function()
+	eq(#packs.PACKS, 3)
+	local seen: { [string]: boolean } = {}
+	for _, p in ipairs(packs.PACKS) do
+		ok(not seen[p.id], "id 重复：" .. p.id)
+		seen[p.id] = true
+		ok(p.repo ~= "", p.id .. " 缺仓库")
+		ok(#p.install > 0, p.id .. " 缺安装指引")
+		ok(p.purpose ~= "", p.id .. " 缺用途")
+	end
+end)
+
+test("packs.versionLabel 缺版本不留空", function()
+	eq(packs.versionLabel(nil), "未知版本")
+	eq(packs.versionLabel(""), "未知版本")
+	eq(packs.versionLabel("0.5.10"), "0.5.10")
+end)
+
+test("packs.stateOf 区分已装与未装", function()
+	local p = packs.byId("omp-skill-forge")
+	ok(p ~= nil, "找到包")
+	local off = packs.stateOf(p, false, nil)
+	eq(off.status, "未装")
+	eq(off.installed, false)
+	eq(off.url, "https://github.com/meisijiya/omp-skill-forge")
+	local on = packs.stateOf(p, true, "0.5.0")
+	eq(on.status, "已装")
+	eq(on.version, "0.5.0")
+end)
+
+--- 造一份登记：两套走登记的包都写进去。
+local function writeRegistry(mattVersion: string?, amVersion: string?)
+	local matt = mattVersion and ('"version":"' .. mattVersion .. '",') or ""
+	local am = amVersion and ('"version":"' .. amVersion .. '",') or ""
+	-- 主技能组的登记键是真实值（不是这里的字面量），所以直接取 paths.REGISTRY_KEY。
+	fsFiles["C:/home/.omp/plugins/installed_plugins.json"] = table.concat({
+		'{"version":2,"plugins":{',
+		'"' .. paths.REGISTRY_KEY .. '":[{"scope":"user","installPath":"C:/p/matt",', matt, '"enabled":true}],',
+		'"answer-me-with-html@answer-me-with-html":[{"scope":"user","installPath":"C:/p/am",', am, '"scope":"user"}]}}',
+	})
+end
+
+test("技能包：登记里的两套按 installPath 判已装，本地目录那套按目录判", function()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"name":"omp-skill-forge","version":"0.5.0"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(#st.packs, 3)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].installed, true)
+	eq(by["mattpocock"].version, "1.3.5")
+	eq(by["answer-me-with-html"].version, "0.5.10")
+	eq(by["omp-skill-forge"].version, "0.5.0")
+end)
+
+test("技能包：登记没写版本时回退安装根的 package.json", function()
+	writeRegistry(nil, nil)
+	fsDirs["C:/p/matt"] = true
+	fsFiles["C:/p/matt/package.json"] = '{"name":"mattpocock-skills","version":"9.9.9"}'
+	fsDirs["C:/p/am"] = true
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].version, "9.9.9")
+	eq(by["answer-me-with-html"].status, "已装")
+	eq(by["omp-skill-forge"].status, "未装")
+end)
+
+test("技能包：登记有条目但目录不在 → 未装", function()
+	writeRegistry("1.3.5", "0.5.10")
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].status, "未装")
+	eq(by["mattpocock"].version, "1.3.5")
+end)
+
+test("技能包视图：三张卡露出标题、版本与安装指引，窄面板也有入口", function()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"version":"0.5.0"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "packs"
+	local texts = allText(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "mattpocock 技能组"), "有主技能组卡")
+	ok(util.contains(texts, "answer-me-with-html"), "有可视化包卡")
+	ok(util.contains(texts, "omp-skill-forge"), "有选路包卡")
+	ok(hasText(texts, "1.3.5"), "露出主技能组版本")
+	ok(hasText(texts, "0.5.10"), "露出可视化包版本")
+	ok(hasText(texts, "0.5.0"), "露出选路包版本")
+	local tight = panel.init(mkCx(24), {}, nil)
+	local ttexts = buttonTexts(panel.view(tight, mkCx(24)).main, {})
+	ok(util.contains(ttexts, "技能包"), "窄面板也有技能包入口")
+end)
+
+test("技能包：复制仓库链接与安装指引", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	local copied: { string } = {}
+	local cx: any = mkCx(120)
+	cx.copy = function(_self: any, text: string)
+		table.insert(copied, text)
+	end
+	panel.event(st, { ev = "action", act = "copy-pack-repo:omp-skill-forge" }, cx)
+	eq(copied[1], "https://github.com/meisijiya/omp-skill-forge")
+	panel.event(st, { ev = "action", act = "copy-pack-install:answer-me-with-html" }, cx)
+	ok(string.find(copied[2], "claude plugin install answer-me-with-html@answer-me-with-html", 1, true) ~= nil, "安装指引是上游原文")
 end)
 
 -- -------------------------------------------------------------- report ----

@@ -11,6 +11,7 @@
 local ui = tern.ui
 local commands = require("./lib/commands")
 local lanes = require("./lib/lanes")
+local packs = require("./lib/packs")
 local paths = require("./lib/paths")
 local skills = require("./lib/skills")
 local templates = require("./lib/templates")
@@ -60,7 +61,7 @@ local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
 local BLOCK_ID = "matt"
 
-type View = "skills" | "board" | "map" | "ticket"
+type View = "skills" | "board" | "map" | "ticket" | "packs"
 
 --- 一次「问下一步」的状态。独立进程跑完才有结论，中间态要能渲染。
 type State = {
@@ -118,6 +119,10 @@ type State = {
 	setupHint: string?,
 	skillVersion: string?,
 	hasSkills: boolean,
+	-- 外部技能包：本地状态（装了没、什么版本）
+	packs: { packs.PackState },
+	-- 上次向上游检查版本的时刻；节流用，打开视图不发请求
+	packsCheckedAt: number?,
 }
 
 --- 空状态。init 与 save 恢复共用。
@@ -157,6 +162,8 @@ local function blank(): State
 		setupHint = nil,
 		skillVersion = nil,
 		hasSkills = false,
+		packs = {},
+		packsCheckedAt = nil,
 	}
 end
 
@@ -217,6 +224,50 @@ local function loadSkills(state: State)
 	end
 	state.skills = visible
 	state.lanes = lanes.groupSkills(visible)
+end
+
+--- 探外部技能包：登记里查得到就按 installPath 探；只有本地目录的按目录探。
+--- 只读，不联网：待更新检查由显式的刷新触发。
+local function loadPacks(state: State)
+	local out: { packs.PackState } = {}
+	local home = paths.home()
+	local regText: string? = nil
+	if home then
+		local ok, text = pcall(tern.fs.read, home .. "/.omp/plugins/installed_plugins.json")
+		if ok and type(text) == "string" then
+			regText = text
+		end
+	end
+	for _, pack in ipairs(packs.PACKS) do
+		local installed = false
+		local version: string? = nil
+		if pack.registryKey then
+			local entry = paths.parseRegistryEntry(regText, pack.registryKey)
+			if entry then
+				local exists = false
+				pcall(function()
+					exists = tern.fs.exists(entry.installPath)
+				end)
+				installed = exists
+				version = entry.version
+				if installed and (not version or version == "") then
+					version = paths.packageVersion(entry.installPath)
+				end
+			end
+		elseif pack.localRel and home then
+			local root = home .. "/" .. pack.localRel
+			local exists = false
+			pcall(function()
+				exists = tern.fs.exists(root)
+			end)
+			installed = exists
+			if installed then
+				version = paths.packageVersion(root)
+			end
+		end
+		table.insert(out, packs.stateOf(pack, installed, version))
+	end
+	state.packs = out
 end
 
 --- 拉取成功的 issue 缓存。拉取失败（多半是 GitHub 限流）时退到这里，
@@ -789,6 +840,49 @@ local function skillsView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 技能包区：面板引用的外部包，各一张卡。
+--- 这里只报本地状态与安装方式，不代装、不代改；待更新检查走刷新。
+local function packsView(state: State): Node
+	local main: { Node } = {}
+	table.insert(main, ui.text({
+		ui.span("外部技能包", "strong"),
+		ui.span("  面板引用它们，但不自带、不代装", "muted"),
+	}))
+	if #state.packs == 0 then
+		table.insert(main, ui.text(ui.span("没有可展示的技能包", "muted")))
+		return ui.col(main)
+	end
+	for _, p in ipairs(state.packs) do
+		local kids: { Node } = {
+			ui.text(ui.span(p.purpose, "muted")),
+			ui.text(ui.link(p.url, p.url)),
+		}
+		for _, line in ipairs(p.install) do
+			table.insert(kids, ui.code(line, "bash"))
+		end
+		table.insert(kids, ui.row({
+			ui.button("复制链接", {
+				icon = "link",
+				size = "sm",
+				actions = { click = "copy-pack-repo:" .. p.id },
+			}),
+			ui.button("复制安装", {
+				icon = "copy",
+				size = "sm",
+				actions = { click = "copy-pack-install:" .. p.id },
+			}),
+		}))
+		table.insert(main, ui.card({
+			ui.span(p.title, "strong"),
+			ui.span("  " .. packs.versionLabel(p.version), "muted"),
+		}, kids, {
+			icon = "tasks",
+			meta = ui.span(p.status, if p.installed then "muted" else "warning"),
+		}))
+	end
+	return ui.col(main)
+end
+
 --- 任务板区：地图列表与前沿票列表，都是可点的。
 --- 新增需求的两条路：需求还没摸清走 wayfinder 画地图；已经明确就直接 grill 收敛成 spec。
 --- 只甩一条 /wayfinder 会误导需求已经清楚的人。
@@ -1295,6 +1389,8 @@ local function toolbar(state: State, cx: BlockCx): Node
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
 			variant = if state.view == "board" then "primary" else "default" },
+		{ label = "技能包", icon = "tasks", click = "view-packs",
+			variant = if state.view == "packs" then "primary" else "default" },
 		-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
 		-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
 		-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
@@ -1442,6 +1538,7 @@ tern.block.define(BLOCK_ID, {
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
 		end
 		loadSkills(state)
+		loadPacks(state)
 		loadBoard(state, cx)
 		return state
 	end,
@@ -1451,6 +1548,8 @@ tern.block.define(BLOCK_ID, {
 			return string.format("Matt 面板 · 技能 %d", #state.skills)
 		elseif state.view == "board" then
 			return string.format("Matt 面板 · 前沿 %d", #tracker.computeFrontier(state.tickets))
+		elseif state.view == "packs" then
+			return string.format("Matt 面板 · 技能包 %d", #state.packs)
 		end
 		return string.format("Matt 面板 · %s", state.ticket and state.ticket.title or "票")
 	end,
@@ -1465,6 +1564,8 @@ tern.block.define(BLOCK_ID, {
 			main = ui.col({ toolbar(state, cx), boardView(state, cx) })
 		elseif state.view == "map" then
 			main = ui.col({ toolbar(state, cx), mapView(state, cx) })
+		elseif state.view == "packs" then
+			main = ui.col({ toolbar(state, cx), packsView(state) })
 		else
 			main = ui.col({ toolbar(state, cx), ticketView(state, cx) })
 		end
@@ -1496,6 +1597,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if key.name == "r" and not key.shift then
 			loadSkills(state)
+			loadPacks(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return true
@@ -1794,6 +1896,29 @@ tern.block.define(BLOCK_ID, {
 			state.message = nil
 			return
 		end
+		if act == "view-packs" then
+			state.view = "packs"
+			state.message = nil
+			return
+		end
+		if string.sub(act, 1, 15) == "copy-pack-repo:" then
+			local p = packs.byId(string.sub(act, 16))
+			if not p then
+				return
+			end
+			cx:copy(packs.repoUrl(p.repo))
+			state.message = "已复制仓库链接：" .. p.title
+			return
+		end
+		if string.sub(act, 1, 18) == "copy-pack-install:" then
+			local p = packs.byId(string.sub(act, 19))
+			if not p then
+				return
+			end
+			cx:copy(table.concat(p.install, "\n"))
+			state.message = "已复制安装指引：" .. p.title
+			return
+		end
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
@@ -1862,6 +1987,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "reload" then
 			loadSkills(state)
+			loadPacks(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return
