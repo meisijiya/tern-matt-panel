@@ -29,7 +29,6 @@ M.PACKS = {
 		registryKey = "mattpocock-skills@mattpocock",
 		install = {
 			"git clone https://github.com/devcxl/mattpocock-skills-zh",
-			"git clone https://github.com/mattpocock/skills",
 		},
 	},
 	{

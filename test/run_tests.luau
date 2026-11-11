@@ -1076,6 +1076,11 @@ local ACTION_CASES = {
 	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "wrap-up", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "packs-refresh", want = function(st: any)
+		local m = tostring(st.message)
+		return string.find(m, "检查上游版本", 1, true) ~= nil or string.find(m, "没什么可查", 1, true) ~= nil
+	end },
+	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }

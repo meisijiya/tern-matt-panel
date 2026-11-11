@@ -298,12 +298,13 @@ local function checkPacks(state: State, cx: BlockCx)
 		cx:render()
 		return
 	end
-	state.packsCheckedAt = now
+	local checked = 0
 	state.message = "检查上游版本…"
 	for _, ps in ipairs(state.packs) do
 		if not ps.installed then
 			continue
 		end
+		checked += 1
 		local id = ps.id
 		tern.process.run({
 			"gh", "api", "repos/" .. ps.repo .. "/releases/latest", "--jq", ".tag_name",
@@ -321,6 +322,12 @@ local function checkPacks(state: State, cx: BlockCx)
 			end
 			cx:render()
 		end)
+	end
+	-- 只在真的发出检查时开始计时：一套都没装就别浪费下一个五分钟。
+	if checked > 0 then
+		state.packsCheckedAt = now
+	else
+		state.message = "没有已安装的技能包，没什么可查"
 	end
 	cx:render()
 end
