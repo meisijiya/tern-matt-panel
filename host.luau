@@ -55,6 +55,10 @@ local COOLDOWN_SEC = 60
 --- 需要立刻看到最新就按「刷新」或 r。
 local AUTO_REFRESH_SEC = 300
 
+--- 技能包查上游版本的最短间隔：手动刷新才查，且不能连点。
+--- 三套包的检查要各跑一次 gh，配额是共享的。
+local PACK_CHECK_SEC = 300
+
 local ACTION_KEY = "action"
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
@@ -268,6 +272,47 @@ local function loadPacks(state: State)
 		table.insert(out, packs.stateOf(pack, installed, version))
 	end
 	state.packs = out
+end
+
+--- 查上游最新版本：逐套跑 gh release，结论写回对应包。
+--- 只由显式刷新触发（打开视图不发请求），失败保留上一次的结果。
+local function checkPacks(state: State, cx: BlockCx)
+	local now = nowSec()
+	if not now then
+		state.message = "拿不到时间，跳过版本检查"
+		cx:render()
+		return
+	end
+	if state.packsCheckedAt and now - state.packsCheckedAt < PACK_CHECK_SEC then
+		state.message = string.format("刚查过，%d 秒后再查", PACK_CHECK_SEC - (now - state.packsCheckedAt))
+		cx:render()
+		return
+	end
+	state.packsCheckedAt = now
+	state.message = "检查上游版本…"
+	for _, ps in ipairs(state.packs) do
+		if not ps.installed then
+			continue
+		end
+		local id = ps.id
+		tern.process.run({
+			"gh", "api", "repos/" .. ps.repo .. "/releases/latest", "--jq", ".tag_name",
+		}):next(function(result: any)
+			local tag: string? = nil
+			if result and result.status == 0 then
+				tag = packs.tagFromOutput(tostring(result.stdout or ""))
+			end
+			local failed = tag == nil
+			local label = fmtTime(nowSec())
+			for i, cur in ipairs(state.packs) do
+				if cur.id == id then
+					state.packs[i] = packs.withCheck(cur, tag, failed, label)
+				end
+			end
+			cx:render()
+		end)
+	end
+	cx:render()
 end
 
 --- 拉取成功的 issue 缓存。拉取失败（多半是 GitHub 限流）时退到这里，
@@ -847,6 +892,15 @@ local function packsView(state: State): Node
 	table.insert(main, ui.text({
 		ui.span("外部技能包", "strong"),
 		ui.span("  面板引用它们，但不自带、不代装", "muted"),
+	}))
+	-- 自己的刷新：只查这三套包的上游版本，不碰任务板。
+	table.insert(main, ui.row({
+		ui.button("刷新版本", {
+			icon = "refresh",
+			size = "sm",
+			key = "packs-refresh",
+			click = "packs-refresh",
+		}),
 	}))
 	if #state.packs == 0 then
 		table.insert(main, ui.text(ui.span("没有可展示的技能包", "muted")))
@@ -1899,6 +1953,10 @@ tern.block.define(BLOCK_ID, {
 		if act == "view-packs" then
 			state.view = "packs"
 			state.message = nil
+			return
+		end
+		if act == "packs-refresh" then
+			checkPacks(state, cx)
 			return
 		end
 		if string.sub(act, 1, 15) == "copy-pack-repo:" then
