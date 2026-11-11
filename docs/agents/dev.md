@@ -29,12 +29,12 @@ tern --control 17311 .
 tern inspect
 ```
 
-看到该 tab 的 cwd 就是仓库根才继续。另开一个终端：
+看到该 tab 的 cwd 就是仓库根才继续。另开一个终端（Git Bash，同上；裸 `bash` 会被守卫以退出码 2 拦下）：
 
 ```bash
-bash test/e2e.sh --port 17311
+"/c/Program Files/Git/bin/bash.exe" test/e2e.sh --port 17311
 # 或让脚本自己探 17311–17315：
-bash test/all.sh --e2e-only
+"/c/Program Files/Git/bin/bash.exe" test/all.sh --e2e-only
 ```
 
 测完关掉自己开的那个窗口：

@@ -14,14 +14,14 @@ case "${WSL_DISTRO_NAME:-}" in
 "") ;;
 *)
 	echo "检测到 WSL（WSL_DISTRO_NAME=$WSL_DISTRO_NAME）：本脚本要在 Git Bash 下跑。" >&2
-	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/$(basename "$0") $*" >&2
 	exit 2
 	;;
 esac
 case "$PWD" in
 /mnt/*)
 	echo "当前目录在 WSL 的 /mnt 下：本脚本要在 Git Bash 下跑。" >&2
-	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/$(basename "$0") $*" >&2
 	exit 2
 	;;
 esac
