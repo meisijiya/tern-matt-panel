@@ -64,10 +64,14 @@ export type PackState = {
 	install: { string },
 	installed: boolean,
 	version: string?,
-	-- 状态文案：已装 / 未装；上游检查接上后追加待更新等。
+	-- 状态文案：未装 / 已装 / 待更新 / 已是最新 / 本地较新 / 无法比较 / 检查失败
 	status: string,
-	-- 上游最新版本（检查过后才有）。
+	-- 上游最新版本（检查成功后才有）
 	latest: string?,
+	-- 上次成功检查的时刻文案；检查失败时状态里引用它
+	checkedAt: string?,
+	-- 上次检查是否失败；失败时保留上一次的 latest
+	failed: boolean,
 }
 
 --- 仓库链接：统一 HTTPS 形态，点开就是仓库主页。
@@ -89,7 +93,99 @@ function M.stateOf(pack: Pack, installed: boolean, version: string?): PackState
 		version = version,
 		status = status,
 		latest = nil,
+		checkedAt = nil,
+		failed = false,
 	}
+end
+
+--- 版本段：先去掉 v 前缀，再取数字段。取不到数字视为不可比较。
+local function versionParts(v: string): { number }?
+	local s = v:gsub("^%s*[vV]", "")
+	local parts: { number } = {}
+	for seg in string.gmatch(s, "%d+") do
+		table.insert(parts, tonumber(seg) :: number)
+	end
+	if #parts == 0 then
+		return nil
+	end
+	return parts
+end
+
+--- 本地与上游比较：older / same / newer / unknown。
+function M.compareVersion(localVersion: string?, remoteVersion: string?): string
+	if not localVersion or localVersion == "" or not remoteVersion or remoteVersion == "" then
+		return "unknown"
+	end
+	local a = versionParts(localVersion)
+	local b = versionParts(remoteVersion)
+	if not a or not b then
+		return "unknown"
+	end
+	local n = math.max(#a, #b)
+	for i = 1, n do
+		local x = a[i] or 0
+		local y = b[i] or 0
+		if x < y then
+			return "older"
+		elseif x > y then
+			return "newer"
+		end
+	end
+	return "same"
+end
+
+--- gh 的输出就是一行 tag；空输出表示没查到。
+function M.tagFromOutput(text: string?): string?
+	if type(text) ~= "string" then
+		return nil
+	end
+	local tag = text:match("^%s*(.-)%s*$")
+	if not tag or tag == "" then
+		return nil
+	end
+	return (tag:gsub("^[vV]", ""))
+end
+
+--- 把一次上游检查写进包状态。失败时保留上一次的成功结果，只改状态文案。
+function M.withCheck(ps: PackState, remote: string?, failed: boolean, checkedAt: string?): PackState
+	local out: PackState = {
+		id = ps.id,
+		title = ps.title,
+		purpose = ps.purpose,
+		repo = ps.repo,
+		url = ps.url,
+		install = ps.install,
+		installed = ps.installed,
+		version = ps.version,
+		status = ps.status,
+		latest = ps.latest,
+		checkedAt = ps.checkedAt,
+		failed = failed,
+	}
+	if not ps.installed then
+		-- 没装就没得比：只记下上游版本，状态保持「未装」。
+		out.latest = remote or ps.latest
+		return out
+	end
+	if failed then
+		out.status = if ps.checkedAt
+			then "检查失败 · 上次 " .. ps.checkedAt
+			else "检查失败"
+		return out
+	end
+	out.latest = remote
+	out.checkedAt = checkedAt
+	local cmp = M.compareVersion(ps.version, remote)
+	if cmp == "older" then
+		out.status = "待更新"
+	elseif cmp == "same" then
+		out.status = "已是最新"
+	elseif cmp == "newer" then
+		out.status = "本地较新"
+	else
+		out.status = "无法比较"
+	end
+	return out
 end
 
 --- 版本展示：缺版本时写明未知，不留空。

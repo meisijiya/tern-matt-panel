@@ -2451,6 +2451,114 @@ test("技能包：复制仓库链接与安装指引", function()
 	ok(string.find(copied[2], "claude plugin install answer-me-with-html@answer-me-with-html", 1, true) ~= nil, "安装指引是上游原文")
 end)
 
+
+test("packs.tagFromOutput 去掉 v 前缀与空白", function()
+	eq(packs.tagFromOutput("v0.5.0\n"), "0.5.0")
+	eq(packs.tagFromOutput("  1.2.3 "), "1.2.3")
+	eq(packs.tagFromOutput(""), nil)
+	eq(packs.tagFromOutput(nil), nil)
+end)
+
+test("packs.compareVersion 边界", function()
+	eq(packs.compareVersion("0.5.0", "0.5.0"), "same")
+	eq(packs.compareVersion("0.5.0", "v0.6.0"), "older")
+	eq(packs.compareVersion("1.3.5", "1.3.2"), "newer")
+	eq(packs.compareVersion("0.5", "0.5.0"), "same")
+	eq(packs.compareVersion("abc", "1.0.0"), "unknown")
+	eq(packs.compareVersion(nil, "1.0.0"), "unknown")
+end)
+
+test("packs.withCheck 五种状态与失败保留上次", function()
+	local p = packs.byId("omp-skill-forge")
+	ok(p ~= nil, "找到包")
+	local base = packs.stateOf(p, true, "0.5.0")
+	eq(packs.withCheck(base, "0.6.0", false, "10:00").status, "待更新")
+	eq(packs.withCheck(base, "0.5.0", false, "10:00").status, "已是最新")
+	eq(packs.withCheck(base, "0.4.9", false, "10:00").status, "本地较新")
+	eq(packs.withCheck(base, "abc", false, "10:00").status, "无法比较")
+	local ok1 = packs.withCheck(base, "0.5.0", false, "10:00")
+	local failed1 = packs.withCheck(ok1, nil, true, "11:00")
+	eq(failed1.status, "检查失败 · 上次 10:00")
+	eq(failed1.latest, "0.5.0", "失败时保留上次结果")
+	eq(packs.withCheck(base, nil, true, "11:00").status, "检查失败", "从没成功过就不写上次")
+	eq(packs.withCheck(packs.stateOf(p, false, nil), "9.9.9", false, "10:00").status, "未装")
+end)
+
+--- 装好三套包：登记两套 + 本地目录一套。
+local function installedPacks()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"version":"0.5.0"}'
+end
+
+local function packsBy(st: any): { [string]: any }
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	return by
+end
+
+test("技能包刷新：查上游版本写回状态，不碰任务板", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "repos/devcxl/mattpocock-skills-zh/releases/latest", result = { status = 0, stdout = "v1.3.5\n" } },
+		{ match = "repos/QingYunA/answer-me-with-html/releases/latest", result = { status = 0, stdout = "v0.5.11\n" } },
+		{ match = "repos/meisijiya/omp-skill-forge/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	local base = #processCalls
+	local lastLoad = st.lastLoadAt
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(#processCalls - base, 3, "三套各查一次")
+	local by = packsBy(st)
+	eq(by["mattpocock"].status, "已是最新")
+	eq(by["answer-me-with-html"].status, "待更新")
+	eq(by["omp-skill-forge"].status, "已是最新")
+	eq(st.lastLoadAt, lastLoad, "不动任务板的刷新时刻")
+end)
+
+test("技能包刷新：5 分钟内连点不重复查询", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	local base = #processCalls
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(#processCalls - base, 3, "第二次被节流")
+	ok(string.find(tostring(st.message), "刚查过", 1, true) ~= nil, "提示节流")
+end)
+
+test("技能包刷新：上游查不到时保留上次结果并标检查失败", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local by = packsBy(st)
+	eq(by["omp-skill-forge"].latest, "0.5.0")
+	-- 绕过节流再来一次，这次上游查不到
+	st.packsCheckedAt = nil
+	processFixtures = {}
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	by = packsBy(st)
+	eq(by["omp-skill-forge"].latest, "0.5.0", "保留上次成功的结果")
+	ok(string.find(by["omp-skill-forge"].status, "检查失败", 1, true) == 1, "标检查失败")
+end)
+
+test("技能包视图有独立刷新按钮", function()
+	installedPacks()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "packs"
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "刷新版本"), "视图里有自己的刷新")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))
