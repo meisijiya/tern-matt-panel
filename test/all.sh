@@ -11,6 +11,26 @@
 # 依赖：luau CLI、tern（能起 --control 窗口）、gh（已登录）、本机已装中文技能包。
 set -eu
 
+# 必须在 Git Bash（MSYS）下跑。WSL 的 bash 看不到 /c/... 与 D:/... 路径，
+# 会给出「没有 luau-analyze」「找不到仓库」这类假警报，实测排查成本很高。
+# 判据用 PWD：本机 bash 首项解析到 C:\WINDOWS\system32\bash.exe（WSL）。
+case "${WSL_DISTRO_NAME:-}" in
+"") ;;
+*)
+	echo "检测到 WSL（WSL_DISTRO_NAME=$WSL_DISTRO_NAME）：本脚本要在 Git Bash 下跑。" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	exit 2
+	;;
+esac
+case "$PWD" in
+/mnt/*)
+	echo "当前目录在 WSL 的 /mnt 下：本脚本要在 Git Bash 下跑。" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	exit 2
+	;;
+esac
+
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 转发给 Git Bash 的那份参数：解析会 shift 掉 $@，先留一份。
 forward=("$@")

@@ -215,6 +215,11 @@ ternStub = {
 		end,
 		button = function(t: string?, props: any?): any
 			local p: { [string]: any } = props or {}
+			-- 真机只认 actions.click（顶层 click 被静默忽略 → 死按钮）。
+			-- 桩在这里直接报错，免得单测把「点了没反应」放过去。
+			if type(p.click) == "string" then
+				error("按钮的点击必须挂在 actions.click 上：" .. tostring(t))
+			end
 			p.t = t
 			return { k = "button", p = p }
 		end,
@@ -2760,30 +2765,37 @@ test("技能包刷新：重新探测不丢上次查到的版本", function()
 end)
 
 
-test("技能包视图：每个按钮的点击都挂在 actions.click 上", function()
-	installedPacks()
-	local st = panel.init(mkCx(120), {}, nil)
-	st.view = "packs"
-	local clicks: { string } = {}
-	local function walk(n: any)
-		if type(n) ~= "table" then
-			return
-		end
-		if n.k == "button" then
-			local a = type(n.p) == "table" and n.p.actions or nil
-			ok(type(a) == "table" and type(a.click) == "string", "按钮没挂 actions.click：" .. tostring(n.p and n.p.t))
-			table.insert(clicks, a.click)
-		end
-		for _, kid in ipairs(n.c or {}) do
-			walk(kid)
+--- 收一棵树里的按钮，逐个要求点击挂在 actions.click 上（真机只认这个字段）。
+local function buttonClickViolations(node: any, out: { string })
+	if type(node) ~= "table" then
+		return out
+	end
+	if node.k == "button" then
+		local a = type(node.p) == "table" and node.p.actions or nil
+		if type(a) ~= "table" or type(a.click) ~= "string" then
+			table.insert(out, tostring(node.p and node.p.t))
 		end
 	end
-	walk(panel.view(st, mkCx(120)).main)
-	ok(util.contains(clicks, "packs-refresh"), "刷新版本按钮接上了动作")
-	ok(util.contains(clicks, "copy-pack-repo:omp-skill-forge"), "复制链接按钮接上了动作")
-	ok(util.contains(clicks, "copy-pack-install:omp-skill-forge"), "复制安装按钮接上了动作")
-end)
+	for _, kid in ipairs(node.c or {}) do
+		buttonClickViolations(kid, out)
+	end
+	return out
+end
 
+test("所有视图的按钮点击都挂在 actions.click 上", function()
+	local views: { string } = { "skills", "board", "map", "ticket", "packs" }
+	for _, v in ipairs(views) do
+		local st = nextStepState()
+		st.view = v
+		if v == "map" then
+			st.mapSel = 1
+		elseif v == "ticket" then
+			st.ticket = st.tickets[1]
+		end
+		local bad = buttonClickViolations(panel.view(st, mkCx(120)).main, {})
+		eq(#bad, 0, v .. " 视图里有按钮没挂 actions.click：" .. table.concat(bad, "、"))
+	end
+end)
 
 test("技能包：登记里没有时回退插件缓存里的同名副本", function()
 	-- 不写登记文件，只在缓存目录放一份

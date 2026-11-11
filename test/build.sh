@@ -7,6 +7,26 @@
 # luau 依次取 $1、$TERNS_LUAU、PATH 上的 luau。
 set -eu
 
+# 必须在 Git Bash（MSYS）下跑。WSL 的 bash 看不到 /c/... 与 D:/... 路径，
+# 会给出「没有 luau-analyze」「找不到仓库」这类假警报，实测排查成本很高。
+# 判据用 PWD：本机 bash 首项解析到 C:\WINDOWS\system32\bash.exe（WSL）。
+case "${WSL_DISTRO_NAME:-}" in
+"") ;;
+*)
+	echo "检测到 WSL（WSL_DISTRO_NAME=$WSL_DISTRO_NAME）：本脚本要在 Git Bash 下跑。" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	exit 2
+	;;
+esac
+case "$PWD" in
+/mnt/*)
+	echo "当前目录在 WSL 的 /mnt 下：本脚本要在 Git Bash 下跑。" >&2
+	echo "  \"/c/Program Files/Git/bin/bash.exe\" test/build.sh /c/tools/luau/luau.exe" >&2
+	exit 2
+	;;
+esac
+
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 runner="$here/run_tests.luau"
@@ -21,8 +41,19 @@ trap 'rm -f "$out"' EXIT
 # 拼接会把所有模块先定义好，于是「host 里忘了 require 某个模块」这种错
 # 在单测里永远抓不到 —— 真机才炸（await failed / runtime error）。
 # 所以先静态查一遍：代码里用到的 lib 模块，宿主/窗口文件必须自己 require。
+# 顺序有依赖：被依赖的放前面（require 行会被剥掉，后声明的 local 在前文是 nil）。
+mods="util paths packs skills lanes tracker templates commands"
+have="$(ls lib/*.luau 2>/dev/null | sed 's#.*/##; s#\.luau$##' | sort | tr '\n' ' ')"
+want="$(printf '%s\n' $mods | sort | tr '\n' ' ')"
+if [ "$have" != "$want" ]; then
+	echo "模块清单与 lib/ 不一致：新增模块要加进上面的 mods（注意依赖顺序）。" >&2
+	echo "  lib/: $have" >&2
+	echo "  清单: $want" >&2
+	exit 1
+fi
+
 for src in host.luau window.luau; do
-	for mod in util paths skills lanes tracker templates commands packs; do
+	for mod in $mods; do
 		if grep -qE "(^|[^%w_.])${mod}\." "$repo/$src" 2>/dev/null \
 			&& ! grep -qE "require\(\"\./lib/${mod}\"\)" "$repo/$src"; then
 			echo "$src: 用了 ${mod}. 但没有 require(\"./lib/${mod}\")" >&2
@@ -79,16 +110,17 @@ fi
 
 
 python_cmd="$(command -v python3 || command -v python)"
-"$python_cmd" - "$runner" "$repo" "$out" <<'PY'
+"$python_cmd" - "$runner" "$repo" "$out" "$mods" <<'PY'
 import io
 import os
 import re
 import sys
 
-runner_path, repo, out_path = sys.argv[1:4]
+runner_path, repo, out_path, mods_arg = sys.argv[1:5]
 MARKER = "-- ==== MODULES ===="
 REQUIRE = re.compile(r'^local \w+ = require\("\./(lib/)?\w+"\)\n', re.M)
-MODULES = ["util", "paths", "skills", "lanes", "tracker", "templates", "commands", "packs"]
+# 与 bash 侧同一份清单：由 lib/ 目录推导，不用手改两处。
+MODULES = mods_arg.split()
 
 
 def source(path):
