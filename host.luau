@@ -315,18 +315,18 @@ end
 local function checkPacks(state: State, cx: BlockCx)
 	local now = nowSec()
 	if not now then
-		state.message = "拿不到时间，跳过版本检查"
+		state.message = "版本检查：拿不到时间，跳过"
 		cx:render()
 		return
 	end
 	if state.packsCheckedAt and now - state.packsCheckedAt < PACK_CHECK_SEC then
-		state.message = string.format("刚查过，%d 秒后再查", PACK_CHECK_SEC - (now - state.packsCheckedAt))
+		state.message = string.format("版本检查：刚查过，%d 秒后再查", PACK_CHECK_SEC - (now - state.packsCheckedAt))
 		cx:render()
 		return
 	end
 	local checked = 0
 	local remaining = 0
-	state.message = "检查上游版本…"
+	state.message = "版本检查：进行中…"
 
 	--- 每次查完一套就收敛一次；全部回来时把「检查中」换成结论。
 	local function finish(id: string, tag: string?)
@@ -350,7 +350,7 @@ local function checkPacks(state: State, cx: BlockCx)
 				failedCount += 1
 			end
 		end
-		state.message = string.format("已查 %d 套 · %d 套待更新", checked, outdated)
+		state.message = string.format("版本检查：已查 %d 套 · %d 套待更新", checked, outdated)
 		if failedCount > 0 then
 			state.message ..= string.format(" · %d 套检查失败", failedCount)
 		end
@@ -393,7 +393,7 @@ local function checkPacks(state: State, cx: BlockCx)
 	if checked > 0 then
 		state.packsCheckedAt = now
 	else
-		state.message = "没有已安装的技能包，没什么可查"
+		state.message = "版本检查：没有已安装的技能包，没什么可查"
 	end
 	cx:render()
 end

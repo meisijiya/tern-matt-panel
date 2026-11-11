@@ -508,7 +508,7 @@ case_run "技能包视图列出三套外部包，刷新按钮能点" "$TMP/packs
 	"has:answer-me-with-html" \
 	"has:omp-skill-forge" \
 	"has:刷新版本" \
-	"click-btn-until:刷新版本:上游:15000"
+	"click-btn-until:刷新版本:版本检查:15000"
 
 # ---------------------------------------------------------------- 汇总 ----
 
