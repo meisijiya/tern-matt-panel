@@ -909,7 +909,7 @@ local function packsView(state: State): Node
 			icon = "refresh",
 			size = "sm",
 			key = "packs-refresh",
-			click = "packs-refresh",
+			actions = { click = "packs-refresh" },
 		}),
 	}))
 	if #state.packs == 0 then

@@ -2738,6 +2738,31 @@ test("技能包刷新：重新探测不丢上次查到的版本", function()
 	eq(p.status, "待更新", "状态没退回已装")
 end)
 
+
+test("技能包视图：每个按钮的点击都挂在 actions.click 上", function()
+	installedPacks()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "packs"
+	local clicks: { string } = {}
+	local function walk(n: any)
+		if type(n) ~= "table" then
+			return
+		end
+		if n.k == "button" then
+			local a = type(n.p) == "table" and n.p.actions or nil
+			ok(type(a) == "table" and type(a.click) == "string", "按钮没挂 actions.click：" .. tostring(n.p and n.p.t))
+			table.insert(clicks, a.click)
+		end
+		for _, kid in ipairs(n.c or {}) do
+			walk(kid)
+		end
+	end
+	walk(panel.view(st, mkCx(120)).main)
+	ok(util.contains(clicks, "packs-refresh"), "刷新版本按钮接上了动作")
+	ok(util.contains(clicks, "copy-pack-repo:omp-skill-forge"), "复制链接按钮接上了动作")
+	ok(util.contains(clicks, "copy-pack-install:omp-skill-forge"), "复制安装按钮接上了动作")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))
