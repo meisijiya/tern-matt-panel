@@ -22,7 +22,7 @@ trap 'rm -f "$out"' EXIT
 # 在单测里永远抓不到 —— 真机才炸（await failed / runtime error）。
 # 所以先静态查一遍：代码里用到的 lib 模块，宿主/窗口文件必须自己 require。
 for src in host.luau window.luau; do
-	for mod in util paths skills lanes tracker templates commands; do
+	for mod in util paths skills lanes tracker templates commands packs; do
 		if grep -qE "(^|[^%w_.])${mod}\." "$repo/$src" 2>/dev/null \
 			&& ! grep -qE "require\(\"\./lib/${mod}\"\)" "$repo/$src"; then
 			echo "$src: 用了 ${mod}. 但没有 require(\"./lib/${mod}\")" >&2
@@ -88,7 +88,7 @@ import sys
 runner_path, repo, out_path = sys.argv[1:4]
 MARKER = "-- ==== MODULES ===="
 REQUIRE = re.compile(r'^local \w+ = require\("\./(lib/)?\w+"\)\n', re.M)
-MODULES = ["util", "paths", "skills", "lanes", "tracker", "templates", "commands"]
+MODULES = ["util", "paths", "skills", "lanes", "tracker", "templates", "commands", "packs"]
 
 
 def source(path):
