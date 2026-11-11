@@ -2868,10 +2868,13 @@ test("注入看门狗：窗口半边没回执时给出排障提示", function()
 		end
 	end
 	ok(fired, "挂了看门狗定时器")
-	eq(st.pendingSeq, nil, "清掉待回执")
-	ok(string.find(tostring(st.message), "窗口半边没响应", 1, true) ~= nil, "提示是排障话术")
+	eq(st.pendingSeq, seq, "保留待回执，迟到回执还要认领")
+	ok(string.find(tostring(st.message), "还没回执", 1, true) ~= nil, "提示是排障话术")
 	ok(string.find(tostring(st.message), "tern plugin reload", 1, true) ~= nil, "给出具体动作")
-	eq(seq ~= nil, true)
+	-- 窗口半边迟到：回执到了要能覆盖成「已填入」，不能被看门狗判死
+	kvStore["inject_result"] = { seq = seq, ok = true, name = "收尾" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	ok(string.find(tostring(st.message), "已填入", 1, true) ~= nil, "迟到回执覆盖成已填入")
 end)
 
 test("注入看门狗：回执先到就不再报错", function()

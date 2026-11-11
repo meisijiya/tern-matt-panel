@@ -815,11 +815,12 @@ local function watchInjection(state: State, cx: BlockCx, seq: number, name: stri
 		return
 	end
 	pcall(timer, 4000, function()
+		-- 不清 pendingSeq：窗口半边可能只是慢（热重载、机器忙），
+		-- 迟到的回执还要靠它认领，否则会把「已填入」判成失败。
 		if state.pendingSeq ~= seq then
 			return
 		end
-		state.pendingSeq = nil
-		state.message = "填入失败：" .. name .. " —— 窗口半边没响应：跑 tern plugin reload 后重开面板"
+		state.message = "还没回执：" .. name .. " —— 窗口半边可能没起来：跑 tern plugin reload 后重开面板；正文可能已经填进输入框"
 		cx:render()
 	end)
 end
