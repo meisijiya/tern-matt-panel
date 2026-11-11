@@ -648,13 +648,13 @@ test("commands.buildTicketCommand", function()
 	ok(string.find(out, "http://ticket", 1, true) ~= nil, "url in ticket cmd")
 	ok(string.find(out, "MyTask", 1, true) ~= nil, "title in ticket cmd")
 	ok(string.find(out, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
-	ok(string.find(out, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "有结束行")
+	ok(string.find(out, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "有结束行")
 end)
 
 test("注入信封拼装", function()
 	local body = "第一行\n第二行"
 	local out = commands.buildInjectionBody("问下一步", body)
-	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====\n")
+	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面是用户输入的内容 =====\n")
 	ok(string.find(out, "· #", 1, true) == nil, "没有票号时不带票号段")
 	local out2 = commands.buildInjectionBody("执行", body, 7)
 	ok(string.find(out2, "===== 注入开始 · tern-matt-panel · 执行 · #7 =====", 1, true) == 1, "有票号时带 · #编号")
@@ -850,17 +850,17 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 
 	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
 	-- 用户就没机会补内容了。整段文本是信封包着的正文。
-	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 =====\n"
+	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面是用户输入的内容 =====\n"
 	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
 	eq(#typed, 2, "多行正文也打进 pane")
 	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
-	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面是用户输入的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
 	eq(string.sub(typed[2].text, -6), "\27[201~", "括号粘贴以结束符收尾")
 	ok(string.find(string.sub(typed[2].text, -6), "\n", 1, true) == nil, "结束符之后没有换行")
 	ok(string.find(string.sub(typed[2].text, -6), "\r", 1, true) == nil, "结束符之后没有回车")
 	ok(string.find(typed[2].text, "===== 注入开始 · tern-matt-panel · 测试 =====", 1, true) ~= nil, "整段以开始行开头")
-	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
 	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
 end)
 
@@ -1014,7 +1014,7 @@ test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	eq(action.kind, "inject", "走普通注入，不起子代理")
 	local body = action.body
 	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 问下一步 =====", 1, true) == 1, "以开始行开头")
-	ok(string.find(body, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "以结束行收尾")
+	ok(string.find(body, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "以结束行收尾")
 	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "正文里有技能命令")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
@@ -1512,7 +1512,7 @@ end)
 
 --- 注入链路的端到端断言：票动作与两个入口都经统一出口，
 --- 载荷首尾是信封行，一次动作只发一次请求。
-local END_LINE = "===== 注入结束 · 下面写你自己的内容 ====="
+local END_LINE = "===== 注入结束 · 下面是用户输入的内容 ====="
 
 test("票动作注入的正文套信封且带票号", function()
 	local st = nextStepState()
@@ -2634,7 +2634,7 @@ test("收尾：注入套信封，未识别仓库不注入", function()
 	eq(action.kind, "inject")
 	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 收尾 =====", 1, true) == 1, "信封动作名是收尾")
 	ok(string.find(action.body, "me/repo", 1, true) ~= nil, "带仓库")
-	ok(string.find(action.body, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "以结束行收尾")
+	ok(string.find(action.body, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "以结束行收尾")
 
 	kvStore["action"] = nil
 	local none = panel.init(mkCx(120), {}, nil)
