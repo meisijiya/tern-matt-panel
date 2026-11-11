@@ -1075,6 +1075,7 @@ local ACTION_CASES = {
 	{ act = "next-step", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "wrap-up", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }
@@ -2557,6 +2558,68 @@ test("技能包视图有独立刷新按钮", function()
 	st.view = "packs"
 	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
 	ok(util.contains(texts, "刷新版本"), "视图里有自己的刷新")
+end)
+
+
+test("收尾模板：七段齐全、越权禁令、报告七段与降级路径", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	local phases = {
+		"第 1 段 · 盘点现状", "第 2 段 · 审 diff", "第 3 段 · 文档更新",
+		"第 4 段 · 清理与收拢", "第 5 段 · 交付", "第 6 段 · 复盘", "第 7 段 · 报告与交接",
+	}
+	for _, t in ipairs(phases) do
+		ok(string.find(body, t, 1, true) ~= nil, "缺阶段：" .. t)
+	end
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "每段要有出口判定")
+	ok(string.find(body, "## 越权禁令", 1, true) ~= nil, "有越权禁令")
+	ok(string.find(body, "删除类动作", 1, true) ~= nil, "删除要等点头")
+	ok(string.find(body, "单向门", 1, true) ~= nil, "合并是单向门")
+	ok(string.find(body, "验收对照", 1, true) ~= nil, "报告要有验收对照")
+	ok(string.find(body, "临时目录", 1, true) ~= nil, "交接写临时目录")
+	ok(string.find(body, "Markdown 报告", 1, true) ~= nil, "缺装降级路径")
+	ok(string.find(body, "回退到开发", 1, true) == nil, "不写没约定的说法")
+	ok(string.find(body, "{repo}", 1, true) == nil, "占位符都填了")
+	ok(string.find(body, "{root}", 1, true) == nil, "占位符都填了")
+end)
+
+test("收尾模板：技能命令前后留空格", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	for _, cmd in ipairs({
+		"/skill:retro", "/skill:code-review", "/skill:forge-router",
+		"/skill:pr", "/skill:answer-me-with-html", "/skill:handoff",
+	}) do
+		local at = string.find(body, cmd, 1, true)
+		ok(at ~= nil, "缺技能引用：" .. cmd)
+		local before = if at == 1 then "\n" else string.sub(body, at - 1, at - 1)
+		local after = string.sub(body, at + #cmd, at + #cmd)
+		ok(before == " " or before == "\n", cmd .. " 前面没隔开")
+		ok(after == " " or after == "\n", cmd .. " 后面没隔开")
+	end
+end)
+
+test("收尾：注入套信封，未识别仓库不注入", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject")
+	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 收尾 =====", 1, true) == 1, "信封动作名是收尾")
+	ok(string.find(action.body, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(action.body, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "以结束行收尾")
+
+	kvStore["action"] = nil
+	local none = panel.init(mkCx(120), {}, nil)
+	none.repo = nil
+	panel.event(none, { ev = "action", act = "wrap-up" }, mkCx(120))
+	eq(kvStore["action"], nil, "没仓库不发注入")
+	ok(string.find(tostring(none.message), "先识别到仓库", 1, true) ~= nil, "提示先识别仓库")
+end)
+
+test("收尾：缺装外部包时仍注入并说明缺口", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	ok(kvStore["action"] ~= nil, "缺装也照样注入")
+	ok(string.find(tostring(st.message), "未装", 1, true) ~= nil, "提示哪套没装")
 end)
 
 -- -------------------------------------------------------------- report ----

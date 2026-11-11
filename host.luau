@@ -1439,6 +1439,7 @@ local function toolbar(state: State, cx: BlockCx): Node
 		{ label = "新增需求", icon = "plus", click = "new-demand" },
 		{ label = "提 BUG", icon = "warning", click = "new-bug" },
 		{ label = "体检", icon = "check", click = "health-check" },
+		{ label = "收尾", icon = "pr", click = "wrap-up" },
 		{ label = "技能", icon = "sparkle", click = "view-skills",
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
@@ -2017,6 +2018,32 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "new-bug" then
 			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" })), "提 BUG")
+			return
+		end
+		if act == "wrap-up" then
+			if not state.repo then
+				state.message = "先识别到仓库，再收尾"
+				return
+			end
+			-- 缺装不拦：模板自带降级路径，这里只把缺口说清。
+			local missing: { string } = {}
+			for _, p in ipairs(state.packs) do
+				if not p.installed then
+					table.insert(missing, p.title)
+				end
+			end
+			inject(
+				state,
+				cx,
+				commands.buildInjectionBody("收尾", templates.render(templates.WRAP_UP, {
+					repo = state.repo,
+					root = state.root or state.repo,
+				})),
+				"收尾"
+			)
+			if #missing > 0 then
+				state.message = "填入中：收尾（未装 " .. table.concat(missing, "、") .. "，相关步骤走降级路径）"
+			end
 			return
 		end
 		if act == "health-check" then
