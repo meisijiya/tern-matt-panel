@@ -804,6 +804,26 @@ local function pickRepo(state: State, cx: BlockCx)
 	})
 end
 
+--- 注入回执看门狗：窗口半边没起来（最典型是热重载读到了半成品文件）时，
+--- 提示会永远停在「填入中」，用户只会觉得按钮坏了。几秒没回执就换成排障提示。
+--- 宿主半边不保证有 tern.timer：拿不到就跳过，不能因此报错。
+local function watchInjection(state: State, cx: BlockCx, seq: number, name: string)
+	local ok, timer = pcall(function()
+		return tern.timer
+	end)
+	if not ok or type(timer) ~= "function" then
+		return
+	end
+	pcall(timer, 4000, function()
+		if state.pendingSeq ~= seq then
+			return
+		end
+		state.pendingSeq = nil
+		state.message = "填入失败：" .. name .. " —— 窗口半边没响应：跑 tern plugin reload 后重开面板"
+		cx:render()
+	end)
+end
+
 --- 把一段文本填进邻近 agent 的输入框（真正执行在窗口半边），不提交。
 --- 用户看过、补完自己的内容再按回车。
 ---
@@ -817,6 +837,7 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
 	state.message = "填入中：" .. name
+	watchInjection(state, cx, seq, name)
 end
 
 --- 读窗口半边写回的结果，更新提示。

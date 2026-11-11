@@ -2853,6 +2853,44 @@ test("技能包刷新结束后给结论，不停在「检查上游版本」", fu
 	ok(string.find(m, "待更新", 1, true) ~= nil, "带上待更新套数")
 end)
 
+
+test("注入看门狗：窗口半边没回执时给出排障提示", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	eq(st.pendingSeq ~= nil, true, "先进入填入中")
+	local seq = st.pendingSeq
+	-- 找出看门狗挂的那个 4 秒定时器并放行
+	local fired = false
+	for _, t in ipairs(timers) do
+		if t.ms == 4000 then
+			t.fn(nil)
+			fired = true
+		end
+	end
+	ok(fired, "挂了看门狗定时器")
+	eq(st.pendingSeq, nil, "清掉待回执")
+	ok(string.find(tostring(st.message), "窗口半边没响应", 1, true) ~= nil, "提示是排障话术")
+	ok(string.find(tostring(st.message), "tern plugin reload", 1, true) ~= nil, "给出具体动作")
+	eq(seq ~= nil, true)
+end)
+
+test("注入看门狗：回执先到就不再报错", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	local seq = st.pendingSeq
+	-- 窗口半边回写成功结果，宿主读一次
+	kvStore["inject_result"] = { seq = seq, ok = true, name = "收尾" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	eq(st.pendingSeq, nil, "回执到达后不再等待")
+	for _, t in ipairs(timers) do
+		if t.ms == 4000 then
+			t.fn(nil)
+		end
+	end
+	ok(string.find(tostring(st.message), "已填入", 1, true) ~= nil, "提示保持已填入")
+	ok(string.find(tostring(st.message), "没响应", 1, true) == nil, "不误报")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))
