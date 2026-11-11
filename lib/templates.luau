@@ -25,6 +25,10 @@ local ASK_BACK = ASK_BACK_BASE .. "\n- [ ] 反问走 /skill:grilling。"
 
 local USER_INPUT_NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 
+--- 用什么样的方式想、以什么姿态做事：十条模板共用，改一次全改。
+local FIRST = "从第一性原理出发。"
+local ROLE = "你是这个仓库的资深工程师：结论要能复核，改动要最小，不确定就问。"
+
 --- 四个票动作模板，按 wayfinder 票类型分（issue #9 决策）。
 --- 执行票挂 ASK_BACK（含 /skill:grilling），其余三类也只调用对应技能。
 local TEMPLATES: { Template } = {
@@ -33,6 +37,9 @@ local TEMPLATES: { Template } = {
 		title = "盘问",
 		body = table.concat({
 			"请使用 /skill:grill-with-docs 技能，对下面的需求做盘问式审查，找出隐藏假设与尚未拍板的决策。",
+			"",
+			FIRST,
+			ROLE,
 			"",
 			"需求链接：{url}",
 			"",
@@ -62,6 +69,9 @@ local TEMPLATES: { Template } = {
 		body = table.concat({
 			"请使用 /skill:prototype 技能，为下面的需求快速做出可运行的原型，验证想法是否站得住。",
 			"",
+			FIRST,
+			ROLE,
+			"",
 			"需求链接：{url}",
 			"",
 			"## 目标",
@@ -89,6 +99,9 @@ local TEMPLATES: { Template } = {
 		title = "调研",
 		body = table.concat({
 			"请使用 /skill:research 技能，围绕下面的主题展开调研，给出结论与一手来源。",
+			"",
+			FIRST,
+			ROLE,
 			"",
 			"需求链接：{url}",
 			"",
@@ -118,6 +131,9 @@ local TEMPLATES: { Template } = {
 		body = table.concat({
 			"请认领并执行下面的任务，完成后回报结论。",
 			"",
+			FIRST,
+			ROLE,
+			"",
 			"任务标题：{title}",
 			"任务链接：{url}",
 			"",
@@ -146,10 +162,6 @@ local TEMPLATES: { Template } = {
 }
 M.TEMPLATES = TEMPLATES
 
---- 公共小节：好几个模板共用同一段话，只写一遍，改一次就全改。
---- 不内嵌技能正文：这里只是「调用哪个技能 + 用什么方式想 + 交付什么」。
-local FIRST = "从第一性原理出发。"
-
 --- 合并后的公共段：调查（先查后问）与工具（gh、每轮收尾给可选做法）合成一段，
 --- 同一要求只在这里写一遍，「问下一步」「提 BUG」「体检」各引用一次。
 local CHECK_AND_TOOLS = table.concat({
@@ -159,6 +171,7 @@ local CHECK_AND_TOOLS = table.concat({
 	"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
 	"- [ ] 提问前用一句话说明已查阅范围。",
 	"- [ ] 票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
+	"- [ ] 不确定该读哪条技能、分支怎么走、派哪个 agent 时，先读 /skill:forge-router 的选路表；读完立刻读对应技能正文，不凭记忆猜名字。",
 	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
 }, "\n")
 
@@ -171,6 +184,7 @@ M.NEXT_STEP = {
 		"/skill:ask-matt",
 		"",
 		FIRST,
+		ROLE,
 		"",
 		"## 目标",
 		"一句话：判断这个项目此刻的下一步该做什么，给出能直接开工的建议。",
@@ -208,6 +222,7 @@ M.NEW_BUG = {
 		"请帮我新增一个 BUG 单（严格遵循 wayfinder 技能规则）。",
 		"",
 		FIRST,
+		ROLE,
 		"",
 		"## 目标",
 		"一句话：为这个仓库建一张把现象说清楚的 BUG 票。",
@@ -259,6 +274,7 @@ M.HEALTH_CHECK = {
 		"请给这个仓库的开放票做一次体检，把游离的票归位（严格遵循 wayfinder 技能规则）。",
 		"",
 		FIRST,
+		ROLE,
 		"",
 		"## 目标",
 		"一句话：找出这个仓库里游离的开放票，给出归位建议。",
@@ -300,6 +316,9 @@ M.WRAP_UP = {
 	body = table.concat({
 		"/skill:retro",
 		"请帮我收尾一次会话：这段工作要结束了，按下面的阶段逐段收口（严格遵循所引用的技能规则）。",
+		"",
+		FIRST,
+		ROLE,
 		"",
 		"## 目标",
 		"一句话：把这次会话的改动审一遍、文档对齐、清理干净、交付出去、复盘，最后交一份报告与交接文档。",
@@ -356,7 +375,7 @@ M.WRAP_UP = {
 		"",
 		"## 第 7 段 · 报告与交接",
 		"- [ ] 报告用 /skill:answer-me-with-html 出：走该技能默认产出目录，不覆写 -o；缺装或跑不起来就出 Markdown 报告，并在结尾注明「可视化未生成」与原因。",
-		"- [ ] 报告按七段写：",
+		"- [ ] 报告按七段写（见下），每段一到三句。",
 		"  1. 目标：来源需求 / 票号 / 地图编号（引用编号，不复制面板快照）。",
 		"  2. 做了什么：commit / PR 范围与关键文件。",
 		"  3. 怎么做的、为什么：关键取舍；问题逐条写「问题 / 原因 / 处理 / 证据」。",
