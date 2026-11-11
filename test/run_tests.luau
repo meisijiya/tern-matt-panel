@@ -2722,6 +2722,22 @@ test("模板口径：每个占位符都在行内带了说明", function()
 	end
 end)
 
+
+test("技能包刷新：重新探测不丢上次查到的版本", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].status, "待更新")
+	-- 刷新（reload）会重新探测本地状态；上游结论要留着
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	local p = packsBy(st)["omp-skill-forge"]
+	eq(p.latest, "0.6.0", "上游版本还在")
+	eq(p.status, "待更新", "状态没退回已装")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 print(string.format("passed=%d failed=%d", passed, failed))

@@ -242,6 +242,10 @@ local function loadPacks(state: State)
 			regText = text
 		end
 	end
+	local old: { [string]: packs.PackState } = {}
+	for _, p in ipairs(state.packs) do
+		old[p.id] = p
+	end
 	for _, pack in ipairs(packs.PACKS) do
 		local installed = false
 		local version: string? = nil
@@ -269,7 +273,13 @@ local function loadPacks(state: State)
 				version = paths.packageVersion(root)
 			end
 		end
-		table.insert(out, packs.stateOf(pack, installed, version))
+		local next_ = packs.stateOf(pack, installed, version)
+		-- 重新探测会丢掉上次查到的上游版本：刷新/切视图后状态不能凭空退回「已装」。
+		local prev = old[pack.id]
+		if prev and prev.checkedAt and next_.installed then
+			next_ = packs.withCheck(next_, prev.latest, prev.failed, prev.checkedAt)
+		end
+		table.insert(out, next_)
 	end
 	state.packs = out
 end
