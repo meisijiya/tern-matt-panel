@@ -133,11 +133,27 @@ ternStub = {
 		end,
 		list = function(path: string): { string }
 			local out = {}
+			local seen: { [string]: boolean } = {}
 			local prefix = path .. "/"
-			for p in pairs(fsFiles) do
-				if string.sub(p, 1, #prefix) == prefix and not string.find(string.sub(p, #prefix + 1), "/", 1, true) then
-					table.insert(out, string.sub(p, #prefix + 1))
+			-- 目录与文件都算条目：真实 fs 的 list 不会只返回文件。
+			local function add(full: string)
+				if string.sub(full, 1, #prefix) ~= prefix then
+					return
 				end
+				local rest = string.sub(full, #prefix + 1)
+				if rest == "" or string.find(rest, "/", 1, true) then
+					return
+				end
+				if not seen[rest] then
+					seen[rest] = true
+					table.insert(out, rest)
+				end
+			end
+			for p in pairs(fsFiles) do
+				add(p)
+			end
+			for d in pairs(fsDirs) do
+				add(d)
 			end
 			table.sort(out)
 			return out
@@ -2766,6 +2782,18 @@ test("技能包视图：每个按钮的点击都挂在 actions.click 上", funct
 	ok(util.contains(clicks, "packs-refresh"), "刷新版本按钮接上了动作")
 	ok(util.contains(clicks, "copy-pack-repo:omp-skill-forge"), "复制链接按钮接上了动作")
 	ok(util.contains(clicks, "copy-pack-install:omp-skill-forge"), "复制安装按钮接上了动作")
+end)
+
+
+test("技能包：登记里没有时回退插件缓存里的同名副本", function()
+	-- 不写登记文件，只在缓存目录放一份
+	fsDirs["C:/home/.omp/plugins/cache/plugins/answer-me-with-html___answer-me-with-html___0.5.10"] = true
+	fsFiles["C:/home/.omp/plugins/cache/plugins/answer-me-with-html___answer-me-with-html___0.5.10/package.json"] = '{"version":"0.5.10"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	local by = packsBy(st)
+	eq(by["answer-me-with-html"].status, "已装")
+	eq(by["answer-me-with-html"].version, "0.5.10")
+	eq(by["mattpocock"].status, "未装")
 end)
 
 -- -------------------------------------------------------------- report ----

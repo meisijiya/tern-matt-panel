@@ -230,6 +230,25 @@ local function loadSkills(state: State)
 	state.lanes = lanes.groupSkills(visible)
 end
 
+--- 登记里没有（或登记副本不存在）时，回退插件缓存里的同名副本：
+--- 目录名形如 <包名>___<来源>___<版本>，与 paths 的兜底口径一致。
+local function cachedPackRoot(id: string, home: string?): string?
+	if not home then
+		return nil
+	end
+	local dir = home .. "/.omp/plugins/cache/plugins"
+	local ok, names = pcall(tern.fs.list, dir)
+	if not ok then
+		return nil
+	end
+	for _, n in ipairs(names) do
+		if string.sub(n, 1, #id + 3) == id .. "___" then
+			return dir .. "/" .. n
+		end
+	end
+	return nil
+end
+
 --- 探外部技能包：登记里查得到就按 installPath 探；只有本地目录的按目录探。
 --- 只读，不联网：待更新检查由显式的刷新触发。
 local function loadPacks(state: State)
@@ -260,6 +279,13 @@ local function loadPacks(state: State)
 				version = entry.version
 				if installed and (not version or version == "") then
 					version = paths.packageVersion(entry.installPath)
+				end
+			end
+			if not installed then
+				local root = cachedPackRoot(pack.id, home)
+				if root then
+					installed = true
+					version = paths.packageVersion(root)
 				end
 			end
 		elseif pack.localRel and home then
