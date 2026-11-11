@@ -133,11 +133,27 @@ ternStub = {
 		end,
 		list = function(path: string): { string }
 			local out = {}
+			local seen: { [string]: boolean } = {}
 			local prefix = path .. "/"
-			for p in pairs(fsFiles) do
-				if string.sub(p, 1, #prefix) == prefix and not string.find(string.sub(p, #prefix + 1), "/", 1, true) then
-					table.insert(out, string.sub(p, #prefix + 1))
+			-- 目录与文件都算条目：真实 fs 的 list 不会只返回文件。
+			local function add(full: string)
+				if string.sub(full, 1, #prefix) ~= prefix then
+					return
 				end
+				local rest = string.sub(full, #prefix + 1)
+				if rest == "" or string.find(rest, "/", 1, true) then
+					return
+				end
+				if not seen[rest] then
+					seen[rest] = true
+					table.insert(out, rest)
+				end
+			end
+			for p in pairs(fsFiles) do
+				add(p)
+			end
+			for d in pairs(fsDirs) do
+				add(d)
 			end
 			table.sort(out)
 			return out
@@ -199,6 +215,11 @@ ternStub = {
 		end,
 		button = function(t: string?, props: any?): any
 			local p: { [string]: any } = props or {}
+			-- 真机只认 actions.click（顶层 click 被静默忽略 → 死按钮）。
+			-- 桩在这里直接报错，免得单测把「点了没反应」放过去。
+			if type(p.click) == "string" then
+				error("按钮的点击必须挂在 actions.click 上：" .. tostring(t))
+			end
 			p.t = t
 			return { k = "button", p = p }
 		end,
@@ -632,13 +653,13 @@ test("commands.buildTicketCommand", function()
 	ok(string.find(out, "http://ticket", 1, true) ~= nil, "url in ticket cmd")
 	ok(string.find(out, "MyTask", 1, true) ~= nil, "title in ticket cmd")
 	ok(string.find(out, "===== 注入开始 · tern-matt-panel · 执行 · #12 =====", 1, true) == 1, "开始行带动作名与票号")
-	ok(string.find(out, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "有结束行")
+	ok(string.find(out, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "有结束行")
 end)
 
 test("注入信封拼装", function()
 	local body = "第一行\n第二行"
 	local out = commands.buildInjectionBody("问下一步", body)
-	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面写你自己的内容 =====\n")
+	eq(out, "===== 注入开始 · tern-matt-panel · 问下一步 =====\n" .. body .. "\n===== 注入结束 · 下面是用户输入的内容 =====\n")
 	ok(string.find(out, "· #", 1, true) == nil, "没有票号时不带票号段")
 	local out2 = commands.buildInjectionBody("执行", body, 7)
 	ok(string.find(out2, "===== 注入开始 · tern-matt-panel · 执行 · #7 =====", 1, true) == 1, "有票号时带 · #编号")
@@ -834,17 +855,17 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 
 	-- 多行正文必须包成括号粘贴：否则终端会在第一个换行处把消息发出去，
 	-- 用户就没机会补内容了。整段文本是信封包着的正文。
-	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面写你自己的内容 =====\n"
+	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面是用户输入的内容 =====\n"
 	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
 	eq(#typed, 2, "多行正文也打进 pane")
 	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
-	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面是用户输入的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
 	eq(string.sub(typed[2].text, -6), "\27[201~", "括号粘贴以结束符收尾")
 	ok(string.find(string.sub(typed[2].text, -6), "\n", 1, true) == nil, "结束符之后没有换行")
 	ok(string.find(string.sub(typed[2].text, -6), "\r", 1, true) == nil, "结束符之后没有回车")
 	ok(string.find(typed[2].text, "===== 注入开始 · tern-matt-panel · 测试 =====", 1, true) ~= nil, "整段以开始行开头")
-	ok(string.find(typed[2].text, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
+	ok(string.find(typed[2].text, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "整段以结束行收尾")
 	ok(string.find(typed[2].text, "\r", 1, true) == nil, "不带回车，不提交")
 end)
 
@@ -998,7 +1019,7 @@ test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	eq(action.kind, "inject", "走普通注入，不起子代理")
 	local body = action.body
 	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 问下一步 =====", 1, true) == 1, "以开始行开头")
-	ok(string.find(body, "===== 注入结束 · 下面写你自己的内容 =====", 1, true) ~= nil, "以结束行收尾")
+	ok(string.find(body, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "以结束行收尾")
 	ok(string.find(body, "/skill:ask-matt", 1, true) ~= nil, "正文里有技能命令")
 	ok(string.find(body, "me/repo", 1, true) ~= nil, "带仓库")
 	ok(string.find(body, "#12 wayfinder:task", 1, true) == nil, "不再搬票面")
@@ -1041,6 +1062,21 @@ local function allText(node: any, out: { string }): { string }
 			table.insert(out, p.label.t)
 		end
 	end
+	-- 卡片标题走 node.head，不在 p 里；不读它就会漏掉卡名。
+	local head = node.head
+	if type(head) == "table" then
+		if type(head.t) == "string" then
+			table.insert(out, head.t)
+		else
+			for _, sp in ipairs(head) do
+				if type(sp) == "string" then
+					table.insert(out, sp)
+				elseif type(sp) == "table" and type(sp.t) == "string" then
+					table.insert(out, sp.t)
+				end
+			end
+		end
+	end
 	for _, kid in ipairs(node.c or {}) do
 		allText(kid, out)
 	end
@@ -1052,6 +1088,7 @@ end
 local ACTION_CASES = {
 	{ act = "view-skills", want = function(st: any) return st.view == "skills" end },
 	{ act = "view-board", want = function(st: any) return st.view == "board" end },
+	{ act = "view-packs", want = function(st: any) return st.view == "packs" end },
 	{ act = "toggle-sort", want = function(st: any, before: any) return st.sortNewest ~= before.sortNewest end },
 	{ act = "reload", want = function(st: any) return st.message == "已刷新" end },
 	{ act = "pick-repo", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "pick-repo" end },
@@ -1059,6 +1096,12 @@ local ACTION_CASES = {
 	{ act = "next-step", want = function(st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "wrap-up", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "packs-refresh", want = function(st: any)
+		-- 四种文案同前缀：进行中 / 刚查过 / 已查 N 套 / 没什么可查
+		return string.find(tostring(st.message), "版本检查", 1, true) ~= nil
+	end },
+	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }
@@ -1187,7 +1230,7 @@ test("常驻三条：新增需求/提 BUG/体检", function()
 	ok(kvStore["action"] == nil, "选择前不注入")
 end)
 
---- 九个模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
+--- 模板的结构契约：反问小节恰好一次、无待填空位、命令在白名单内、
 --- 末节有用户输入声明、反问路由正确。
 local ALL_TEMPLATES: { { name: string, body: string } } = {}
 for _, tpl in ipairs(templates.TEMPLATES) do
@@ -1199,6 +1242,7 @@ end
 table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates.render(templates.NEXT_STEP, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.renderEntry(e, "me/repo") })
 end
@@ -1215,6 +1259,13 @@ local SKILL_WHITELIST = {
 	-- 收尾提醒用的既有技能名
 	"/skill:to-spec",
 	"/skill:to-tickets",
+	-- 收尾动作引用的技能：审 diff、交付、复盘、可视化、交接、选路
+	"/skill:code-review",
+	"/skill:pr",
+	"/skill:retro",
+	"/skill:answer-me-with-html",
+	"/skill:handoff",
+	"/skill:forge-router",
 }
 -- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
 local function findPlaceholder(body: string): string?
@@ -1230,8 +1281,8 @@ local function findPlaceholder(body: string): string?
 	return nil
 end
 
-test("九个模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 9, "九个模板都收进来了")
+test("每条模板都挂反问小节且只挂一次", function()
+	eq(#ALL_TEMPLATES, 10, "十条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -1241,14 +1292,14 @@ test("九个模板都挂反问小节且只挂一次", function()
 	end
 end)
 
-test("九个模板正文里没有待填空位", function()
+test("每条模板正文里没有待填空位", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local hit = findPlaceholder(t.body)
 		ok(hit == nil, t.name .. " 没有占位（命中：" .. tostring(hit) .. "）")
 	end
 end)
 
-test("九个模板的主技能命令都在白名单内", function()
+test("模板里的技能命令都在白名单内", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		for cmd in string.gmatch(t.body, "/skill:[%w%-_]+") do
 			local allowed = false
@@ -1262,7 +1313,7 @@ test("九个模板的主技能命令都在白名单内", function()
 	end
 end)
 
-test("九个模板末节都有用户输入声明", function()
+test("每条模板末节都有用户输入声明", function()
 	local NOTE = "结束行之后的文字是用户输入，按它执行；与上面冲突时以用户输入为准。"
 	for _, t in ipairs(ALL_TEMPLATES) do
 		ok(string.find(t.body, USER_INPUT_MARK, 1, true) ~= nil, t.name .. " 有用户输入声明")
@@ -1272,10 +1323,10 @@ test("九个模板末节都有用户输入声明", function()
 	end
 end)
 
-test("反问路由：盘问与需求已明确不挂 grilling，其余七个挂", function()
+test("反问路由：盘问、需求已明确、收尾不挂 grilling，其余挂", function()
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local has = string.find(t.body, "/skill:grilling", 1, true) ~= nil
-		if t.name == "盘问" or t.name == "入口·需求已明确" then
+		if t.name == "盘问" or t.name == "入口·需求已明确" or t.name == "收尾" then
 			ok(not has, t.name .. " 不挂 grilling")
 		else
 			ok(has, t.name .. " 挂 grilling")
@@ -1466,7 +1517,7 @@ end)
 
 --- 注入链路的端到端断言：票动作与两个入口都经统一出口，
 --- 载荷首尾是信封行，一次动作只发一次请求。
-local END_LINE = "===== 注入结束 · 下面写你自己的内容 ====="
+local END_LINE = "===== 注入结束 · 下面是用户输入的内容 ====="
 
 test("票动作注入的正文套信封且带票号", function()
 	local st = nextStepState()
@@ -2301,6 +2352,505 @@ test("地图正文在途时重复点击只发一次请求", function()
 	flushProcess()
 	eq(st.maps[1].bodyLoaded, true)
 	eq(st.maps[1].fog, "- 慢请求")
+end)
+
+
+-- ------------------------------------------------------------ 外部技能包 ----
+
+--- 文本里是否出现过某段话（文本收集器按 span 切开，版本号常带着缩进）。
+local function hasText(list: { string }, needle: string): boolean
+	for _, v in ipairs(list) do
+		if string.find(v, needle, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+test("packs 清单：三套、id 唯一、都带仓库与安装指引", function()
+	eq(#packs.PACKS, 3)
+	local seen: { [string]: boolean } = {}
+	for _, p in ipairs(packs.PACKS) do
+		ok(not seen[p.id], "id 重复：" .. p.id)
+		seen[p.id] = true
+		ok(p.repo ~= "", p.id .. " 缺仓库")
+		ok(#p.install > 0, p.id .. " 缺安装指引")
+		ok(p.purpose ~= "", p.id .. " 缺用途")
+	end
+end)
+
+test("packs.versionLabel 缺版本不留空", function()
+	eq(packs.versionLabel(nil), "未知版本")
+	eq(packs.versionLabel(""), "未知版本")
+	eq(packs.versionLabel("0.5.10"), "0.5.10")
+end)
+
+test("packs.stateOf 区分已装与未装", function()
+	local p = packs.byId("omp-skill-forge")
+	ok(p ~= nil, "找到包")
+	local off = packs.stateOf(p, false, nil)
+	eq(off.status, "未装")
+	eq(off.installed, false)
+	eq(off.url, "https://github.com/meisijiya/omp-skill-forge")
+	local on = packs.stateOf(p, true, "0.5.0")
+	eq(on.status, "已装")
+	eq(on.version, "0.5.0")
+end)
+
+--- 造一份登记：两套走登记的包都写进去。
+local function writeRegistry(mattVersion: string?, amVersion: string?)
+	local matt = mattVersion and ('"version":"' .. mattVersion .. '",') or ""
+	local am = amVersion and ('"version":"' .. amVersion .. '",') or ""
+	-- 主技能组的登记键是真实值（不是这里的字面量），所以直接取 paths.REGISTRY_KEY。
+	fsFiles["C:/home/.omp/plugins/installed_plugins.json"] = table.concat({
+		'{"version":2,"plugins":{',
+		'"' .. paths.REGISTRY_KEY .. '":[{"scope":"user","installPath":"C:/p/matt",', matt, '"enabled":true}],',
+		'"answer-me-with-html@answer-me-with-html":[{"scope":"user","installPath":"C:/p/am",', am, '"scope":"user"}]}}',
+	})
+end
+
+test("技能包：登记里的两套按 installPath 判已装，本地目录那套按目录判", function()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"name":"omp-skill-forge","version":"0.5.0"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(#st.packs, 3)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].installed, true)
+	eq(by["mattpocock"].version, "1.3.5")
+	eq(by["answer-me-with-html"].version, "0.5.10")
+	eq(by["omp-skill-forge"].version, "0.5.0")
+end)
+
+test("技能包：登记没写版本时回退安装根的 package.json", function()
+	writeRegistry(nil, nil)
+	fsDirs["C:/p/matt"] = true
+	fsFiles["C:/p/matt/package.json"] = '{"name":"mattpocock-skills","version":"9.9.9"}'
+	fsDirs["C:/p/am"] = true
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].version, "9.9.9")
+	eq(by["answer-me-with-html"].status, "已装")
+	eq(by["omp-skill-forge"].status, "未装")
+end)
+
+test("技能包：登记有条目但目录不在 → 未装", function()
+	writeRegistry("1.3.5", "0.5.10")
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["mattpocock"].status, "未装")
+	eq(by["mattpocock"].version, "1.3.5")
+end)
+
+test("技能包视图：三张卡露出标题、版本与安装指引，窄面板也有入口", function()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"version":"0.5.0"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "packs"
+	local texts = allText(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "mattpocock 技能组"), "有主技能组卡")
+	ok(util.contains(texts, "answer-me-with-html"), "有可视化包卡")
+	ok(util.contains(texts, "omp-skill-forge"), "有选路包卡")
+	ok(hasText(texts, "1.3.5"), "露出主技能组版本")
+	ok(hasText(texts, "0.5.10"), "露出可视化包版本")
+	ok(hasText(texts, "0.5.0"), "露出选路包版本")
+	local tight = panel.init(mkCx(24), {}, nil)
+	local ttexts = buttonTexts(panel.view(tight, mkCx(24)).main, {})
+	ok(util.contains(ttexts, "技能包"), "窄面板也有技能包入口")
+end)
+
+test("技能包：复制仓库链接与安装指引", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	local copied: { string } = {}
+	local cx: any = mkCx(120)
+	cx.copy = function(_self: any, text: string)
+		table.insert(copied, text)
+	end
+	panel.event(st, { ev = "action", act = "copy-pack-repo:omp-skill-forge" }, cx)
+	eq(copied[1], "https://github.com/meisijiya/omp-skill-forge")
+	panel.event(st, { ev = "action", act = "copy-pack-install:answer-me-with-html" }, cx)
+	ok(string.find(copied[2], "claude plugin install answer-me-with-html@answer-me-with-html", 1, true) ~= nil, "安装指引是上游原文")
+end)
+
+
+test("packs.tagFromOutput 去掉 v 前缀与空白", function()
+	eq(packs.tagFromOutput("v0.5.0\n"), "0.5.0")
+	eq(packs.tagFromOutput("  1.2.3 "), "1.2.3")
+	eq(packs.tagFromOutput(""), nil)
+	eq(packs.tagFromOutput(nil), nil)
+end)
+
+test("packs.compareVersion 边界", function()
+	eq(packs.compareVersion("0.5.0", "0.5.0"), "same")
+	eq(packs.compareVersion("0.5.0", "v0.6.0"), "older")
+	eq(packs.compareVersion("1.3.5", "1.3.2"), "newer")
+	eq(packs.compareVersion("0.5", "0.5.0"), "same")
+	eq(packs.compareVersion("abc", "1.0.0"), "unknown")
+	eq(packs.compareVersion(nil, "1.0.0"), "unknown")
+end)
+
+test("packs.withCheck 五种状态与失败保留上次", function()
+	local p = packs.byId("omp-skill-forge")
+	ok(p ~= nil, "找到包")
+	local base = packs.stateOf(p, true, "0.5.0")
+	eq(packs.withCheck(base, "0.6.0", false, "10:00").status, "待更新")
+	eq(packs.withCheck(base, "0.5.0", false, "10:00").status, "已是最新")
+	eq(packs.withCheck(base, "0.4.9", false, "10:00").status, "本地较新")
+	eq(packs.withCheck(base, "abc", false, "10:00").status, "无法比较")
+	local ok1 = packs.withCheck(base, "0.5.0", false, "10:00")
+	local failed1 = packs.withCheck(ok1, nil, true, "11:00")
+	eq(failed1.status, "检查失败 · 上次 10:00")
+	eq(failed1.latest, "0.5.0", "失败时保留上次结果")
+	eq(packs.withCheck(base, nil, true, nil).status, "检查失败", "从没成功过就不写上次")
+	eq(packs.withCheck(packs.stateOf(p, false, nil), "9.9.9", false, "10:00").status, "未装")
+end)
+
+--- 装好三套包：登记两套 + 本地目录一套。
+local function installedPacks()
+	writeRegistry("1.3.5", "0.5.10")
+	fsDirs["C:/p/matt"] = true
+	fsDirs["C:/p/am"] = true
+	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
+	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"version":"0.5.0"}'
+end
+
+local function packsBy(st: any): { [string]: any }
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	return by
+end
+
+test("技能包刷新：查上游版本写回状态，不碰任务板", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "repos/devcxl/mattpocock-skills-zh/releases/latest", result = { status = 0, stdout = "v1.3.5\n" } },
+		{ match = "repos/QingYunA/answer-me-with-html/releases/latest", result = { status = 0, stdout = "v0.5.11\n" } },
+		{ match = "repos/meisijiya/omp-skill-forge/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	local base = #processCalls
+	local lastLoad = st.lastLoadAt
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(#processCalls - base, 3, "三套各查一次")
+	local by = packsBy(st)
+	eq(by["mattpocock"].status, "已是最新")
+	eq(by["answer-me-with-html"].status, "待更新")
+	eq(by["omp-skill-forge"].status, "已是最新")
+	eq(st.lastLoadAt, lastLoad, "不动任务板的刷新时刻")
+end)
+
+test("技能包刷新：5 分钟内连点不重复查询", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	local base = #processCalls
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(#processCalls - base, 3, "第二次被节流")
+	ok(string.find(tostring(st.message), "刚查过", 1, true) ~= nil, "提示节流")
+end)
+
+test("技能包刷新：上游查不到时保留上次结果并标检查失败", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.5.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local by = packsBy(st)
+	eq(by["omp-skill-forge"].latest, "0.5.0")
+	-- 绕过节流再来一次，这次上游查不到
+	st.packsCheckedAt = nil
+	processFixtures = {}
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	by = packsBy(st)
+	eq(by["omp-skill-forge"].latest, "0.5.0", "保留上次成功的结果")
+	ok(string.find(by["omp-skill-forge"].status, "检查失败", 1, true) == 1, "标检查失败")
+end)
+
+test("技能包视图有独立刷新按钮", function()
+	installedPacks()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "packs"
+	local texts = buttonTexts(panel.view(st, mkCx(120)).main, {})
+	ok(util.contains(texts, "刷新版本"), "视图里有自己的刷新")
+end)
+
+
+test("收尾模板：七段齐全、越权禁令、报告七段与降级路径", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	local phases = {
+		"第 1 段 · 盘点现状", "第 2 段 · 审 diff", "第 3 段 · 文档更新",
+		"第 4 段 · 清理与收拢", "第 5 段 · 交付", "第 6 段 · 复盘", "第 7 段 · 报告与交接",
+	}
+	for _, t in ipairs(phases) do
+		ok(string.find(body, t, 1, true) ~= nil, "缺阶段：" .. t)
+	end
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "每段要有出口判定")
+	ok(string.find(body, "## 越权禁令", 1, true) ~= nil, "有越权禁令")
+	ok(string.find(body, "删除类动作", 1, true) ~= nil, "删除要等点头")
+	ok(string.find(body, "单向门", 1, true) ~= nil, "合并是单向门")
+	ok(string.find(body, "验收对照", 1, true) ~= nil, "报告要有验收对照")
+	ok(string.find(body, "临时目录", 1, true) ~= nil, "交接写临时目录")
+	ok(string.find(body, "Markdown 报告", 1, true) ~= nil, "缺装降级路径")
+	ok(string.find(body, "回退到开发", 1, true) == nil, "不写没约定的说法")
+	ok(string.find(body, "{repo}", 1, true) == nil, "占位符都填了")
+	ok(string.find(body, "{root}", 1, true) == nil, "占位符都填了")
+end)
+
+test("收尾模板：技能命令前后留空格", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	for _, cmd in ipairs({
+		"/skill:retro", "/skill:code-review", "/skill:forge-router",
+		"/skill:pr", "/skill:answer-me-with-html", "/skill:handoff",
+	}) do
+		local at = string.find(body, cmd, 1, true)
+		ok(at ~= nil, "缺技能引用：" .. cmd)
+		local before = if at == 1 then "\n" else string.sub(body, at - 1, at - 1)
+		local after = string.sub(body, at + #cmd, at + #cmd)
+		ok(before == " " or before == "\n", cmd .. " 前面没隔开")
+		ok(after == " " or after == "\n", cmd .. " 后面没隔开")
+	end
+end)
+
+test("收尾：注入套信封，未识别仓库不注入", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject")
+	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 收尾 =====", 1, true) == 1, "信封动作名是收尾")
+	ok(string.find(action.body, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(action.body, "===== 注入结束 · 下面是用户输入的内容 =====", 1, true) ~= nil, "以结束行收尾")
+
+	kvStore["action"] = nil
+	local none = panel.init(mkCx(120), {}, nil)
+	none.repo = nil
+	panel.event(none, { ev = "action", act = "wrap-up" }, mkCx(120))
+	eq(kvStore["action"], nil, "没仓库不发注入")
+	ok(string.find(tostring(none.message), "先识别到仓库", 1, true) ~= nil, "提示先识别仓库")
+end)
+
+test("收尾：缺装外部包时仍注入并说明缺口", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	ok(kvStore["action"] ~= nil, "缺装也照样注入")
+	ok(string.find(tostring(st.message), "未装", 1, true) ~= nil, "提示哪套没装")
+end)
+
+
+test("模板口径：每条都有角色句与第一性原理，技能命令前后留空格", function()
+	local bodies: { { name: string, body: string } } = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { name = t.title, body = templates.render(t, { url = "http://x", title = "T" }) })
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK, templates.WRAP_UP }) do
+		table.insert(bodies, { name = t.title, body = templates.render(t, { repo = "me/repo", root = "D:/r" }) })
+	end
+	eq(#bodies, 8, "票动作四条 + 按钮四条")
+	for _, b in ipairs(bodies) do
+		ok(string.find(b.body, "从第一性原理出发。", 1, true) ~= nil, b.name .. " 缺第一性原理")
+		ok(string.find(b.body, "你是这个仓库的资深工程师", 1, true) ~= nil, b.name .. " 缺角色句")
+	end
+end)
+
+test("模板口径：三个按钮共用工具段，且引用了选路表", function()
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK }) do
+		local body = templates.render(t, { repo = "me/repo" })
+		ok(string.find(body, "/skill:forge-router 的选路表", 1, true) ~= nil, t.title .. " 缺选路表")
+		ok(string.find(body, "## 事实核验与工具（先查后问）", 1, true) ~= nil, t.title .. " 缺工具段")
+	end
+end)
+
+test("收尾模板：顺序是 目标 → 触发语义 → 越权禁令 → 七段 → 反问", function()
+	local body = templates.WRAP_UP.body
+	local goal = string.find(body, "## 目标", 1, true)
+	local trig = string.find(body, "## 触发语义", 1, true)
+	local bound = string.find(body, "## 越权禁令", 1, true)
+	local seg1 = string.find(body, "## 第 1 段", 1, true)
+	local ask = string.find(body, "## 反问", 1, true)
+	ok(goal and trig and bound and seg1 and ask, "五段都在")
+	ok(goal < trig and trig < bound and bound < seg1 and seg1 < ask, "顺序要串起来")
+end)
+
+test("模板口径：小节顺序一致（目标 → 核验 → 边界 → 交付）", function()
+	local all = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(all, t)
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK }) do
+		table.insert(all, t)
+	end
+	-- 收尾是多阶段模板，四段锚点换成它自己的顺序，见下一条用例。
+	for _, t in ipairs(all) do
+		local body = t.body
+		local goal = string.find(body, "## 目标", 1, true)
+		local check = string.find(body, "## 事实核验", 1, true) or string.find(body, "## 事实核验与工具", 1, true)
+		ok(goal ~= nil, t.title .. " 缺目标段")
+		ok(check ~= nil, t.title .. " 缺核验段")
+		ok(goal < check, t.title .. " 目标应在核验前")
+		local boundary = string.find(body, "## 边界", 1, true)
+		ok(boundary ~= nil, t.title .. " 缺边界段")
+		ok(check < boundary, t.title .. " 核验应在边界前")
+		local deliver = string.find(body, "## 交付", 1, true)
+		ok(deliver ~= nil, t.title .. " 缺交付段")
+		ok(boundary < deliver, t.title .. " 边界应在交付前")
+	end
+end)
+
+
+test("模板口径：每个占位符都在行内带了说明", function()
+	local bodies: { { name: string, body: string } } = {}
+	for _, t in ipairs(templates.TEMPLATES) do
+		table.insert(bodies, { name = t.title, body = t.body })
+	end
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK, templates.WRAP_UP }) do
+		table.insert(bodies, { name = t.title, body = t.body })
+	end
+	for _, e in ipairs(templates.ENTRIES) do
+		table.insert(bodies, { name = e.injectAction, body = e.body })
+	end
+	for _, b in ipairs(bodies) do
+		-- 每个占位符至少要有一行「说明：{占位符}」的独立写法；
+		-- 正文里顺带出现（比如 gh issue view {url}）不算说明。
+		local keys: { [string]: boolean } = {}
+		for key in string.gmatch(b.body, "{(%w+)}") do
+			keys[key] = true
+		end
+		for key in pairs(keys) do
+			local labelled = false
+			for line in string.gmatch(b.body, "[^\n]+") do
+				local trimmed = (string.gsub(line, "%s+$", ""))
+				if string.sub(trimmed, -(#key + 2)) == "{" .. key .. "}" and string.find(trimmed, "：", 1, true) then
+					labelled = true
+				end
+			end
+			ok(labelled, b.name .. " 的占位符 {" .. key .. "} 没有行内说明")
+		end
+	end
+end)
+
+
+test("技能包刷新：重新探测不丢上次查到的版本", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].status, "待更新")
+	-- 刷新（reload）会重新探测本地状态；上游结论要留着
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	local p = packsBy(st)["omp-skill-forge"]
+	eq(p.latest, "0.6.0", "上游版本还在")
+	eq(p.status, "待更新", "状态没退回已装")
+end)
+
+
+--- 收一棵树里的按钮，逐个要求点击挂在 actions.click 上（真机只认这个字段）。
+local function buttonClickViolations(node: any, out: { string })
+	if type(node) ~= "table" then
+		return out
+	end
+	if node.k == "button" then
+		local a = type(node.p) == "table" and node.p.actions or nil
+		if type(a) ~= "table" or type(a.click) ~= "string" then
+			table.insert(out, tostring(node.p and node.p.t))
+		end
+	end
+	for _, kid in ipairs(node.c or {}) do
+		buttonClickViolations(kid, out)
+	end
+	return out
+end
+
+test("所有视图的按钮点击都挂在 actions.click 上", function()
+	local views: { string } = { "skills", "board", "map", "ticket", "packs" }
+	for _, v in ipairs(views) do
+		local st = nextStepState()
+		st.view = v
+		if v == "map" then
+			st.mapSel = 1
+		elseif v == "ticket" then
+			st.ticket = st.tickets[1]
+		end
+		local bad = buttonClickViolations(panel.view(st, mkCx(120)).main, {})
+		eq(#bad, 0, v .. " 视图里有按钮没挂 actions.click：" .. table.concat(bad, "、"))
+	end
+end)
+
+test("技能包：登记里没有时回退插件缓存里的同名副本", function()
+	-- 不写登记文件，只在缓存目录放一份
+	fsDirs["C:/home/.omp/plugins/cache/plugins/answer-me-with-html___answer-me-with-html___0.5.10"] = true
+	fsFiles["C:/home/.omp/plugins/cache/plugins/answer-me-with-html___answer-me-with-html___0.5.10/package.json"] = '{"version":"0.5.10"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	local by = packsBy(st)
+	eq(by["answer-me-with-html"].status, "已装")
+	eq(by["answer-me-with-html"].version, "0.5.10")
+	eq(by["mattpocock"].status, "未装")
+end)
+
+
+test("技能包：检查失败后再刷新仍保留上次查到的上游版本", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].latest, "0.6.0")
+	-- 上游查不到（release 与 tags 都失败）
+	st.packsCheckedAt = nil
+	processFixtures = {}
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local afterFail = packsBy(st)["omp-skill-forge"]
+	eq(afterFail.latest, "0.6.0", "失败也保住已查到的版本")
+	-- 再点工具条刷新：重新探测不能把版本号清掉
+	panel.event(st, { ev = "action", act = "reload" }, mkCx(120))
+	eq(packsBy(st)["omp-skill-forge"].latest, "0.6.0", "reload 后还在")
+end)
+
+test("技能包：release 查不到时回退 tags", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 1, stdout = "", stderr = "Not Found" } },
+		{ match = "/tags", result = { status = 0, stdout = "v0.7.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local p = packsBy(st)["omp-skill-forge"]
+	eq(p.latest, "0.7.0", "从 tags 拿到版本")
+	eq(p.status, "待更新")
+end)
+
+test("技能包刷新结束后给结论，不停在「检查上游版本」", function()
+	installedPacks()
+	processFixtures = {
+		{ match = "/releases/latest", result = { status = 0, stdout = "v0.6.0\n" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "packs-refresh" }, mkCx(120))
+	local m = tostring(st.message)
+	ok(string.find(m, "已查 3 套", 1, true) ~= nil, "给出结论：" .. m)
+	ok(string.find(m, "待更新", 1, true) ~= nil, "带上待更新套数")
 end)
 
 -- -------------------------------------------------------------- report ----

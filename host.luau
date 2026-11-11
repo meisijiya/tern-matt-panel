@@ -11,6 +11,7 @@
 local ui = tern.ui
 local commands = require("./lib/commands")
 local lanes = require("./lib/lanes")
+local packs = require("./lib/packs")
 local paths = require("./lib/paths")
 local skills = require("./lib/skills")
 local templates = require("./lib/templates")
@@ -54,13 +55,17 @@ local COOLDOWN_SEC = 60
 --- 需要立刻看到最新就按「刷新」或 r。
 local AUTO_REFRESH_SEC = 300
 
+--- 技能包查上游版本的最短间隔：手动刷新才查，且不能连点。
+--- 三套包的检查要各跑一次 gh，配额是共享的。
+local PACK_CHECK_SEC = 300
+
 local ACTION_KEY = "action"
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local SEQ_KEY = "seq"
 local BLOCK_ID = "matt"
 
-type View = "skills" | "board" | "map" | "ticket"
+type View = "skills" | "board" | "map" | "ticket" | "packs"
 
 --- 一次「问下一步」的状态。独立进程跑完才有结论，中间态要能渲染。
 type State = {
@@ -118,6 +123,10 @@ type State = {
 	setupHint: string?,
 	skillVersion: string?,
 	hasSkills: boolean,
+	-- 外部技能包：本地状态（装了没、什么版本）
+	packs: { packs.PackState },
+	-- 上次向上游检查版本的时刻；节流用，打开视图不发请求
+	packsCheckedAt: number?,
 }
 
 --- 空状态。init 与 save 恢复共用。
@@ -157,6 +166,8 @@ local function blank(): State
 		setupHint = nil,
 		skillVersion = nil,
 		hasSkills = false,
+		packs = {},
+		packsCheckedAt = nil,
 	}
 end
 
@@ -217,6 +228,174 @@ local function loadSkills(state: State)
 	end
 	state.skills = visible
 	state.lanes = lanes.groupSkills(visible)
+end
+
+--- 登记里没有（或登记副本不存在）时，回退插件缓存里的同名副本：
+--- 目录名形如 <包名>___<来源>___<版本>，与 paths 的兜底口径一致。
+local function cachedPackRoot(id: string, home: string?): string?
+	if not home then
+		return nil
+	end
+	local dir = home .. "/.omp/plugins/cache/plugins"
+	local ok, names = pcall(tern.fs.list, dir)
+	if not ok then
+		return nil
+	end
+	for _, n in ipairs(names) do
+		if string.sub(n, 1, #id + 3) == id .. "___" then
+			return dir .. "/" .. n
+		end
+	end
+	return nil
+end
+
+--- 探外部技能包：登记里查得到就按 installPath 探；只有本地目录的按目录探。
+--- 只读，不联网：待更新检查由显式的刷新触发。
+local function loadPacks(state: State)
+	local out: { packs.PackState } = {}
+	local home = paths.home()
+	local regText: string? = nil
+	if home then
+		local ok, text = pcall(tern.fs.read, home .. "/.omp/plugins/installed_plugins.json")
+		if ok and type(text) == "string" then
+			regText = text
+		end
+	end
+	local old: { [string]: packs.PackState } = {}
+	for _, p in ipairs(state.packs) do
+		old[p.id] = p
+	end
+	for _, pack in ipairs(packs.PACKS) do
+		local installed = false
+		local version: string? = nil
+		if pack.registryKey then
+			local entry = paths.parseRegistryEntry(regText, pack.registryKey)
+			if entry then
+				local exists = false
+				pcall(function()
+					exists = tern.fs.exists(entry.installPath)
+				end)
+				installed = exists
+				version = entry.version
+				if installed and (not version or version == "") then
+					version = paths.packageVersion(entry.installPath)
+				end
+			end
+			if not installed then
+				local root = cachedPackRoot(pack.id, home)
+				if root then
+					installed = true
+					version = paths.packageVersion(root)
+				end
+			end
+		elseif pack.localRel and home then
+			local root = home .. "/" .. pack.localRel
+			local exists = false
+			pcall(function()
+				exists = tern.fs.exists(root)
+			end)
+			installed = exists
+			if installed then
+				version = paths.packageVersion(root)
+			end
+		end
+		local next_ = packs.stateOf(pack, installed, version)
+		-- 重新探测会丢掉上次查到的上游版本：刷新/切视图后状态不能凭空退回「已装」。
+		local prev = old[pack.id]
+		if prev and prev.checkedAt and next_.installed then
+			next_ = packs.withCheck(next_, prev.latest, prev.failed, prev.checkedAt)
+		end
+		table.insert(out, next_)
+	end
+	state.packs = out
+end
+
+--- 查上游最新版本：逐套跑 gh release，结论写回对应包。
+--- 只由显式刷新触发（打开视图不发请求），失败保留上一次的结果。
+local function checkPacks(state: State, cx: BlockCx)
+	local now = nowSec()
+	if not now then
+		state.message = "版本检查：拿不到时间，跳过"
+		cx:render()
+		return
+	end
+	if state.packsCheckedAt and now - state.packsCheckedAt < PACK_CHECK_SEC then
+		state.message = string.format("版本检查：刚查过，%d 秒后再查", PACK_CHECK_SEC - (now - state.packsCheckedAt))
+		cx:render()
+		return
+	end
+	local checked = 0
+	local remaining = 0
+	state.message = "版本检查：进行中…"
+
+	--- 每次查完一套就收敛一次；全部回来时把「检查中」换成结论。
+	local function finish(id: string, tag: string?)
+		for i, cur in ipairs(state.packs) do
+			if cur.id == id then
+				local failed = tag == nil
+				local label = if failed then cur.checkedAt else fmtTime(nowSec())
+				state.packs[i] = packs.withCheck(cur, tag, failed, label)
+			end
+		end
+		remaining -= 1
+		if remaining > 0 then
+			cx:render()
+			return
+		end
+		local outdated, failedCount = 0, 0
+		for _, cur in ipairs(state.packs) do
+			if cur.status == "待更新" then
+				outdated += 1
+			elseif string.find(cur.status, "检查失败", 1, true) then
+				failedCount += 1
+			end
+		end
+		state.message = string.format("版本检查：已查 %d 套 · %d 套待更新", checked, outdated)
+		if failedCount > 0 then
+			state.message ..= string.format(" · %d 套检查失败", failedCount)
+		end
+		cx:render()
+	end
+
+	for _, ps in ipairs(state.packs) do
+		if not ps.installed then
+			continue
+		end
+		checked += 1
+		remaining += 1
+		local id = ps.id
+		local repo = ps.repo
+		--- 先查 release；只打 tag 的仓库查不到 release，回退 tags。
+		local function onTags(result: any)
+			local tag: string? = nil
+			if result and result.status == 0 then
+				tag = packs.tagFromOutput(tostring(result.stdout or ""))
+			end
+			finish(id, tag)
+		end
+		tern.process.run({
+			"gh", "api", "repos/" .. repo .. "/releases/latest", "--jq", ".tag_name",
+		}):next(function(result: any)
+			local tag: string? = nil
+			if result and result.status == 0 then
+				tag = packs.tagFromOutput(tostring(result.stdout or ""))
+			end
+			if tag then
+				finish(id, tag)
+				return
+			end
+			tern.process.run({
+				"gh", "api", "repos/" .. repo .. "/tags", "--jq", ".[0].name",
+			}):next(onTags)
+		end)
+	end
+	-- 只在真的发出检查时开始计时：一套都没装就别浪费下一个五分钟。
+	if checked > 0 then
+		state.packsCheckedAt = now
+	else
+		state.message = "版本检查：没有已安装的技能包，没什么可查"
+	end
+	cx:render()
 end
 
 --- 拉取成功的 issue 缓存。拉取失败（多半是 GitHub 限流）时退到这里，
@@ -789,6 +968,63 @@ local function skillsView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 技能包区：面板引用的外部包，各一张卡。
+--- 这里只报本地状态与安装方式，不代装、不代改；待更新检查走刷新。
+local function packsView(state: State): Node
+	local main: { Node } = {}
+	table.insert(main, ui.text({
+		ui.span("外部技能包", "strong"),
+		ui.span("  面板引用它们，但不自带、不代装", "muted"),
+	}))
+	-- 自己的刷新：只查这三套包的上游版本，不碰任务板。
+	table.insert(main, ui.row({
+		ui.button("刷新版本", {
+			icon = "refresh",
+			size = "sm",
+			key = "packs-refresh",
+			actions = { click = "packs-refresh" },
+		}),
+	}))
+	if #state.packs == 0 then
+		table.insert(main, ui.text(ui.span("没有可展示的技能包", "muted")))
+		return ui.col(main)
+	end
+	for _, p in ipairs(state.packs) do
+		local kids: { Node } = {
+			ui.text(ui.span(p.purpose, "muted")),
+			ui.text(ui.link(p.url, p.url)),
+		}
+		for _, line in ipairs(p.install) do
+			table.insert(kids, ui.code(line, "bash"))
+		end
+		table.insert(kids, ui.row({
+			ui.button("复制链接", {
+				icon = "link",
+				size = "sm",
+				actions = { click = "copy-pack-repo:" .. p.id },
+			}),
+			ui.button("复制安装", {
+				icon = "copy",
+				size = "sm",
+				actions = { click = "copy-pack-install:" .. p.id },
+			}),
+		}))
+		local head: { any } = {
+			ui.span(p.title, "strong"),
+			ui.span("  " .. packs.versionLabel(p.version), "muted"),
+		}
+		-- 「待更新」要能看出升到哪一版，否则用户只知道有新版。
+		if p.latest then
+			table.insert(head, ui.span("  → 上游 " .. p.latest, "muted"))
+		end
+		table.insert(main, ui.card(head, kids, {
+			icon = "tasks",
+			meta = ui.span(p.status, if p.installed then "muted" else "warning"),
+		}))
+	end
+	return ui.col(main)
+end
+
 --- 任务板区：地图列表与前沿票列表，都是可点的。
 --- 新增需求的两条路：需求还没摸清走 wayfinder 画地图；已经明确就直接 grill 收敛成 spec。
 --- 只甩一条 /wayfinder 会误导需求已经清楚的人。
@@ -1291,10 +1527,13 @@ local function toolbar(state: State, cx: BlockCx): Node
 		{ label = "新增需求", icon = "plus", click = "new-demand" },
 		{ label = "提 BUG", icon = "warning", click = "new-bug" },
 		{ label = "体检", icon = "check", click = "health-check" },
+		{ label = "收尾", icon = "pr", click = "wrap-up" },
 		{ label = "技能", icon = "sparkle", click = "view-skills",
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
 			variant = if state.view == "board" then "primary" else "default" },
+		{ label = "技能包", icon = "tasks", click = "view-packs",
+			variant = if state.view == "packs" then "primary" else "default" },
 		-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
 		-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。
 		-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
@@ -1442,6 +1681,7 @@ tern.block.define(BLOCK_ID, {
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
 		end
 		loadSkills(state)
+		loadPacks(state)
 		loadBoard(state, cx)
 		return state
 	end,
@@ -1451,6 +1691,8 @@ tern.block.define(BLOCK_ID, {
 			return string.format("Matt 面板 · 技能 %d", #state.skills)
 		elseif state.view == "board" then
 			return string.format("Matt 面板 · 前沿 %d", #tracker.computeFrontier(state.tickets))
+		elseif state.view == "packs" then
+			return string.format("Matt 面板 · 技能包 %d", #state.packs)
 		end
 		return string.format("Matt 面板 · %s", state.ticket and state.ticket.title or "票")
 	end,
@@ -1465,6 +1707,8 @@ tern.block.define(BLOCK_ID, {
 			main = ui.col({ toolbar(state, cx), boardView(state, cx) })
 		elseif state.view == "map" then
 			main = ui.col({ toolbar(state, cx), mapView(state, cx) })
+		elseif state.view == "packs" then
+			main = ui.col({ toolbar(state, cx), packsView(state) })
 		else
 			main = ui.col({ toolbar(state, cx), ticketView(state, cx) })
 		end
@@ -1496,6 +1740,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if key.name == "r" and not key.shift then
 			loadSkills(state)
+			loadPacks(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return true
@@ -1794,6 +2039,33 @@ tern.block.define(BLOCK_ID, {
 			state.message = nil
 			return
 		end
+		if act == "view-packs" then
+			state.view = "packs"
+			state.message = nil
+			return
+		end
+		if act == "packs-refresh" then
+			checkPacks(state, cx)
+			return
+		end
+		if string.sub(act, 1, 15) == "copy-pack-repo:" then
+			local p = packs.byId(string.sub(act, 16))
+			if not p then
+				return
+			end
+			cx:copy(packs.repoUrl(p.repo))
+			state.message = "已复制仓库链接：" .. p.title
+			return
+		end
+		if string.sub(act, 1, 18) == "copy-pack-install:" then
+			local p = packs.byId(string.sub(act, 19))
+			if not p then
+				return
+			end
+			cx:copy(table.concat(p.install, "\n"))
+			state.message = "已复制安装指引：" .. p.title
+			return
+		end
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
@@ -1836,6 +2108,32 @@ tern.block.define(BLOCK_ID, {
 			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" })), "提 BUG")
 			return
 		end
+		if act == "wrap-up" then
+			if not state.repo then
+				state.message = "先识别到仓库，再收尾"
+				return
+			end
+			-- 缺装不拦：模板自带降级路径，这里只把缺口说清。
+			local missing: { string } = {}
+			for _, p in ipairs(state.packs) do
+				if not p.installed then
+					table.insert(missing, p.title)
+				end
+			end
+			inject(
+				state,
+				cx,
+				commands.buildInjectionBody("收尾", templates.render(templates.WRAP_UP, {
+					repo = state.repo,
+					root = state.root or state.repo,
+				})),
+				"收尾"
+			)
+			if #missing > 0 then
+				state.message = "填入中：收尾（未装 " .. table.concat(missing, "、") .. "，相关步骤走降级路径）"
+			end
+			return
+		end
 		if act == "health-check" then
 			inject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" })), "体检")
 			return
@@ -1862,6 +2160,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "reload" then
 			loadSkills(state)
+			loadPacks(state)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return
