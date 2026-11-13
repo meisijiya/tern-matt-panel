@@ -2500,6 +2500,31 @@ test("本地后端下存着的旧手动仓库不改后端，也不显示换仓�
 	ok(string.find(joined, "重置仓库", 1, true) == nil, "也没有重置仓库")
 end)
 
+test("本地后端：提 BUG / 体检的措辞按本地契约，不提标签与原生边", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	local bug = kvStore["action"].body
+	ok(string.find(bug, "Status: needs-triage", 1, true) ~= nil, "建单改成写状态行")
+	ok(string.find(bug, "带 bug 标签", 1, true) == nil, "不提 GitHub 标签")
+	ok(string.find(bug, "gh issue list", 1, true) == nil, "查重不提远端命令")
+	ok(string.find(bug, ".scratch/*/issues/", 1, true) ~= nil, "查重改成全扫票目录")
+
+	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	local health = kvStore["action"].body
+	ok(string.find(health, "移到目标工作单元", 1, true) ~= nil, "归位说成移动票文件")
+	ok(string.find(health, "gh 的 issue 依赖接口", 1, true) == nil, "不提原生依赖边")
+end)
+
+test("GitHub 后端的模板措辞逐字不变", function()
+	local vars = templates.backendVars("github", { url = "https://github.com/o/r/issues/1", path = "" })
+	eq(vars.readTicket, "用 gh 读票正文、评论与依赖（gh issue view https://github.com/o/r/issues/1），别只凭标题猜。")
+	eq(vars.ticketTools, "票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。")
+	eq(vars.listOpen, "用 gh 读现有开放票与依赖（gh issue list --state open），别重复建票。")
+	eq(vars.bugMark, "新建的单必须带 bug 标签；还没诊断过就同时带 needs-triage。")
+	eq(vars.healthUntouched, "标签与认领状态")
+end)
+
 test("本地后端：判不出后端时落到 setup 卡，不请求远端", function()
 	processFixtures = {
 		{ match = "rev-parse", result = { status = 0, stdout = "D:/plain\n", stderr = "" } },
