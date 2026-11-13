@@ -41,9 +41,6 @@ function M.parseContract(text: string?): (string?, string?)
 					or string.find(v, "markdown", 1, true) then
 					return "local", value
 				end
-				if string.find(v, "gitlab", 1, true) then
-					return nil, value
-				end
 				return nil, value
 			end
 		end
@@ -51,21 +48,14 @@ function M.parseContract(text: string?): (string?, string?)
 	return nil, nil
 end
 
---- origin 是否指向 GitHub。
---- 裸 owner/repo 与任何含 github.com 的地址算；本地路径与别的托管站不算。
+--- origin 是否指向 GitHub：只认地址里带 github.com 的。
+--- 裸 owner/repo 不算证据 —— 那是面板手动输入框的写法，不会出现在 git remote 里。
 function M.isGithubRemote(url: string?): boolean
 	if not url then
 		return false
 	end
 	local u = util.trim(url):lower()
-	if u == "" then
-		return false
-	end
-	if string.find(u, "github.com", 1, true) then
-		return true
-	end
-	-- 不带主机的裸 owner/repo：面板的手动输入允许这种写法。
-	return u:match("^[%w_.-]+/[%w_.-]+$") ~= nil
+	return u ~= "" and string.find(u, "github.com", 1, true) ~= nil
 end
 
 --- 判后端。约定文件缺失或声明读不懂时才看可观察证据。
@@ -99,10 +89,5 @@ function M.decide(opts: { contractText: string?, originUrl: string?, hasScratch:
 end
 
 M.CONTRACT_PATH = "docs/agents/issue-tracker.md"
-
---- 界面上显示的依据文件名。
-function M.CONTRACT_LABEL(): string
-	return M.CONTRACT_PATH
-end
 
 return M

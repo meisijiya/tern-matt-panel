@@ -400,6 +400,24 @@ test("localtracker 解析票头与阻塞行", function()
 	eq(localtracker.parseType("# x\n**Type:** bogus"), nil, "不认识的类型不算")
 end)
 
+test("localtracker 阻塞行写 3 也能对上 03-x.md", function()
+	local root = "D:/fix-num"
+	local dir = root .. "/.scratch/gamma/issues"
+	fsDirs[root .. "/.scratch"] = true
+	fsDirs[root .. "/.scratch/gamma"] = true
+	fsDirs[dir] = true
+	fsFiles[dir .. "/03-third.md"] = "# 03: 第三张\n**Status:** resolved"
+	fsFiles[dir .. "/04-fourth.md"] = "# 04: 第四张\n**Blocked by:** 3\n**Status:** ready-for-agent"
+	local scan = localtracker.scan(root)
+	local byId: { [string]: any } = {}
+	for _, t in ipairs(scan.tickets) do
+		byId[t.id] = t
+	end
+	eq(#byId["gamma/04"].blockedBy, 1)
+	eq(byId["gamma/04"].blockedBy[1], "gamma/03", "数字写法与零填充编号对齐")
+	eq(byId["gamma/04"].unresolvedBlockers, nil, "不是悬空引用")
+end)
+
 test("localtracker 地图段：中英标题都认，笔记不显示", function()
 	local zh = table.concat({
 		"## 目的地", "到终点", "", "## 笔记", "领域信息", "",
@@ -2460,7 +2478,7 @@ test("本地后端：读不动的文件在任务板上常驻列出", function()
 	ternStub.fs.list = realList
 	st.view = "board"
 	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
-	ok(string.find(text, "1 个文件读不动", 1, true) ~= nil, "报数")
+	ok(string.find(text, "1 个票/地图文件读不动", 1, true) ~= nil, "报数")
 	ok(string.find(text, ".scratch/only/issues/01-broken.md", 1, true) ~= nil, "列出文件")
 end)
 

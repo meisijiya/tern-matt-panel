@@ -1300,7 +1300,7 @@ local function boardView(state: State, cx: BlockCx): Node
 			table.insert(names, e.path)
 		end
 		table.insert(main, ui.text({
-			ui.span(string.format("%d 个文件读不动：", #state.scanErrors), "warning"),
+			ui.span(string.format("%d 个票/地图文件读不动：", #state.scanErrors), "warning"),
 			ui.span(table.concat(names, "、"), "muted"),
 		}))
 	end

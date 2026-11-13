@@ -16,7 +16,6 @@ local tracker = require("./tracker")
 local M = {}
 
 M.SCRATCH = ".scratch"
-M.CONTRACT_PATH = "docs/agents/issue-tracker.md"
 
 --- 关闭类状态：这些取值都视为已关闭。
 local CLOSED_STATUS: { [string]: boolean } = {
@@ -186,6 +185,8 @@ function M.scan(root: string): ScanResult
 		return result
 	end
 	local byId: { [string]: tracker.Ticket } = {}
+	-- 同一张票的另一种写法：阻塞行写 `3`、文件名是 `03-x.md`，按数值对齐。
+	local byNumId: { [string]: string } = {}
 	local pendingBlockers: { { ticket: tracker.Ticket, keys: { string } } } = {}
 
 	for _, effort in ipairs(listDir(scratch)) do
@@ -275,6 +276,7 @@ function M.scan(root: string): ScanResult
 							}
 							table.insert(result.tickets, t)
 							byId[t.id] = t
+							byNumId[effort .. "/" .. tostring(t.number)] = t.id
 							table.insert(pendingBlockers, { ticket = t, keys = M.parseBlockedBy(text) })
 							if map then
 								table.insert(map.tickets, t)
@@ -293,6 +295,9 @@ function M.scan(root: string): ScanResult
 		local t = pending.ticket
 		for _, key in ipairs(pending.keys) do
 			local id = (t.effort or "") .. "/" .. key
+			if byId[id] == nil then
+				id = byNumId[(t.effort or "") .. "/" .. tostring(tonumber(key) or -1)] or id
+			end
 			table.insert(t.blockedBy, id)
 			if byId[id] == nil then
 				t.unresolvedBlockers = true

@@ -31,9 +31,12 @@ function M.buildTicketCommand(
 	ticket: { url: string, title: string, number: number?, path: string?, backend: string? },
 	tpl: templates.Template
 ): string
-	local vars = templates.backendVars(ticket.backend, { url = ticket.url, path = ticket.path })
-	vars.title = ticket.title
-	local body = templates.render(tpl, vars)
+	local body = templates.render(tpl, {
+		url = ticket.url,
+		title = ticket.title,
+		path = ticket.path or "",
+		backend = ticket.backend or "",
+	})
 	return M.buildInjectionBody(tpl.title, body, ticket.number)
 end
 
