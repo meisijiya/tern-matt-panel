@@ -340,7 +340,7 @@ test("backend.decide 顺序：约定文件 > 识别", function()
 	})
 	eq(d.backend, "github", "约定文件优先")
 	eq(d.source, "contract")
-	ok(string.find(d.reason, "约定文件", 1, true) ~= nil, "写明按约定文件")
+	eq(d.reason, backend.CONTRACT_PATH, "依据里就写约定文件路径（前缀由界面加）")
 
 	d = backend.decide({ contractText = "# Issue tracker: Local Markdown\n", originUrl = "https://github.com/a/b.git", hasScratch = false })
 	eq(d.backend, "local", "约定文件声明本地时即使有 origin 也用本地")
@@ -2454,6 +2454,11 @@ test("本地后端：票与地图都有「打开文档」，路径来自扫描�
 	kvStore["action"] = nil
 	panel.event(st, { ev = "action", act = "open-doc" }, mkCx(120))
 	eq(kvStore["action"].body, root .. "/.scratch/alpha/map.md", "打开地图文件")
+	-- 回执认领：宿主写回后提示要变成「已打开」，不能停在「正在打开」。
+	eq(st.pendingSeq, kvStore["action"].seq, "记下待回执的序号")
+	kvStore["inject_result"] = { seq = st.pendingSeq, ok = true, name = ".scratch/alpha/map.md", error = "" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	eq(st.message, "已打开：.scratch/alpha/map.md", "回执到了就改口成「已打开」，不是「已填入」")
 end)
 
 test("本地后端：读不动的文件在任务板上常驻列出", function()

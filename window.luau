@@ -225,10 +225,22 @@ local function handleAction(cx: WindowCx)
 	-- open-doc：把本地后端的票 / 地图 / 规格文件调进 tern 的文档视图，
 	-- 人在那里改（平台自带撤销、自动保存、原子写）。路径由宿主按扫描结果给出。
 	if action.kind == "open-doc" then
-		local okOpen, paneOrErr = pcall(function()
+		local opened, paneOrErr = pcall(function()
 			return cx.docs:open(action.body, { how = "tab" })
 		end)
-		if okOpen and paneOrErr ~= nil then
+		-- 回执走 kv：宿主据此把「已请求打开」改成「已打开」或失败原因，
+		-- 光靠 toast 会一闪而过，用户回头看不到结果。
+		local okOpen = opened and paneOrErr ~= nil
+		pcall(function()
+			tern.kv.set(INJECT_RESULT_KEY, {
+				seq = seq,
+				ok = okOpen,
+				name = tostring(action.name or ""),
+				error = if okOpen then "" else tostring(paneOrErr),
+			})
+			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+		end)
+		if okOpen then
 			cx:toast("info", "已打开文档：" .. tostring(action.name or ""), "改完回面板按 r 刷新。")
 		else
 			cx:toast("error", "打开文档失败", tostring(paneOrErr))

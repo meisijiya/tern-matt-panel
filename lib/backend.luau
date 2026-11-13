@@ -65,7 +65,7 @@ function M.decide(opts: { contractText: string?, originUrl: string?, hasScratch:
 		return {
 			backend = backend,
 			source = "contract",
-			reason = "约定文件 " .. M.CONTRACT_PATH,
+			reason = M.CONTRACT_PATH,
 		}
 	end
 	if declared then

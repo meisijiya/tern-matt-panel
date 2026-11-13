@@ -115,6 +115,8 @@ type State = {
 	-- 通用
 	message: string?,
 	pendingSeq: number?,
+	-- 待回执的请求种类决定回执文案（"inject" / "open-doc"）
+	pendingKind: string?,
 	loading: boolean,
 	repo: string?,
 	-- git 的仓库根（cwd 可能只是仓库里的一层，也可能不在仓库里）
@@ -167,6 +169,7 @@ local function blank(): State
 		legacyFetchedAt = nil,
 		message = nil,
 		pendingSeq = nil,
+		pendingKind = nil,
 		loading = false,
 		repo = nil,
 		root = nil,
@@ -912,7 +915,12 @@ local function sendAction(state: State, cx: BlockCx, kind: string, body: string,
 end
 
 --- 让窗口半边弹输入框问仓库名。当前目录不是 git 仓库、或用户想换仓库时用。
+--- 本地 markdown 后端下换仓库没有意义（换的是 GitHub 的 owner/repo），直接说清。
 local function pickRepo(state: State, cx: BlockCx)
+	if state.backend == "local" then
+		state.message = "当前是本地 markdown 后端，没有 owner/repo 可换"
+		return
+	end
 	tern.kv.set(ACTION_KEY, {
 		seq = nextSeq(),
 		kind = "pick-repo",
@@ -955,6 +963,7 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	end
 	local seq = sendAction(state, cx, "inject", body, name)
 	state.pendingSeq = seq
+	state.pendingKind = "inject"
 	state.message = "填入中：" .. name
 	watchInjection(state, cx, seq, name)
 end
@@ -972,9 +981,11 @@ local function readResult(state: State)
 	end
 	state.pendingSeq = nil
 	local ok2 = value.ok == true
+	local verb = if state.pendingKind == "open-doc" then "打开文档" else "填入"
+	state.pendingKind = nil
 	state.message = if ok2
-		then "已填入：" .. tostring(value.name or "")
-		else "填入失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
+		then (if verb == "打开文档" then "已打开：" else "已填入：") .. tostring(value.name or "")
+		else verb .. "失败：" .. tostring(value.name or "") .. " —— " .. tostring(value.error or "")
 end
 
 --- 票的动作按钮：按票类型给出。
@@ -1499,8 +1510,9 @@ local function openTicketTarget(state: State, cx: BlockCx, t: tracker.Ticket)
 			state.message = "这张票没有对应的本地文件"
 			return
 		end
-		sendAction(state, cx, "open-doc", abs, t.path or abs)
-		state.message = "已请求打开：" .. (t.path or abs) .. "（改完按 r 刷新）"
+		state.pendingSeq = sendAction(state, cx, "open-doc", abs, t.path or abs)
+		state.pendingKind = "open-doc"
+		state.message = "正在打开：" .. (t.path or abs)
 		return
 	end
 	if t.url == "" then
@@ -2529,8 +2541,9 @@ tern.block.define(BLOCK_ID, {
 				state.message = "这个对象没有对应的本地文件"
 				return
 			end
-			sendAction(state, cx, "open-doc", abs, rel or abs)
-			state.message = "已请求打开：" .. (rel or abs) .. "（改完按 r 刷新）"
+			state.pendingSeq = sendAction(state, cx, "open-doc", abs, rel or abs)
+			state.pendingKind = "open-doc"
+			state.message = "正在打开：" .. (rel or abs)
 			return
 		end
 		if act == "open-ticket" then
