@@ -9,8 +9,10 @@
 -- 那一段走 tern.kv 传令：这里写 action 键，窗口半边轮询并执行。
 
 local ui = tern.ui
+local backend = require("./lib/backend")
 local commands = require("./lib/commands")
 local lanes = require("./lib/lanes")
+local localtracker = require("./lib/localtracker")
 local packs = require("./lib/packs")
 local paths = require("./lib/paths")
 local skills = require("./lib/skills")
@@ -121,6 +123,12 @@ type State = {
 	repoManual: boolean,
 	-- 没识别到仓库时给用户的下一步说明（含失败原因）
 	setupHint: string?,
+	-- 后端判定（ADR-0003）：用哪套数据源、依据从哪来
+	backend: string?, -- "github" | "local"；nil = 判不出来
+	backendSource: string?, -- "contract" | "detected" | "manual"
+	backendReason: string?,
+	localRoot: string?, -- 本地后端的仓库根（绝对路径）
+	scanErrors: { { path: string, message: string } },
 	skillVersion: string?,
 	hasSkills: boolean,
 	-- 外部技能包：本地状态（装了没、什么版本）
@@ -164,6 +172,11 @@ local function blank(): State
 		root = nil,
 		repoManual = false,
 		setupHint = nil,
+		backend = nil,
+		backendSource = nil,
+		backendReason = nil,
+		localRoot = nil,
+		scanErrors = {},
 		skillVersion = nil,
 		hasSkills = false,
 		packs = {},
@@ -482,7 +495,30 @@ local function decodeIssues(text: string): { any }?
 	return value
 end
 
---- 拉任务板：地图、票、依赖。用 `gh api graphql` 的游标分页输出。
+--- 记住仓库根：提示词里指文档路径要用真正的根，本地后端的扫描也以它为界。
+--- 面板所在目录可能只是仓库里的一层。
+local function resolveRoot(state: State, cx: BlockCx)
+	local cwd = cx.cwd
+	if not cwd or cwd == "" then
+		return
+	end
+	tern.process.run({ "git", "-C", cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
+		if result and result.status == 0 then
+			local root = util.trim(tostring(result.stdout or ""))
+			if root ~= "" then
+				state.root = root
+				state.localRoot = if state.backend == "local" then root else nil
+			end
+		end
+	end)
+end
+
+--- 拉任务板：先判后端，再按后端取数据。
+---
+--- 后端由目标仓库的跟踪器约定文件决定（ADR-0003），面板不持有选择：
+---   GitHub  → `gh api graphql` 游标分页
+---   本地 md → 扫 `.scratch/<工作单元>/`，一次读进内存
+--- 判不出来就落到 setup 卡，说清卡在哪一步。
 local function loadBoard(state: State, cx: BlockCx)
 	local now = nowSec()
 	if now and state.cooldownUntil and now < state.cooldownUntil then
@@ -498,11 +534,15 @@ local function loadBoard(state: State, cx: BlockCx)
 	state.lastLoadAt = nowSec()
 	state.loading = true
 
-	--- 清空当前仓库的数据，用于识别不到仓库。
+	--- 清空当前仓库的数据，用于判不出后端 / 识别不到仓库。
 	local function clearBoard(reason: string?)
 		state.loading = false
 		state.repo = nil
 		state.repoManual = false
+		state.backend = nil
+		state.backendSource = nil
+		state.backendReason = reason
+		state.localRoot = nil
 		state.tickets = {}
 		state.maps = {}
 		state.openIssues = {}
@@ -521,43 +561,74 @@ local function loadBoard(state: State, cx: BlockCx)
 		cx:render()
 	end
 
-	--- 开始拉某个仓库。manual=true 表示来自「换仓库」，优先于 cwd 的 remote。
-	local function begin(repo: string, manual: boolean)
+	--- 换数据源时把上一个仓库的显示状态清掉，别让旧票挂在新仓库名下。
+	local function clearRows()
+		state.tickets = {}
+		state.maps = {}
+		state.openIssues = {}
+		state.closedIssues = {}
+		state.closedCursor = nil
+		state.closedHasNext = false
+		state.closedLoading = false
+		state.ticket = nil
+		state.ticketBody = nil
+		state.mapSel = nil
+		state.ticketSel = nil
+		state.fetchedAtSec = nil
+		state.legacyFetchedAt = nil
+	end
+
+	--- 开始拉某个 GitHub 仓库。manual=true 表示来自「换仓库」。
+	local function beginGithub(repo: string, manual: boolean)
 		if gen ~= state.boardGen then
 			return
 		end
 		state.setupHint = nil
+		state.backend = "github"
+		state.localRoot = nil
 		if state.repo ~= repo then
-			-- 换了仓库就把上一个仓库的数据清掉，别让旧票挂在新仓库名下。
-			state.tickets = {}
-			state.maps = {}
-			state.openIssues = {}
-			state.closedIssues = {}
-			state.closedCursor = nil
-			state.closedHasNext = false
-			state.closedLoading = false
-			state.ticket = nil
-			state.ticketBody = nil
-			state.mapSel = nil
-			state.ticketSel = nil
-			state.fetchedAtSec = nil
-			state.legacyFetchedAt = nil
+			clearRows()
 		end
 		state.repo = repo
 		state.repoManual = manual
 		fetchIssues(state, cx, repo, gen)
-		-- 面板所在目录可能只是仓库里的一层：提示词里指文档路径要用真正的根。
-		tern.process.run({ "git", "-C", cx.cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
-			if result and result.status == 0 then
-				local root = util.trim(tostring(result.stdout or ""))
-				if root ~= "" then
-					state.root = root
-				end
-			end
-		end)
+		resolveRoot(state, cx)
 	end
 
-	-- 手动指定优先：用户点了「换仓库」就必须真的换，不能被 cwd 的 remote 盖回去。
+	--- 本地 markdown 后端：一次扫描 → 内存快照，不再读盘。
+	local function beginLocal(root: string)
+		if gen ~= state.boardGen then
+			return
+		end
+		state.setupHint = nil
+		state.repo = nil
+		state.repoManual = false
+		state.backend = "local"
+		state.localRoot = root
+		clearRows()
+		local scan = localtracker.scan(root)
+		state.maps = scan.maps
+		state.tickets = scan.tickets
+		state.scanErrors = scan.errors
+		state.loading = false
+		state.fetchedAtSec = nowSec()
+		state.legacyFetchedAt = nil
+		if #scan.errors > 0 then
+			local paths: { string } = {}
+			for i, e in ipairs(scan.errors) do
+				if i > 6 then
+					break
+				end
+				table.insert(paths, e.path)
+			end
+			state.message = string.format("%d 个文件读不动：%s", #scan.errors, table.concat(paths, "、"))
+		elseif #state.tickets == 0 and #state.maps == 0 then
+			state.message = "这个 .scratch 目录里还没有地图与票"
+		end
+		cx:render()
+	end
+
+	--- 手动指定优先：用户点了「换仓库」就必须真的换，不能被 cwd 的 remote 盖回去。
 	-- 只认本窗口那份（pane 相同）；别的窗口的手动仓库与这里无关。
 	local manualRepo: string? = nil
 	do
@@ -568,19 +639,71 @@ local function loadBoard(state: State, cx: BlockCx)
 		end
 	end
 	if manualRepo then
-		begin(manualRepo, true)
+		state.backendSource = "manual"
+		state.backendReason = "按手动指定的仓库"
+		beginGithub(manualRepo, true)
 		return
 	end
 
-	inferRepo(cx, function(found: string?, reason: string?)
+	-- 判后端的依据：仓库根、origin、约定文件、.scratch 目录。
+	local cwd = cx.cwd
+	if not cwd or cwd == "" then
+		clearBoard("宿主没给工作目录")
+		return
+	end
+	tern.process.run({ "git", "-C", cwd, "rev-parse", "--show-toplevel" }):next(function(result: any)
 		if gen ~= state.boardGen then
 			return
 		end
-		if not found then
-			clearBoard(reason)
-			return
+		local root = cwd
+		if result and result.status == 0 then
+			local top = util.trim(tostring(result.stdout or ""))
+			if top ~= "" then
+				root = top
+			end
 		end
-		begin(found, false)
+		state.root = root
+		tern.process.run({ "git", "-C", root, "remote", "get-url", "origin" }):next(function(remote: any)
+			if gen ~= state.boardGen then
+				return
+			end
+			local originUrl: string? = nil
+			if remote and remote.status == 0 then
+				local url = util.trim(tostring(remote.stdout or ""))
+				if url ~= "" then
+					originUrl = url
+				end
+			end
+			local contractText: string? = nil
+			local okRead, text = pcall(tern.fs.read, root .. "/" .. backend.CONTRACT_PATH)
+			if okRead and type(text) == "string" then
+				contractText = text
+			end
+			local okScratch, hasScratch = pcall(tern.fs.exists, root .. "/" .. localtracker.SCRATCH)
+			local decision = backend.decide({
+				contractText = contractText,
+				originUrl = originUrl,
+				hasScratch = okScratch and hasScratch == true,
+			})
+			if decision.backend == "local" then
+				state.backendSource = decision.source
+				state.backendReason = decision.reason
+				beginLocal(root)
+				return
+			end
+			if decision.backend == "github" then
+				local repo = util.parseRemoteUrl(originUrl or "")
+				if not repo then
+					clearBoard("按 GitHub 后端处理，但这条 remote 解析不出 owner/repo：" .. (originUrl or "（没有 origin）"))
+					return
+				end
+				state.backendSource = decision.source
+				state.backendReason = decision.reason
+				beginGithub(repo, false)
+				return
+			end
+			clearBoard(decision.reason)
+		end)
 	end)
 end
 
@@ -873,6 +996,23 @@ local function actionsFor(t: tracker.Ticket): { { kind: string, tpl: string, lab
 	return out
 end
 
+--- 模板里 {repo} 的取值：GitHub 用 owner/repo，本地用仓库根路径。
+local function repoLabel(state: State): string
+	return state.repo or state.localRoot or "（先识别仓库）"
+end
+
+--- 给模板变量补上后端相关的句子与仓库标识。
+local function templateVars(state: State, extra: { [string]: string }?): { [string]: string }
+	local vars = templates.backendVars(state.backend, {})
+	vars.backend = state.backend
+	vars.repo = repoLabel(state)
+	vars.root = state.root or repoLabel(state)
+	for k, v in pairs(extra or {}) do
+		vars[k] = v
+	end
+	return vars
+end
+
 ---------------------------------------------------------------- 渲染
 
 -- 列表的行 id 前缀：区域.列表key.行id。鼠标点选与键盘移动共用同一份选中状态。
@@ -1047,6 +1187,43 @@ local function packsView(state: State): Node
 	return ui.col(main)
 end
 
+--- 后端名与依据来源的展示文案。
+local function backendLabel(state: State): string
+	return if state.backend == "local" then "本地 markdown" else "GitHub"
+end
+
+--- 任务板顶部：数据源是哪个后端、依据从哪来、仓库是什么。
+local function backendHint(state: State): string
+	local source = if state.backendSource == "contract"
+		then "按约定文件"
+		elseif state.backendSource == "manual"
+			then "按手动指定"
+			elseif state.backendSource == "detected"
+				then "按识别"
+				else ""
+	local parts: { string } = {}
+	if source ~= "" then
+		table.insert(parts, source)
+	end
+	if state.backendReason and state.backendReason ~= "" then
+		table.insert(parts, state.backendReason)
+	end
+	return table.concat(parts, " · ")
+end
+
+--- 阻塞边显示：id 里带工作单元时只显示编号部分。
+local function shortId(id: string): string
+	return (string.match(id, "([^/]+)$")) or id
+end
+
+--- 本地后端的票文件/地图文件绝对路径（扫描结果给的是仓库相对路径）。
+local function filePath(state: State, rel: string?): string?
+	if not rel or not state.localRoot then
+		return nil
+	end
+	return state.localRoot .. "/" .. rel
+end
+
 --- 任务板区：地图列表与前沿票列表，都是可点的。
 --- 新增需求的两条路：需求还没摸清走 wayfinder 画地图；已经明确就直接 grill 收敛成 spec。
 --- 只甩一条 /wayfinder 会误导需求已经清楚的人。
@@ -1080,23 +1257,34 @@ local function boardView(state: State, cx: BlockCx): Node
 		table.insert(main, ui.text(ui.span("正在拉取…", "muted")))
 		return ui.col(main)
 	end
-	if state.repo then
+	if state.backend == "local" then
+		table.insert(main, ui.text({
+			ui.span(state.localRoot or "本地仓库", "strong"),
+			ui.span("  本地 markdown", "muted"),
+		}))
+		table.insert(main, ui.text(ui.span(backendHint(state), "muted")))
+	elseif state.repo then
 		table.insert(main, ui.text({
 			ui.span(state.repo, "strong"),
 			ui.span(if state.repoManual
 				then "  手动指定 · 刷新仍用这个仓库"
 				else "  来自当前目录的 git remote", "muted"),
 		}))
+		local hint = backendHint(state)
+		if hint ~= "" then
+			table.insert(main, ui.text(ui.span(hint, "muted")))
+		end
 	end
-	-- 没识别到仓库：说清卡在哪，并给下一步。别把别的仓库的票画在这。
+	-- 判不出后端：说清卡在哪，并给下一步。别把别的仓库的票画在这。
 	if state.setupHint then
-		table.insert(main, ui.text(ui.span("没识别到仓库", "warning")))
+		table.insert(main, ui.text(ui.span("没识别到跟踪器", "warning")))
 		table.insert(main, ui.text({
 			ui.span("原因：", "muted"),
 			ui.span(state.setupHint, "muted"),
 		}))
 		table.insert(main, ui.text(ui.span(
-			"面板按当前目录的 git remote 认仓库。目录要有 .git、且配了 origin。", "muted"
+			"面板按仓库的跟踪器约定文件（" .. backend.CONTRACT_PATH .. "）判后端；没有就按 origin 与 .scratch 识别。"
+				.. "先跑 /skill:setup-matt-pocock-skills 把跟踪器配好。", "muted"
 		)))
 		table.insert(main, ui.row({
 			ui.button("手动指定 owner/repo", {
@@ -1109,7 +1297,7 @@ local function boardView(state: State, cx: BlockCx): Node
 	end
 
 	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。
-	if (#state.tickets == 0 and state.repo) or state.newDemand then
+	if (#state.tickets == 0 and (state.repo or state.backend == "local")) or state.newDemand then
 		table.insert(main, entryChooser())
 	end
 
@@ -1133,14 +1321,19 @@ local function boardView(state: State, cx: BlockCx): Node
 	local mapLp: { [string]: any } = mapList.p or {}
 	mapLp.key = MAP_LIST
 	mapLp.selected = state.mapSel
-	mapLp.empty = { ui.span("没有 wayfinder:map 地图 · 跑 /wayfinder 建一张", "muted") }
+	mapLp.empty = { ui.span(
+			if state.backend == "local" then "没有 map.md · 跑 /skill:wayfinder 建一张" else "没有 wayfinder:map 地图 · 跑 /wayfinder 建一张",
+			"muted"
+		) }
 	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
 	mapList.p = mapLp
 	-- 和 Spec、四组票一样做成可折叠卡片：一张地图占一块地方，
 	-- 项目里有好几张地图时纯列表会把下面的票挤出屏幕。
 	table.insert(main, ui.card(ui.text({
 		ui.span("地图", "strong"),
-		ui.span("  wayfinder:map · 子票挂在它名下", "muted"),
+		ui.span(if state.backend == "local"
+			then "  .scratch/<工作单元>/map.md · 子票挂在它名下"
+			else "  wayfinder:map · 子票挂在它名下", "muted"),
 	}), { mapList }, {
 		icon = "map",
 		meta = ui.span(string.format("%d 张", #state.maps), "muted"),
@@ -1221,7 +1414,7 @@ local function boardView(state: State, cx: BlockCx): Node
 			if #t.blockedBy > 0 then
 				local nums: { string } = {}
 				for _, n in ipairs(t.blockedBy) do
-					table.insert(nums, "#" .. tostring(n))
+					table.insert(nums, "#" .. shortId(n))
 				end
 				table.insert(parts, "等 " .. table.concat(nums, ","))
 			end
@@ -1301,18 +1494,25 @@ local function mapView(state: State, cx: BlockCx): Node
 		return ui.text(ui.span("从任务板点一张地图", "muted"))
 	end
 	local main: { Node } = {}
-	table.insert(main, ui.text({
-		ui.span(m.title, "strong"),
-		ui.span(string.format("  #%d · %d 张子票", m.number, #m.tickets), "muted"),
-	}))
-	table.insert(main, ui.text(ui.link(m.url, m.url, "muted")))
+	local localMode = state.backend == "local"
+	if localMode then
+		table.insert(main, ui.text({
+			ui.span(m.title, "strong"),
+			ui.span(string.format("  %s · %d 张子票", m.path or "", #m.tickets), "muted"),
+		}))
+	else
+		table.insert(main, ui.text({
+			ui.span(m.title, "strong"),
+			ui.span(string.format("  #%d · %d 张子票", m.number, #m.tickets), "muted"),
+		}))
+		table.insert(main, ui.text(ui.link(m.url, m.url, "muted")))
+	end
 
-	-- 地图级前沿：该地图里未关闭、未阻塞、未认领的票
+	-- 地图级前沿：该地图里未关闭、未阻塞、未认领的票。
+	-- 一次算完整张地图的子票集合：单张票算不出来「被同地图的票阻塞」。
 	local mapFrontier: { tracker.Ticket } = {}
-	for _, t in ipairs(m.tickets) do
-		if tracker.computeFrontier({ t })[1] ~= nil then
-			table.insert(mapFrontier, t)
-		end
+	for _, t in ipairs(tracker.computeFrontier(m.tickets)) do
+		table.insert(mapFrontier, t)
 	end
 
 	-- 子票列表：一行要能读出「什么类型、卡在谁那里、还开没开」。
@@ -1324,7 +1524,7 @@ local function mapView(state: State, cx: BlockCx): Node
 		if #t.blockedBy > 0 then
 			local nums: { string } = {}
 			for _, n in ipairs(t.blockedBy) do
-				table.insert(nums, "#" .. tostring(n))
+				table.insert(nums, "#" .. shortId(n))
 			end
 			table.insert(parts, "等 " .. table.concat(nums, ","))
 		end
@@ -1379,6 +1579,10 @@ local function mapView(state: State, cx: BlockCx): Node
 		table.insert(main, ui.rule(ui.span("尚未明确（迷雾）")))
 		table.insert(main, ui.md(m.fog))
 	end
+	if m.decisions and m.decisions ~= "" then
+		table.insert(main, ui.rule(ui.span("已有决策")))
+		table.insert(main, ui.md(m.decisions))
+	end
 	if m.outOfScope and m.outOfScope ~= "" then
 		table.insert(main, ui.rule(ui.span("范围外")))
 		table.insert(main, ui.md(m.outOfScope))
@@ -1391,7 +1595,17 @@ local function mapView(state: State, cx: BlockCx): Node
 			actions = { click = "back-board" },
 		}),
 	}
-	table.insert(main, ui.row(buttons))
+	if localMode and m.path then
+		table.insert(buttons, ui.button("打开文档", {
+			icon = "file",
+			size = "sm",
+			actions = { click = "open-doc" },
+		}))
+		table.insert(main, ui.row(buttons))
+		table.insert(main, ui.text(ui.span("该文件 agent 也会写：改完按 r 刷新。", "warning")))
+	else
+		table.insert(main, ui.row(buttons))
+	end
 
 	return ui.col(main)
 end
@@ -1471,7 +1685,11 @@ local function ticketView(state: State, cx: BlockCx): Node
 		table.insert(head, ui.span("  " .. t.type, "muted"))
 	end
 	table.insert(main, ui.text(head))
-	table.insert(main, ui.text(ui.link(t.url, t.url, "muted")))
+	if state.backend == "local" then
+		table.insert(main, ui.text(ui.span(t.path or "", "muted")))
+	else
+		table.insert(main, ui.text(ui.link(t.url, t.url, "muted")))
+	end
 
 	local buttons: { Node } = {}
 	for _, a in ipairs(actionsFor(t)) do
@@ -1487,11 +1705,21 @@ local function ticketView(state: State, cx: BlockCx): Node
 		size = "sm",
 		actions = { click = "copy-ticket" },
 	}))
-	table.insert(buttons, ui.button("打开链接", {
-		icon = "link",
-		size = "sm",
-		actions = { click = "open-ticket" },
-	}))
+	if state.backend == "local" then
+		if t.path then
+			table.insert(buttons, ui.button("打开文档", {
+				icon = "file",
+				size = "sm",
+				actions = { click = "open-doc" },
+			}))
+		end
+	else
+		table.insert(buttons, ui.button("打开链接", {
+			icon = "link",
+			size = "sm",
+			actions = { click = "open-ticket" },
+		}))
+	end
 	table.insert(buttons, ui.button("返回任务板", {
 		icon = "back",
 		size = "sm",
@@ -1505,9 +1733,35 @@ local function ticketView(state: State, cx: BlockCx): Node
 	if #t.blockedBy > 0 then
 		local nums: { string } = {}
 		for _, n in ipairs(t.blockedBy) do
-			table.insert(nums, "#" .. tostring(n))
+			table.insert(nums, "#" .. shortId(n))
 		end
 		table.insert(main, ui.text(ui.span("等这些先完成：" .. table.concat(nums, "、"), "warning")))
+	end
+
+	-- 本地后端：状态另起一行结构化显示，正文就是票文件全文（扫描时已读进内存）。
+	if state.backend == "local" then
+		if t.path then
+			table.insert(main, ui.text(ui.span("该文件 agent 也会写：你在文档视图里改，agent 可能在别处改同一份文件。", "warning")))
+		end
+		local parts: { string } = { if t.state == "OPEN" then "打开" else "已关闭" }
+		if t.claimed then
+			table.insert(parts, "已认领")
+		end
+		if t.type then
+			table.insert(parts, t.type)
+		end
+		if t.unresolvedBlockers then
+			table.insert(parts, "有阻塞引用指向不存在的票")
+		end
+		table.insert(main, ui.text({
+			ui.span("状态：", "muted"),
+			ui.span(table.concat(parts, " · "), "strong"),
+		}))
+		if t.body ~= "" then
+			table.insert(main, ui.rule(ui.span("票文件")))
+			table.insert(main, ui.md(t.body))
+		end
+		return ui.col(main)
 	end
 
 	-- 正文不在列表查询里（那是 GraphQL 成本的大头），点开这张票才用 REST 取。
@@ -1944,7 +2198,7 @@ tern.block.define(BLOCK_ID, {
 				state.message = "这张票没有类型，没有对应动作"
 				return true
 			end
-			inject(state, cx, commands.buildTicketCommand(t, tpl), t.title)
+			inject(state, cx, commands.buildTicketCommand({ url = t.url, title = t.title, number = t.number, path = t.path, backend = state.backend }, tpl), t.title)
 			return true
 		end
 		if key.name == "c" then
@@ -2090,7 +2344,7 @@ tern.block.define(BLOCK_ID, {
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
-				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.renderEntry(e, state.repo or "（先识别仓库）")), e.title)
+				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.render(e, templateVars(state))), e.title)
 			end
 			return
 		end
@@ -2112,11 +2366,11 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "next-step" then
-			if not state.repo then
+			if not (state.repo or state.backend == "local") then
 				state.message = "先识别到仓库，再问下一步"
 				return
 			end
-			inject(state, cx, commands.buildInjectionBody("问下一步", templates.render(templates.NEXT_STEP, { repo = state.repo })), "问下一步")
+			inject(state, cx, commands.buildInjectionBody("问下一步", templates.render(templates.NEXT_STEP, templateVars(state))), "问下一步")
 			return
 		end
 		if act == "new-demand" then
@@ -2126,11 +2380,11 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "new-bug" then
-			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, { repo = state.repo or "（先识别仓库）" })), "提 BUG")
+			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, templateVars(state))), "提 BUG")
 			return
 		end
 		if act == "wrap-up" then
-			if not state.repo then
+			if not (state.repo or state.backend == "local") then
 				state.message = "先识别到仓库，再收尾"
 				return
 			end
@@ -2144,10 +2398,7 @@ tern.block.define(BLOCK_ID, {
 			inject(
 				state,
 				cx,
-				commands.buildInjectionBody("收尾", templates.render(templates.WRAP_UP, {
-					repo = state.repo,
-					root = state.root or state.repo,
-				})),
+				commands.buildInjectionBody("收尾", templates.render(templates.WRAP_UP, templateVars(state))),
 				"收尾"
 			)
 			if #missing > 0 then
@@ -2156,7 +2407,7 @@ tern.block.define(BLOCK_ID, {
 			return
 		end
 		if act == "health-check" then
-			inject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, { repo = state.repo or "（先识别仓库）" })), "体检")
+			inject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, templateVars(state))), "体检")
 			return
 		end
 		if act == "auto-reload" then
@@ -2226,6 +2477,24 @@ tern.block.define(BLOCK_ID, {
 			state.message = "已复制票信息"
 			return
 		end
+		if act == "open-doc" then
+			-- 路径只来自扫描结果，不拼用户输入。
+			local rel: string? = nil
+			if state.view == "map" then
+				local m = selectedMap(state)
+				rel = m and m.path or nil
+			elseif state.ticket then
+				rel = state.ticket.path
+			end
+			local abs = filePath(state, rel)
+			if not abs then
+				state.message = "这个对象没有对应的本地文件"
+				return
+			end
+			sendAction(state, cx, "open-doc", abs, rel or abs)
+			state.message = "已请求打开：" .. (rel or abs) .. "（改完按 r 刷新）"
+			return
+		end
 		if act == "open-ticket" then
 			local t = state.ticket
 			if not t then
@@ -2240,7 +2509,7 @@ tern.block.define(BLOCK_ID, {
 			if not tpl or not t then
 				return
 			end
-			inject(state, cx, commands.buildTicketCommand(t, tpl), t.title)
+			inject(state, cx, commands.buildTicketCommand({ url = t.url, title = t.title, number = t.number, path = t.path, backend = state.backend }, tpl), t.title)
 		end
 	end,
 

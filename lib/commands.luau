@@ -25,9 +25,15 @@ function M.buildInjectionBody(action: string, body: string, number: number?): st
 	head = head .. " ====="
 	return head .. "\n" .. body .. "\n===== 注入结束 · 下面是用户输入的内容 =====\n"
 end
---- 票注入内容：用对应类型模板渲染，填 url / title，再套统一信封。
-function M.buildTicketCommand(ticket: { url: string, title: string, number: number? }, tpl: templates.Template): string
-	local body = templates.render(tpl, { url = ticket.url, title = ticket.title })
+--- 票注入内容：用对应类型模板渲染，再套统一信封。
+--- 后端相关的句子由 templates.backendVars 按后端取值（模板体只有一份）。
+function M.buildTicketCommand(
+	ticket: { url: string, title: string, number: number?, path: string?, backend: string? },
+	tpl: templates.Template
+): string
+	local vars = templates.backendVars(ticket.backend, { url = ticket.url, path = ticket.path })
+	vars.title = ticket.title
+	local body = templates.render(tpl, vars)
 	return M.buildInjectionBody(tpl.title, body, ticket.number)
 end
 
