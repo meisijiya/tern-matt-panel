@@ -1875,11 +1875,14 @@ local function toolbar(state: State, cx: BlockCx): Node
 	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。
 	if state.view == "board" then
 		table.insert(buttons, { label = "问下一步", icon = "send", variant = "primary", click = "next-step" })
-		table.insert(buttons, {
-			label = if state.sortNewest then "最新在上" else "最早在上",
-			icon = "refresh",
-			click = "toggle-sort",
-		})
+		-- 本地后端的票没有创建时间，排序固定按工作单元 + 编号：给个按不动的按钮只会让人以为坏了。
+		if state.backend ~= "local" then
+			table.insert(buttons, {
+				label = if state.sortNewest then "最新在上" else "最早在上",
+				icon = "refresh",
+				click = "toggle-sort",
+			})
+		end
 	end
 	-- 技能视图下多一个注入按钮：技能侧的注入也要有鼠标入口（不只是键盘 i）。
 	if state.view == "skills" then

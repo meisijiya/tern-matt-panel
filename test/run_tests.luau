@@ -2554,11 +2554,12 @@ test("本地后端下存着的旧手动仓库不改后端，也不显示换仓�
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.backend, "local", "约定文件说了算，手动值改不了后端")
 	eq(st.repo, nil, "不会显示成 GitHub 仓库")
-	table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	st.view = "board"
 	local buttons = allText(panel.view(st, mkCx(120)).main, {})
 	local joined = table.concat(buttons, " | ")
 	ok(string.find(joined, "换仓库", 1, true) == nil, "本地后端没有换仓库")
 	ok(string.find(joined, "重置仓库", 1, true) == nil, "也没有重置仓库")
+	ok(string.find(joined, "最新在上", 1, true) == nil, "本地后端没有排序开关（票没有创建时间）")
 end)
 
 test("本地后端：提 BUG / 体检的措辞按本地契约，不提标签与原生边", function()

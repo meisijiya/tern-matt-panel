@@ -315,13 +315,24 @@ end
 
 --- 按创建时间排序。ISO8601 定长且同格式，字典序就是时间序，不必解日期。
 --- 缺 createdAt 的票排在最后 —— 它们不是"最旧"，是"不知道"，混进时间序里会骗人。
+--- 排序兜底：先比编号，再比身份（本地后端各工作单元的编号会重号）。
+local function localOrder(a: Ticket, b: Ticket): number
+	if a.number ~= b.number then
+		return a.number - b.number
+	end
+	if a.id == b.id then
+		return 0
+	end
+	return if a.id < b.id then -1 else 1
+end
+
 function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 	local out = table.clone(tickets)
 	table.sort(out, function(a, b)
 		local ka = a.createdAt
 		local kb = b.createdAt
 		if ka == nil and kb == nil then
-			return a.number < b.number
+			return localOrder(a, b) < 0
 		end
 		if ka == nil then
 			return false
@@ -330,7 +341,7 @@ function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 			return true
 		end
 		if ka == kb then
-			return a.number < b.number
+			return localOrder(a, b) < 0
 		end
 		if newestFirst then
 			return ka > kb
