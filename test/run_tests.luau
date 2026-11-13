@@ -556,6 +556,12 @@ test("util.parseRemoteUrl 认各种 remote 地址", function()
 	eq(util.parseRemoteUrl("git@gitlab.com:group/sub/proj.git"), "sub/proj", "nested group takes last two")
 	eq(util.parseRemoteUrl(""), nil, "empty")
 	eq(util.parseRemoteUrl("not a url"), nil, "garbage")
+	-- 本地路径 remote 不是 owner/repo：以前会解成 x/y 这种假仓库去请求远端。
+	eq(util.parseRemoteUrl("D:/26code/other-repo"), nil, "windows drive path")
+	eq(util.parseRemoteUrl("D:\\26code\\other-repo"), nil, "windows drive path with backslash")
+	eq(util.parseRemoteUrl("/home/u/proj"), nil, "absolute posix path")
+	eq(util.parseRemoteUrl("../sibling"), nil, "relative parent path")
+	eq(util.parseRemoteUrl("file:///D:/26code/other-repo"), nil, "file url")
 end)
 
 test("tracker 认任意前缀的流程标签", function()

@@ -115,13 +115,33 @@ function M.packRows(widths: { number }, cols: number, gap: number): { { number }
 	return rows
 end
 
+--- remote 是不是本地路径（盘符 / 绝对路径 / 相对路径 / file://）。
+--- 这些形状的 remote 指向盘上的另一个仓库，不是 GitHub 的 owner/repo；
+--- 放行会被解析成假仓库（`D:/x/y` → `x/y`）去请求远端。
+local function isLocalPath(u: string): boolean
+	if M.startsWith(u, "file://") then
+		return true
+	end
+	if u:match("^%a:[/\\]") then
+		return true
+	end
+	if M.startsWith(u, "/") or M.startsWith(u, "\\") then
+		return true
+	end
+	return u:match("^%.%.") ~= nil
+end
+
 --- 从 git remote 的 URL 里取 owner/repo。
 --- 认这些形状：git@github.com:o/r.git、https://github.com/o/r.git、
 --- ssh://git@host/o/r、以及不带 .git 后缀的网页地址。
---- 认不出返回 nil —— 调用方据此退到手动指定，而不是拿半个地址去查。
+--- 本地路径形状一律认不出（返回 nil）—— 调用方据此退到手动指定，
+--- 而不是拿半个地址去查。
 function M.parseRemoteUrl(url: string): string?
 	local u = M.trim(url)
 	if u == "" then
+		return nil
+	end
+	if isLocalPath(u) then
 		return nil
 	end
 	-- 去掉末尾斜杠，避免 `/repo/` 被当成空 repo
