@@ -152,7 +152,16 @@ run_case "地图详情：迷雾与已决，不显示笔记" "$TMP/noop.sc" \
 	"wait-for:迷雾" \
 	"has:已有决策" \
 	"has:先做第一张票" \
+	"has:子票（2）" \
 	"lacks:笔记段不该出现"
+
+run_case "规格卡：单独成卡，点开是规格正文" "$TMP/noop.sc" \
+	"click:返回任务板" \
+	"wait-for:规格 · alpha" \
+	"click:规格 · alpha" \
+	"wait-for:目标：把 A 做完" \
+	"has:.scratch/alpha/spec.md" \
+	"has:打开文档"
 
 # 注入正文：读插件 kv，不读剪贴板（Windows 上不可靠）。
 kv="$LOCALAPPDATA/Tern/plugin-data/tern-matt-panel/kv.json"
