@@ -474,6 +474,7 @@ end)
 test("tracker.computeFrontier", function()
 	local mk = function(n, state, assignees, blockedBy)
 		return {
+			id = tostring(n),
 			number = n,
 			title = "t" .. tostring(n),
 			body = "",
@@ -486,8 +487,8 @@ test("tracker.computeFrontier", function()
 		}
 	end
 	local t1 = mk(1, "OPEN", {}, {})
-	local t2 = mk(2, "OPEN", {}, { 1 }) -- blocked by open t1
-	local t3 = mk(3, "OPEN", {}, { 4 }) -- blocked only by closed
+	local t2 = mk(2, "OPEN", {}, { "1" }) -- blocked by open t1
+	local t3 = mk(3, "OPEN", {}, { "4" }) -- blocked only by closed
 	local t4 = mk(4, "CLOSED", {}, {})
 	local t5 = mk(5, "OPEN", { "alice" }, {}) -- assigned
 	local t6 = mk(6, "CLOSED", {}, {}) -- closed
@@ -508,6 +509,7 @@ end)
 test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	local mk = function(n, state, assignees, blockedBy)
 		return {
+			id = tostring(n),
 			number = n,
 			title = "t" .. tostring(n),
 			body = "",
@@ -522,7 +524,7 @@ test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 		}
 	end
 	local t1 = mk(1, "OPEN", {}, {})
-	local t2 = mk(2, "OPEN", {}, { 1 })
+	local t2 = mk(2, "OPEN", {}, { "1" })
 	local t3 = mk(3, "OPEN", { "alice" }, {})
 	local t4 = mk(4, "CLOSED", {}, {})
 	-- 顶层 spec 有自己的卡片，不该在四组里再出现一遍
@@ -1007,9 +1009,9 @@ end)
 local function nextStepState()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
 	st.tickets = {
-		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
+		{ id = "12", number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
 			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
 			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
 	}
@@ -1743,8 +1745,8 @@ test("tracker.parseIssuePage 解析一页与分页信息", function()
 end)
 
 test("tracker.mergeIssues 按票号去重且保留先到顺序", function()
-	local a = { { number = 2, title = "a" }, { number = 1, title = "b" } }
-	local b = { { number = 1, title = "dup" }, { number = 3, title = "c" } }
+	local a = { { id = "2", number = 2, title = "a" }, { number = 1, title = "b" } }
+	local b = { { id = "1", number = 1, title = "dup" }, { number = 3, title = "c" } }
 	local out = tracker.mergeIssues(a, b)
 	eq(#out, 3)
 	eq(out[1].number, 2)
@@ -1773,12 +1775,12 @@ test("open 侧必须全量：阻塞票在 201 位时仍判定阻塞", function()
 	local tickets = {}
 	for i = 1, 202 do
 		tickets[i] = {
-			number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
+			id = tostring(i), number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
 			labels = {}, assignees = {}, blockedBy = {}, type = nil, parent = nil,
 			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
 		}
 	end
-	tickets[1].blockedBy = { 201 }
+	tickets[1].blockedBy = { "201" }
 	local full = tracker.computeFrontier(tickets)
 	for _, t in ipairs(full) do
 		ok(t.number ~= 1, "被 201 位 OPEN 票阻塞的票不能进可领")
@@ -1802,7 +1804,7 @@ local function pagedState(closedCount: number?): any
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.openIssues = { { number = 1, title = "open", state = "OPEN" } }
+	st.openIssues = { { id = "1", number = 1, title = "open", state = "OPEN" } }
 	st.closedIssues = {}
 	for i = 1, (closedCount or 1) do
 		table.insert(st.closedIssues, { number = 100 + i, title = "closed" .. i, state = "CLOSED" })
@@ -1833,7 +1835,7 @@ test("已关组有下一页时出现加载更多，点一次追加下一页", fu
 	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "刷新在途时不给续拉")
 	st.loading = false
 	jsonPayloads["PAGE2"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "PAGE2", stderr = "" } } }
@@ -1855,7 +1857,7 @@ end)
 test("续拉缺 endCursor 时不保留下一页游标", function()
 	local st = pagedState(1)
 	jsonPayloads["NO_CURSOR"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = nil },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "NO_CURSOR", stderr = "" } } }
@@ -1880,7 +1882,7 @@ end)
 test("续拉在途时重复点击只发一次请求", function()
 	local st = pagedState(1)
 	jsonPayloads["SLOW"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "SLOW", stderr = "" }, defer = true } }
@@ -1940,11 +1942,11 @@ end)
 test("切排序丢弃已关页并按新方向重拉", function()
 	local st = pagedState(2)
 	jsonPayloads["OPEN_ASC"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "open", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	jsonPayloads["PAGE_ASC"] = { data = { repository = { issues = {
-		nodes = { { number = 300, title = "oldest", state = "CLOSED" } },
+		nodes = { { id = "300", number = 300, title = "oldest", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = "a1" },
 	} } } }
 	processFixtures = {
@@ -1973,7 +1975,7 @@ end)
 test("续拉在途时切排序：旧回调作废，不把旧方向页混进新序列", function()
 	local st = pagedState(1)
 	jsonPayloads["PAGE_OLD"] = { data = { repository = { issues = {
-		nodes = { { number = 999, title = "stale", state = "CLOSED" } },
+		nodes = { { id = "999", number = 999, title = "stale", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "old" },
 	} } } }
 	processFixtures = {
@@ -2005,7 +2007,7 @@ end)
 test("切排序重拉失败：保留旧内容但不再用旧游标续拉", function()
 	local st = pagedState(2)
 	jsonPayloads["OPEN_FAIL"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "open", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	processFixtures = {
@@ -2098,15 +2100,39 @@ local function listFor(node: any, suffix: string): any?
 	return nil
 end
 
+test("票身份是字符串：同号票分属不同工作单元时互不覆盖", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = {}
+	local mk = function(id, title)
+		return {
+			id = id, number = 1, title = title, body = "", state = "OPEN", url = "",
+			labels = {}, assignees = {}, blockedBy = {}, type = "task", parent = nil,
+			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
+		}
+	end
+	st.tickets = { mk("alpha/01", "A 单元第一张"), mk("beta/01", "B 单元第一张") }
+	local list = listFor(panel.view(st, mkCx(120)).main, "_claimable")
+	eq(#list.c, 2, "同号的两张票都在列表里")
+	eq(list.c[1].p.key, "alpha/01", "行 key 带上工作单元")
+	eq(list.c[2].p.key, "beta/01")
+	eq(list.c[2].label, "B 单元第一张")
+	-- 点 B 的行只打开 B：键若只用编号，两张票会撞在一起。
+	panel.event(st, { ev = "select", item = "main.1.77.beta/01" }, mkCx(120))
+	eq(st.ticketSel, "beta/01", "选中态按身份记")
+	eq(st.ticket.title, "B 单元第一张", "点开的是 B")
+end)
+
 test("已关闭组保持上游顺序，open 组按创建时间本地排序", function()
 	local st = pagedState(0)
 	st.openIssues = {
-		{ number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
-		{ number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
+		{ id = "1", number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
+		{ id = "2", number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
 	}
 	st.closedIssues = {
-		{ number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
-		{ number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
+		{ id = "11", number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
+		{ id = "12", number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
 	}
 	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
 	local main = panel.view(st, mkCx(120)).main
@@ -2119,15 +2145,15 @@ end)
 
 test("刷新按游标拉完 open 所有页，再拉已关首屏", function()
 	jsonPayloads["OPEN1"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
 		pageInfo = { hasNextPage = true, endCursor = "c1" },
 	} } } }
 	jsonPayloads["OPEN2"] = { data = { repository = { issues = {
-		nodes = { { number = 3, title = "c", state = "OPEN" } },
+		nodes = { { id = "3", number = 3, title = "c", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	jsonPayloads["CLOSED1"] = { data = { repository = { issues = {
-		nodes = { { number = 9, title = "z", state = "CLOSED" } },
+		nodes = { { id = "9", number = 9, title = "z", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = "d1" },
 	} } } }
 	processFixtures = {
@@ -2158,7 +2184,7 @@ test("点地图行按需拉正文并解析迷雾/范围外", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "## 尚未明确\n- 先做 A\n\n## 范围外\n- 不做 B\n", stderr = "" },
@@ -2179,11 +2205,11 @@ end)
 test("刷新后仍在地图页：重建的 Map 会补拉正文", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "map"
-	st.mapSel = 1
+	st.mapSel = "1"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
 	jsonPayloads["OPEN_MAP"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
+		nodes = { { id = "1", number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	jsonPayloads["CLOSED_EMPTY"] = { data = { repository = { issues = {
@@ -2278,13 +2304,13 @@ test("重置仓库清掉手动值并回到 cwd", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.repo, "me/manual")
 	-- 造一点旧仓库状态：重置必须整份清掉，而不是只换标题。
-	st.tickets = { { number = 1, title = "old", body = "", state = "OPEN", url = "", labels = {}, assignees = {}, blockedBy = {}, isSpec = false } }
-	st.maps = { { number = 1, title = "old map", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.tickets = { { id = "1", number = 1, title = "old", body = "", state = "OPEN", url = "", labels = {}, assignees = {}, blockedBy = {}, isSpec = false } }
+	st.maps = { { id = "1", number = 1, title = "old map", url = "", state = "OPEN", body = "", tickets = {} } }
 	st.openIssues = { { number = 1 } }
 	st.closedIssues = { { number = 2 } }
 	st.closedCursor = "old"
 	st.closedHasNext = true
-	st.mapSel = 1
+	st.mapSel = "1"
 	processCalls = {}
 	panel.event(st, { ev = "action", act = "reset-repo" }, mkCx(120))
 	eq(kvStore["repo"].repo, "", "手动值已清")
@@ -2311,7 +2337,7 @@ test("地图正文失败可重试且不留半截", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 1, stdout = "", stderr = "boom" },
@@ -2327,7 +2353,7 @@ test("地图正文没有两节时不伪造内容", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "普通正文，没有小节", stderr = "" },
@@ -2345,7 +2371,7 @@ test("地图正文在途时重复点击只发一次请求", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "## 尚未明确\n- 慢请求\n", stderr = "" },
@@ -2794,7 +2820,7 @@ test("所有视图的按钮点击都挂在 actions.click 上", function()
 		local st = nextStepState()
 		st.view = v
 		if v == "map" then
-			st.mapSel = 1
+			st.mapSel = "1"
 		elseif v == "ticket" then
 			st.ticket = st.tickets[1]
 		end

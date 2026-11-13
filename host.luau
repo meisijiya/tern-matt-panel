@@ -88,9 +88,9 @@ type State = {
 	boardGen: number,
 	closedHasNext: boolean,
 	closedLoading: boolean,
-	-- 选中的地图号与票号
-	mapSel: number?,
-	ticketSel: number?,
+	-- 选中的地图与票：身份字符串（GitHub 后端是编号，本地后端是 `<工作单元>/<NN>`）
+	mapSel: string?,
+	ticketSel: string?,
 	-- 票按创建时间排：默认最新在上
 	sortNewest: boolean,
 	-- 工具条「新增需求」把两条路叫出来，选完或再按一次收起
@@ -882,7 +882,7 @@ local MAP_TICKET_LIST = "maptickets"
 local TICKET_LIST = "tickets"
 local SPEC_LIST = "specs"
 
---- 把一组票做成可点列表：每行给 key（= 票号），选中态跟着 ticketSel 走。
+--- 把一组票做成可点列表：每行给 key（= 票身份），选中态跟着 ticketSel 走。
 --- 票类型 → 图标。tern 的图标集里没有 `ticket`，只能用现有名字；
 --- wayfinder 的四类票各给一个形近的图标，好让行首能一眼分出类型。
 local TYPE_ICON: { [string]: string } = {
@@ -892,17 +892,17 @@ local TYPE_ICON: { [string]: string } = {
 	task = "check",
 }
 
-local function makeList(items: { any }, tickets: { tracker.Ticket }, key: string, selected: number?, hint: string): Node
+local function makeList(items: { any }, tickets: { tracker.Ticket }, key: string, selected: string?, hint: string): Node
 	local list = ui.list(items)
 	local kids = list.c or {}
 	for i, t in ipairs(tickets) do
 		local p: { [string]: any } = kids[i].p or {}
-		p.key = tostring(t.number)
+		p.key = t.id
 		kids[i].p = p
 	end
 	local lp: { [string]: any } = list.p or {}
 	lp.key = key
-	lp.selected = if selected then tostring(selected) else nil
+	lp.selected = selected
 	lp.empty = { ui.span(hint, "muted") }
 	list.p = lp
 	return list
@@ -1120,19 +1120,19 @@ local function boardView(state: State, cx: BlockCx): Node
 			label = m.title,
 			detail = string.format("%d 张子票", #m.tickets),
 			icon = "map",
-			tone = if m.number == state.mapSel then "accent" else nil,
+			tone = if m.id == state.mapSel then "accent" else nil,
 		})
 	end
 	local mapList = ui.list(mapItems)
 	local mapKids = mapList.c or {}
 	for i, m in ipairs(state.maps) do
 		local p: { [string]: any } = mapKids[i].p or {}
-		p.key = tostring(m.number)
+		p.key = m.id
 		mapKids[i].p = p
 	end
 	local mapLp: { [string]: any } = mapList.p or {}
 	mapLp.key = MAP_LIST
-	mapLp.selected = if state.mapSel then tostring(state.mapSel) else nil
+	mapLp.selected = state.mapSel
 	mapLp.empty = { ui.span("没有 wayfinder:map 地图 · 跑 /wayfinder 建一张", "muted") }
 	mapLp.max = { lines = math.max(4, math.floor((cx.rows - 12) / 2)) }
 	mapList.p = mapLp
@@ -1174,7 +1174,7 @@ local function boardView(state: State, cx: BlockCx): Node
 				label = entry.spec.title,
 				detail = detail,
 				icon = icon,
-				tone = if entry.spec.number == state.ticketSel then "accent" else nil,
+				tone = if entry.spec.id == state.ticketSel then "accent" else nil,
 			})
 		end
 		-- specs 是 {spec, tickets} 组；列表只认 Ticket，传错会得到 key "nil" 的哑行。
@@ -1232,7 +1232,7 @@ local function boardView(state: State, cx: BlockCx): Node
 				table.insert(parts, who)
 			end
 			-- 类型用行首图标表达，和标题分开；已关闭的票整行压暗。
-			local tone = if t.number == state.ticketSel then
+			local tone = if t.id == state.ticketSel then
 				"accent"
 			elseif g.title == "已关闭" then
 				"muted"
@@ -1286,7 +1286,7 @@ end
 --- 任务板里当前选中的地图。
 local function selectedMap(state: State): tracker.Map?
 	for _, m in ipairs(state.maps) do
-		if m.number == state.mapSel then
+		if m.id == state.mapSel then
 			return m
 		end
 	end
@@ -1334,7 +1334,7 @@ local function mapView(state: State, cx: BlockCx): Node
 		if t.state ~= "OPEN" then
 			table.insert(parts, "已关闭")
 		end
-		local tone = if t.number == state.ticketSel then
+		local tone = if t.id == state.ticketSel then
 			"accent"
 		elseif t.state ~= "OPEN" then
 			"muted"
@@ -1351,12 +1351,12 @@ local function mapView(state: State, cx: BlockCx): Node
 	local kids = list.c or {}
 	for i, t in ipairs(m.tickets) do
 		local p: { [string]: any } = kids[i].p or {}
-		p.key = tostring(t.number)
+		p.key = t.id
 		kids[i].p = p
 	end
 	local lp: { [string]: any } = list.p or {}
 	lp.key = MAP_TICKET_LIST
-	lp.selected = if state.ticketSel then tostring(state.ticketSel) else nil
+	lp.selected = state.ticketSel
 	lp.empty = { ui.span("这张地图还没有票", "muted") }
 	lp.max = { lines = math.max(4, cx.rows - 14) }
 	list.p = lp
@@ -1672,7 +1672,7 @@ local function selectedTicket(state: State): tracker.Ticket?
 		return nil
 	end
 	for _, t in ipairs(frontier) do
-		if t.number == state.ticketSel then
+		if t.id == state.ticketSel then
 			return t
 		end
 	end
@@ -1860,14 +1860,14 @@ tern.block.define(BLOCK_ID, {
 				local cur = selectedTicket(state)
 				local at = 1
 				for i, t in ipairs(frontier) do
-					if cur and t.number == cur.number then
+					if cur and t.id == cur.id then
 						at = i
 						break
 					end
 				end
 				local next_ = if key.name == "up" then math.max(1, at - 1) else math.min(#frontier, at + 1)
 				if frontier[next_] then
-					state.ticketSel = frontier[next_].number
+					state.ticketSel = frontier[next_].id
 				end
 				return true
 			end
@@ -1908,7 +1908,7 @@ tern.block.define(BLOCK_ID, {
 				local at = 1
 				if m then
 					for i, t in ipairs(m.tickets) do
-						if t.number == cur then
+						if t.id == cur then
 							at = i
 							break
 						end
@@ -1916,7 +1916,7 @@ tern.block.define(BLOCK_ID, {
 				end
 				local next_ = if key.name == "up" then math.max(1, at - 1) else math.max(1, at + 1)
 				if m and m.tickets[next_] then
-					state.ticketSel = m.tickets[next_].number
+					state.ticketSel = m.tickets[next_].id
 				end
 				return true
 			end
@@ -1988,12 +1988,11 @@ tern.block.define(BLOCK_ID, {
 				end
 			elseif state.view == "map" then
 				-- 地图详情里的子票：点开看票详情
-				local n = tonumber(item)
 				local m = selectedMap(state)
-				if n and m then
+				if m then
 					for _, t in ipairs(m.tickets) do
-						if t.number == n then
-							state.ticketSel = n
+						if t.id == item then
+							state.ticketSel = item
 							state.ticket = t
 							state.ticketBody = nil
 							state.view = "ticket"
@@ -2002,18 +2001,18 @@ tern.block.define(BLOCK_ID, {
 					end
 				end
 			elseif state.view == "board" then
-				local n = tonumber(item)
-				if n then
+				-- 行 key 就是身份：GitHub 后端是编号字符串，本地后端是 `<工作单元>/<NN>`。
+				if item ~= "" then
 					-- 地图行：进去看地图详情
 					local isMap = false
 					for _, m in ipairs(state.maps) do
-						if m.number == n then
+						if m.id == item then
 							isMap = true
 							break
 						end
 					end
 					if isMap then
-						state.mapSel = n
+						state.mapSel = item
 						state.ticketSel = nil
 						state.view = "map"
 						if state.repo then
@@ -2029,8 +2028,8 @@ tern.block.define(BLOCK_ID, {
 					-- 单击就进详情：地图行本来就是单击进入，票行原来要双击，
 					-- 同一块面板里两种手感，用户会以为"点不开"。
 					for _, t in ipairs(state.tickets) do
-						if t.number == n then
-							state.ticketSel = n
+						if t.id == item then
+							state.ticketSel = item
 							state.ticket = t
 							state.ticketBody = nil
 							state.view = "ticket"
