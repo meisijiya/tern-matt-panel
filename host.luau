@@ -613,16 +613,8 @@ local function loadBoard(state: State, cx: BlockCx)
 		state.loading = false
 		state.fetchedAtSec = nowSec()
 		state.legacyFetchedAt = nil
-		if #scan.errors > 0 then
-			local paths: { string } = {}
-			for i, e in ipairs(scan.errors) do
-				if i > 6 then
-					break
-				end
-				table.insert(paths, e.path)
-			end
-			state.message = string.format("%d 个文件读不动：%s", #scan.errors, table.concat(paths, "、"))
-		elseif #state.tickets == 0 and #state.maps == 0 then
+		-- 读不动的文件由任务板常驻列出，这里不再另发一条只闪一次的提示。
+		if #scan.errors == 0 and #state.tickets == 0 and #state.maps == 0 then
 			state.message = "这个 .scratch 目录里还没有地图与票"
 		end
 		cx:render()
@@ -1298,6 +1290,22 @@ local function boardView(state: State, cx: BlockCx): Node
 				}),
 			}))
 		end
+	end
+
+	-- 读不动的文件常驻显示：只报一次就消失，用户会把缺行当成「票没了」。
+	if #state.scanErrors > 0 then
+		local names: { string } = {}
+		for i, e in ipairs(state.scanErrors) do
+			if i > 8 then
+				table.insert(names, string.format("…共 %d 个", #state.scanErrors))
+				break
+			end
+			table.insert(names, e.path)
+		end
+		table.insert(main, ui.text({
+			ui.span(string.format("%d 个文件读不动：", #state.scanErrors), "warning"),
+			ui.span(table.concat(names, "、"), "muted"),
+		}))
 	end
 
 	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。

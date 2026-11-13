@@ -2438,6 +2438,32 @@ test("本地后端：票与地图都有「打开文档」，路径来自扫描�
 	eq(kvStore["action"].body, root .. "/.scratch/alpha/map.md", "打开地图文件")
 end)
 
+test("本地后端：读不动的文件在任务板上常驻列出", function()
+	local root = "D:/fix3"
+	local dir = root .. "/.scratch/only/issues"
+	fsFiles[root .. "/docs/agents/issue-tracker.md"] = "# Issue tracker: Local Markdown\n"
+	fsDirs[root .. "/.scratch"] = true
+	fsDirs[root .. "/.scratch/only"] = true
+	fsDirs[dir] = true
+	local realList = ternStub.fs.list
+	ternStub.fs.list = function(path: string): { string }
+		if path == dir then
+			return { "01-broken.md" }
+		end
+		return realList(path)
+	end
+	processFixtures = {
+		{ match = "rev-parse", result = { status = 0, stdout = root .. "\n", stderr = "" } },
+		{ match = "get-url", result = { status = 1, stdout = "", stderr = "no origin" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	ternStub.fs.list = realList
+	st.view = "board"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "1 个文件读不动", 1, true) ~= nil, "报数")
+	ok(string.find(text, ".scratch/only/issues/01-broken.md", 1, true) ~= nil, "列出文件")
+end)
+
 test("GitHub 后端不出现「打开文档」", function()
 	processFixtures = {
 		{ match = "rev-parse", result = { status = 0, stdout = "D:/repo\n", stderr = "" } },
