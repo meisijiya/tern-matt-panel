@@ -75,7 +75,7 @@ function M.decide(opts: { contractText: string?, originUrl: string?, hasScratch:
 		return {
 			backend = backend,
 			source = "contract",
-			reason = "按约定文件：" .. M.CONTRACT_LABEL(),
+			reason = "约定文件 " .. M.CONTRACT_PATH,
 		}
 	end
 	if declared then
@@ -86,10 +86,10 @@ function M.decide(opts: { contractText: string?, originUrl: string?, hasScratch:
 		}
 	end
 	if M.isGithubRemote(opts.originUrl) then
-		return { backend = "github", source = "detected", reason = "按识别：origin 指向 GitHub" }
+		return { backend = "github", source = "detected", reason = "origin 指向 GitHub" }
 	end
 	if opts.hasScratch then
-		return { backend = "local", source = "detected", reason = "按识别：仓库里有 .scratch 目录" }
+		return { backend = "local", source = "detected", reason = "仓库里有 " .. ".scratch 目录" }
 	end
 	return {
 		backend = nil,
@@ -98,11 +98,11 @@ function M.decide(opts: { contractText: string?, originUrl: string?, hasScratch:
 	}
 end
 
+M.CONTRACT_PATH = "docs/agents/issue-tracker.md"
+
 --- 界面上显示的依据文件名。
 function M.CONTRACT_LABEL(): string
-	return "docs/agents/issue-tracker.md"
+	return M.CONTRACT_PATH
 end
-
-M.CONTRACT_PATH = "docs/agents/issue-tracker.md"
 
 return M

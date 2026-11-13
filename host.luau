@@ -563,6 +563,7 @@ local function loadBoard(state: State, cx: BlockCx)
 
 	--- 换数据源时把上一个仓库的显示状态清掉，别让旧票挂在新仓库名下。
 	local function clearRows()
+		state.scanErrors = {}
 		state.tickets = {}
 		state.maps = {}
 		state.openIssues = {}
@@ -605,6 +606,7 @@ local function loadBoard(state: State, cx: BlockCx)
 		state.repoManual = false
 		state.backend = "local"
 		state.localRoot = root
+		state.root = root
 		clearRows()
 		local scan = localtracker.scan(root)
 		state.maps = scan.maps
@@ -1178,11 +1180,6 @@ local function packsView(state: State): Node
 		}))
 	end
 	return ui.col(main)
-end
-
---- 后端名与依据来源的展示文案。
-local function backendLabel(state: State): string
-	return if state.backend == "local" then "本地 markdown" else "GitHub"
 end
 
 --- 任务板顶部：数据源是哪个后端、依据从哪来、仓库是什么。
