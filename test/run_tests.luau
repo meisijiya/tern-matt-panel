@@ -1094,6 +1094,82 @@ test("剪贴板写不进去时不许谎报已复制", function()
 	ok(string.find(tostring(res.error), "正文已复制", 1, true) == nil, "does not claim success")
 end)
 
+test("窗口半边把 open-doc 交出去并回写回执", function()
+	local winPane = 42
+	local opened: { { path: string, how: any } } = {}
+	local said: { any } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function(...)
+			table.insert(said, { ... })
+		end,
+		docs = {
+			open = function(_self: any, path: string, opts: any)
+				table.insert(opened, { path = path, how = opts and opts.how })
+				return 77
+			end,
+		},
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = {
+		seq = 10,
+		kind = "open-doc",
+		pane = winPane,
+		body = "D:/fix/.scratch/alpha/issues/02-second.md",
+		name = ".scratch/alpha/issues/02-second.md",
+	}
+	pollTick(cx)
+
+	eq(#opened, 1, "调了一次文档视图")
+	eq(opened[1].path, "D:/fix/.scratch/alpha/issues/02-second.md", "路径原样传给平台")
+	eq(opened[1].how, "tab", "开在新 tab")
+	local res = kvStore["inject_result"]
+	eq(type(res), "table", "回执写回 kv")
+	eq(res.ok, true, "成功")
+	eq(res.seq, 10, "序号回传")
+	eq(said[1][2], "info", "成功提示")
+end)
+
+test("open-doc 失败时回执带原因，不报成功", function()
+	local winPane = 42
+	local said: { any } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function(...)
+			table.insert(said, { ... })
+		end,
+		docs = {
+			open = function()
+				error("no such file")
+			end,
+		},
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = { seq = 11, kind = "open-doc", pane = winPane, body = "D:/nope.md", name = "nope.md" }
+	pollTick(cx)
+
+	local res = kvStore["inject_result"]
+	eq(res.ok, false, "失败如实上报")
+	ok(string.find(tostring(res.error), "no such file", 1, true) ~= nil, "带回原因")
+	eq(said[1][2], "error", "错误提示")
+end)
+
 test("compose 复制失败不许报已复制", function()
 	local winPane = 42
 	local cx: any = {
