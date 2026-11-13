@@ -628,8 +628,9 @@ local function loadBoard(state: State, cx: BlockCx)
 		cx:render()
 	end
 
-	--- 手动指定优先：用户点了「换仓库」就必须真的换，不能被 cwd 的 remote 盖回去。
-	-- 只认本窗口那份（pane 相同）；别的窗口的手动仓库与这里无关。
+	--- 手动指定的仓库：只在本窗口、且只在 GitHub 后端下生效。
+	--- 后端本身由仓库契约决定，手动选择改不了它（ADR-0003）——
+	--- 否则本地 markdown 仓库会被一条存过的 owner/repo 顶成 GitHub 后端。
 	local manualRepo: string? = nil
 	do
 		local ok, value = pcall(tern.kv.get, REPO_KEY)
@@ -637,12 +638,6 @@ local function loadBoard(state: State, cx: BlockCx)
 			and type(value.repo) == "string" and value.repo ~= "" then
 			manualRepo = value.repo
 		end
-	end
-	if manualRepo then
-		state.backendSource = "manual"
-		state.backendReason = "按手动指定的仓库"
-		beginGithub(manualRepo, true)
-		return
 	end
 
 	-- 判后端的依据：仓库根、origin、约定文件、.scratch 目录。
@@ -692,6 +687,12 @@ local function loadBoard(state: State, cx: BlockCx)
 				return
 			end
 			if decision.backend == "github" then
+				if manualRepo then
+					state.backendSource = "manual"
+					state.backendReason = "按手动指定的仓库"
+					beginGithub(manualRepo, true)
+					return
+				end
 				local repo = util.parseRemoteUrl(originUrl or "")
 				if not repo then
 					clearBoard("按 GitHub 后端处理，但这条 remote 解析不出 owner/repo：" .. (originUrl or "（没有 origin）"))
@@ -1286,14 +1287,17 @@ local function boardView(state: State, cx: BlockCx): Node
 			"面板按仓库的跟踪器约定文件（" .. backend.CONTRACT_PATH .. "）判后端；没有就按 origin 与 .scratch 识别。"
 				.. "先跑 /skill:setup-matt-pocock-skills 把跟踪器配好。", "muted"
 		)))
-		table.insert(main, ui.row({
-			ui.button("手动指定 owner/repo", {
-				icon = "repo",
-				size = "sm",
-				variant = "primary",
-				actions = { click = "pick-repo" },
-			}),
-		}))
+		-- 手动指定只在 GitHub 侧有意义：后端由仓库契约决定，不是面板的选择。
+		if state.backend ~= "local" then
+			table.insert(main, ui.row({
+				ui.button("手动指定 owner/repo", {
+					icon = "repo",
+					size = "sm",
+					variant = "primary",
+					actions = { click = "pick-repo" },
+				}),
+			}))
+		end
 	end
 
 	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。
@@ -1815,11 +1819,15 @@ local function toolbar(state: State, cx: BlockCx): Node
 		-- 按钮自己的动作叫 reload，与窗口戳过来的 refresh 区分开：
 		-- 前者重新拉数据，后者只是让宿主重画一次好读到回写结果。
 		{ label = "刷新", icon = "refresh", key = "refresh", click = "reload" },
-		{ label = "换仓库", icon = "repo", click = "pick-repo" },
 		{ label = if state.showHidden then "隐藏实验技能" else "显示实验技能", icon = "eye", click = "toggle-hidden" },
 	}
+	-- 后端由仓库契约决定：本地后端下没有「换仓库」（换的是 GitHub 的 owner/repo）。
+	if state.backend ~= "local" then
+		-- 位置在「刷新」之后、「显示实验技能」之前，与原顺序一致。
+		table.insert(buttons, #buttons - 1, { label = "换仓库", icon = "repo", click = "pick-repo" })
+	end
 	-- 手动切过仓库时给一个出口：清掉覆盖，回到 cwd 的 remote。
-	if state.repoManual then
+	if state.repoManual and state.backend ~= "local" then
 		table.insert(buttons, { label = "重置仓库", icon = "back", click = "reset-repo" })
 	end
 	-- 任务板视图下多两个按钮：问下一步（交给会话里的 ask-matt）、排序开关。

@@ -2460,6 +2460,20 @@ test("GitHub 后端不出现「打开文档」", function()
 	ok(string.find(text, "打开链接", 1, true) ~= nil, "仍是打开链接")
 end)
 
+test("本地后端下存着的旧手动仓库不改后端，也不显示换仓库按钮", function()
+	localFixture()
+	-- 之前在这个 pane 上手填过 owner/repo（本地仓库里不该再让它生效）
+	kvStore["repo"] = { repo = "me/stale", pane = 7 }
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.backend, "local", "约定文件说了算，手动值改不了后端")
+	eq(st.repo, nil, "不会显示成 GitHub 仓库")
+	table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	local buttons = allText(panel.view(st, mkCx(120)).main, {})
+	local joined = table.concat(buttons, " | ")
+	ok(string.find(joined, "换仓库", 1, true) == nil, "本地后端没有换仓库")
+	ok(string.find(joined, "重置仓库", 1, true) == nil, "也没有重置仓库")
+end)
+
 test("本地后端：判不出后端时落到 setup 卡，不请求远端", function()
 	processFixtures = {
 		{ match = "rev-parse", result = { status = 0, stdout = "D:/plain\n", stderr = "" } },
@@ -2618,7 +2632,9 @@ test("手动指定仓库优先于 cwd 的 remote", function()
 		end
 	end
 	ok(sawManual, "请求打到手动仓库")
-	ok(not sawRemote, "手动模式不再推断 cwd")
+	-- 后端由仓库契约（这里是缺失→按识别）决定，所以 cwd 的 remote 仍要读一次；
+	-- 手动选择只在 GitHub 后端下覆盖「哪个仓库」，改不了后端本身（ADR-0003）。
+	ok(sawRemote, "仍要读 cwd remote 才能判后端")
 	st.view = "board"
 	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
 	ok(string.find(text, "刷新仍用这个仓库", 1, true) ~= nil, "标出手动来源")

@@ -45,6 +45,33 @@ tern ctl --control 17311 quit
 
 不要用 `--launch`，不要重复起窗；Tern 窗口一份就是一份 GPU/内存开销。
 
+## 本地 markdown 后端的 e2e
+
+本仓自己是 GitHub 模式，所以本地后端只能在夹具仓库上验。夹具是带 `.scratch/` 的临时目录，不联网、不调 `gh`。同样是 attach-only：先由人在夹具目录里开窗口。
+
+```bash
+mkdir -p D:/26code/wt/local-fixture && cd D:/26code/wt/local-fixture
+git init
+tern --control 17312 .        # 窗口 cwd 必须是夹具根
+```
+
+`test/e2e-local.sh` 会生成/覆盖夹具内容（`.scratch/alpha`、`.scratch/beta` 与约定文件），核对窗口 cwd 后跑用例；cwd 不对就 SKIP 退出码 2，绝不自起窗口。
+
+```bash
+"/c/Program Files/Git/bin/bash.exe" test/e2e-local.sh --port 17312
+# 或只跑这一层：
+"/c/Program Files/Git/bin/bash.exe" test/all.sh --e2e-local
+```
+
+注入正文的断言读插件 kv（`%LOCALAPPDATA%\Tern\plugin-data\tern-matt-panel\kv.json` 的 `action.body`），不读剪贴板。
+
+跑完：
+
+```bash
+tern ctl --control 17312 quit
+rm -rf D:/26code/wt/local-fixture
+```
+
 ## 面板定位与点击
 
 ```bash
