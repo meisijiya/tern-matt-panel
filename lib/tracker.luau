@@ -341,20 +341,34 @@ function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 end
 
 --- 把 spec 与它拆出的工单归组。
---- spec = 带 ready-for-agent 标签且没有父 issue 的 issue；工单 = 父 issue 指向该 spec 的子 issue。
+--- GitHub：spec = 带 ready-for-agent 标签且没有父 issue；工单 = 父 issue 指向它的子 issue。
+--- 本地：spec.md 与票同在一个工作单元目录下，没有 parent 关系 —— 按工作单元归组。
 --- 不递归：只看一层，够用且不会因为环状 parent 打转。
 function M.groupBySpec(tickets: { Ticket }): { { spec: Ticket, tickets: { Ticket } } }
 	local out: { { spec: Ticket, tickets: { Ticket } } } = {}
-	local index: { [number]: number } = {}
+	-- GitHub 按编号挂接，本地按工作单元挂接：编号在工作单元之间会重号，不能用。
+	local byNumber: { [number]: number } = {}
+	local byEffort: { [string]: number } = {}
 	for _, t in ipairs(tickets) do
+		-- 有父 issue 的 spec 是被别的 spec 拆出来的子项，不是顶层规格卡。
 		if t.isSpec and t.parent == nil then
 			table.insert(out, { spec = t, tickets = {} })
-			index[t.number] = #out
+			if t.effort then
+				byEffort[t.effort] = #out
+			else
+				byNumber[t.number] = #out
+			end
 		end
 	end
 	for _, t in ipairs(tickets) do
-		if t.parent ~= nil and index[t.parent] then
-			table.insert(out[index[t.parent]].tickets, t)
+		local at: number? = nil
+		if t.parent ~= nil then
+			at = byNumber[t.parent]
+		elseif t.parent == nil and t.effort and not t.isSpec then
+			at = byEffort[t.effort]
+		end
+		if at then
+			table.insert(out[at].tickets, t)
 		end
 	end
 	return out

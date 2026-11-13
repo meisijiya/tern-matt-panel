@@ -2482,6 +2482,44 @@ test("本地后端：读不动的文件在任务板上常驻列出", function()
 	ok(string.find(text, ".scratch/only/issues/01-broken.md", 1, true) ~= nil, "列出文件")
 end)
 
+test("本地后端：Spec 卡按工作单元归组，工单数读得出来", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	local groups = tracker.groupBySpec(st.tickets)
+	eq(#groups, 1, "只有 alpha 有 spec.md")
+	eq(groups[1].spec.effort, "alpha")
+	eq(#groups[1].tickets, 2, "alpha 的两张票挂在它的规格下")
+	local specList = listFor(panel.view(st, mkCx(120)).main, "specs")
+	ok(specList ~= nil, "Spec 卡出现")
+	eq(#specList.c, 1, "一张规格卡")
+	eq(specList.c[1].label, "规格 · alpha", "规格卡标题")
+end)
+
+test("本地后端：复制与打开落到票文件路径，不是空链接", function()
+	local root = localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "ticket"
+	for _, t in ipairs(st.tickets) do
+		if t.id == "alpha/02" then
+			st.ticket = t
+		end
+	end
+	local seen: { string } = {}
+	local cx: any = mkCx(120)
+	cx.copy = function(_self: any, text: string)
+		table.insert(seen, text)
+	end
+	panel.event(st, { ev = "action", act = "copy-ticket" }, cx)
+	eq(seen[1], "第二张\n.scratch/alpha/issues/02-second.md", "复制标题 + 仓库相对路径")
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "open-ticket" }, cx)
+	local action = kvStore["action"]
+	ok(type(action) == "table", "本地后端走文档视图")
+	eq(action.kind, "open-doc")
+	eq(action.body, root .. "/.scratch/alpha/issues/02-second.md")
+end)
+
 test("GitHub 后端不出现「打开文档」", function()
 	processFixtures = {
 		{ match = "rev-parse", result = { status = 0, stdout = "D:/repo\n", stderr = "" } },

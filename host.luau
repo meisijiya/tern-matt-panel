@@ -1485,6 +1485,31 @@ local function boardView(state: State, cx: BlockCx): Node
 	return ui.col(main)
 end
 
+--- 本地后端的票没有远端链接：复制与打开都落到仓库相对路径上。
+local function ticketClip(state: State, t: tracker.Ticket): string
+	local where = if state.backend == "local" then (t.path or "") else t.url
+	return t.title .. "\n" .. where
+end
+
+--- 打开票：GitHub 开链接，本地 markdown 调文档视图。
+local function openTicketTarget(state: State, cx: BlockCx, t: tracker.Ticket)
+	if state.backend == "local" then
+		local abs = filePath(state, t.path)
+		if not abs then
+			state.message = "这张票没有对应的本地文件"
+			return
+		end
+		sendAction(state, cx, "open-doc", abs, t.path or abs)
+		state.message = "已请求打开：" .. (t.path or abs) .. "（改完按 r 刷新）"
+		return
+	end
+	if t.url == "" then
+		state.message = "这张票没有链接"
+		return
+	end
+	cx:open(t.url)
+end
+
 --- 任务板里当前选中的地图。
 local function selectedMap(state: State): tracker.Map?
 	for _, m in ipairs(state.maps) do
@@ -2153,7 +2178,7 @@ tern.block.define(BLOCK_ID, {
 				if not t then
 					return false
 				end
-				cx:copy(t.title .. "\n" .. t.url)
+				cx:copy(ticketClip(state, t))
 				state.message = "已复制票信息"
 				return true
 			end
@@ -2162,7 +2187,7 @@ tern.block.define(BLOCK_ID, {
 				if not t then
 					return false
 				end
-				cx:open(t.url)
+				openTicketTarget(state, cx, t)
 				return true
 			end
 			return false
@@ -2219,7 +2244,7 @@ tern.block.define(BLOCK_ID, {
 			if not t then
 				return false
 			end
-			cx:copy(t.title .. "\n" .. t.url)
+			cx:copy(ticketClip(state, t))
 			state.message = "已复制票信息"
 			return true
 		end
@@ -2228,7 +2253,7 @@ tern.block.define(BLOCK_ID, {
 			if not t then
 				return false
 			end
-			cx:open(t.url)
+			openTicketTarget(state, cx, t)
 			return true
 		end
 		return false
@@ -2486,7 +2511,7 @@ tern.block.define(BLOCK_ID, {
 			if not t then
 				return
 			end
-			cx:copy(t.title .. "\n" .. t.url)
+			cx:copy(ticketClip(state, t))
 			state.message = "已复制票信息"
 			return
 		end
@@ -2513,7 +2538,7 @@ tern.block.define(BLOCK_ID, {
 			if not t then
 				return
 			end
-			cx:open(t.url)
+			openTicketTarget(state, cx, t)
 			return
 		end
 		if string.sub(act, 1, 4) == "act:" then
