@@ -2483,7 +2483,7 @@ test("本地后端：读不动的文件在任务板上常驻列出", function()
 	ternStub.fs.list = realList
 	st.view = "board"
 	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
-	ok(string.find(text, "1 个票/地图文件读不动", 1, true) ~= nil, "报数")
+	ok(string.find(text, "1 张票读不动", 1, true) ~= nil, "票文件读不动时按「张」报数")
 	ok(string.find(text, ".scratch/only/issues/01-broken.md", 1, true) ~= nil, "列出文件")
 end)
 

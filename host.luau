@@ -1303,15 +1303,22 @@ local function boardView(state: State, cx: BlockCx): Node
 	-- 读不动的文件常驻显示：只报一次就消失，用户会把缺行当成「票没了」。
 	if #state.scanErrors > 0 then
 		local names: { string } = {}
+		local onlyTickets = true
 		for i, e in ipairs(state.scanErrors) do
+			if string.find(e.path, "/issues/", 1, true) == nil then
+				onlyTickets = false
+			end
 			if i > 8 then
 				table.insert(names, string.format("…共 %d 个", #state.scanErrors))
 				break
 			end
 			table.insert(names, e.path)
 		end
+		local what = if onlyTickets
+			then string.format("%d 张票读不动：", #state.scanErrors)
+			else string.format("%d 个文件读不动：", #state.scanErrors)
 		table.insert(main, ui.text({
-			ui.span(string.format("%d 个票/地图文件读不动：", #state.scanErrors), "warning"),
+			ui.span(what, "warning"),
 			ui.span(table.concat(names, "、"), "muted"),
 		}))
 	end
