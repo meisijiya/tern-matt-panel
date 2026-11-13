@@ -55,7 +55,7 @@ git init
 tern --control 17312 .        # 窗口 cwd 必须是夹具根
 ```
 
-`test/e2e-local.sh` 会生成/覆盖夹具内容（`.scratch/alpha`、`.scratch/beta` 与约定文件），核对窗口 cwd 后跑用例；cwd 不对就 SKIP 退出码 2，绝不自起窗口。
+`test/e2e-local.sh` 会补齐夹具内容（`.scratch/alpha`、`.scratch/beta` 与约定文件；缺目录或缺 git 仓时自己建），核对窗口 cwd 后跑用例；cwd 不对就 SKIP 退出码 2，绝不自起窗口。
 
 ```bash
 "/c/Program Files/Git/bin/bash.exe" test/e2e-local.sh --port 17312

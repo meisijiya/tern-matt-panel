@@ -69,10 +69,10 @@ while [ $# -gt 0 ]; do
 	esac
 done
 fixture="${fixture:-$repo/../wt/local-fixture}"
-fixture="$(cd "$fixture" 2>/dev/null && pwd || true)"
-if [ -z "$fixture" ]; then
-	echo "SKIP: 夹具仓库不存在（先用 --fixture 指定，或按 docs/agents/dev.md 建一个）"
-	exit 2
+mkdir -p "$fixture"
+fixture="$(cd "$fixture" && pwd)"
+if [ ! -d "$fixture/.git" ]; then
+	git -C "$fixture" init -q .
 fi
 
 # ---- 夹具内容：不联网、不依赖任何远程 ----
