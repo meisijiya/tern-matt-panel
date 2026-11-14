@@ -16,4 +16,4 @@ Single-context layout: root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/dom
 
 ### Development and e2e
 
-Unit gate, controlled-window e2e, ctl tree/pick, and the load-more fixture: `docs/agents/dev.md`.
+Unit gate, controlled-window e2e, local-markdown fixture e2e, ctl tree/pick, and the load-more fixture: `docs/agents/dev.md`.

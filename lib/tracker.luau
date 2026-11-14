@@ -8,18 +8,25 @@ local util = require("./util")
 local M = {}
 
 export type Ticket = {
+	--- 选择态身份：GitHub 后端是编号的字符串形式；本地后端是 `<工作单元>/<NN>`。
+	--- 各工作单元的编号都从 01 起算会重号，所以身份不能只用编号。
+	id: string,
 	number: number,
 	title: string,
 	body: string,
-	state: string,
+	state: string, -- "OPEN" | "CLOSED"
 	url: string,
 	labels: { string },
 	assignees: { string },
-	blockedBy: { number },
-	type: string?, -- "grilling" | "prototype" | "research" | "task"，无 wayfinder:<type> 标签时 nil
-	parent: number?, -- 父 issue 号：决策票挂地图，工单挂 spec
-	isSpec: boolean, -- 带 ready-for-agent 标签 = to-spec 的产物
+	blockedBy: { string }, -- 阻塞票的 id；解析不出对应票时进 unresolvedBlockers
+	unresolvedBlockers: boolean?, -- 有指向不存在票的阻塞引用 → 判被阻塞，绝不判可领
+	claimed: boolean?, -- 本地后端 Status: claimed（本地契约没有认领人概念）
+	type: string?, -- "grilling" | "prototype" | "research" | "task"，无类型时 nil
+	parent: number?, -- GitHub：父 issue 号（决策票挂地图，工单挂 spec）
+	isSpec: boolean, -- 带 ready-for-agent 标签 = to-spec 的产物；本地后端是 spec.md
 	createdAt: string?, -- ISO8601，任务板按它排序；缺省时排到最后
+	effort: string?, -- 本地后端的工作单元目录名
+	path: string?, -- 本地后端的票文件（仓库相对路径）；文档视图按它打开
 }
 
 --- 按状态把票分成四组，供任务板分组展示。
@@ -31,6 +38,7 @@ export type Buckets = {
 }
 
 export type Map = {
+	id: string, -- 选择态身份，规则同 Ticket.id
 	number: number,
 	title: string,
 	url: string,
@@ -38,8 +46,11 @@ export type Map = {
 	body: string,
 	bodyLoaded: boolean?, -- 正文是否已按需拉过（列表查询不含 body）
 	fog: string?,
+	decisions: string?, -- 已有决策（本地后端的地图正文段）
 	outOfScope: string?,
 	tickets: { Ticket },
+	effort: string?, -- 本地后端的工作单元目录名
+	path: string?, -- 本地后端的地图文件（仓库相对路径）
 }
 
 --- 取 GraphQL 的 {nodes={…}} 包装里的数组；不是包装就当普通数组。
@@ -82,14 +93,15 @@ local function readAssignees(v: any): { string }
 	return out
 end
 
---- 把 blockedBy 字段统一成 {number}（裸数字数组、{number} 对象数组或 {nodes={…}}）。
-local function readBlockedBy(v: any): { number }
-	local out: { number } = {}
+--- 把 blockedBy 字段统一成 id 数组（裸数字数组、{number} 对象数组或 {nodes={…}}）。
+--- GitHub 后端的编号即身份，数字按 tostring 转成 id。
+local function readBlockedBy(v: any): { string }
+	local out: { string } = {}
 	for _, b in ipairs(nodesOf(v)) do
 		if type(b) == "number" then
-			table.insert(out, b)
+			table.insert(out, tostring(b))
 		elseif type(b) == "table" and type(b.number) == "number" then
-			table.insert(out, b.number)
+			table.insert(out, tostring(b.number))
 		end
 	end
 	return out
@@ -157,6 +169,7 @@ function M.parseIssue(json: any): Ticket?
 		parentNum = parent.number
 	end
 	return {
+		id = tostring(number),
 		number = number,
 		title = type(json.title) == "string" and json.title or "",
 		body = body,
@@ -211,6 +224,7 @@ function M.parseMap(json: any): Map?
 	local body = type(json.body) == "string" and json.body or ""
 	local sections = M.parseSections(body)
 	return {
+		id = tostring(number),
 		number = number,
 		title = type(json.title) == "string" and json.title or "",
 		url = type(json.url) == "string" and json.url or "",
@@ -223,29 +237,44 @@ function M.parseMap(json: any): Map?
 	}
 end
 
+--- 票是否已被人接手。GitHub 后端看 assignee，本地后端看 `Status: claimed`
+--- （本地契约没有认领人概念，只能表达「已被接手」）。
+function M.isClaimed(t: Ticket): boolean
+	return #t.assignees > 0 or t.claimed == true
+end
+
+--- 票是否被阻塞：任一阻塞票仍开着，或阻塞引用指向不存在的票。
+--- 后者只由本地后端的扫描器标记（unresolvedBlockers）：GitHub 的依赖边不会悬空，
+--- 拉到的集合里找不到只可能是分页没拉全，那时判「不阻塞」才是原本的行为。
+function M.isBlocked(t: Ticket, byId: { [string]: Ticket }): boolean
+	if t.unresolvedBlockers then
+		return true
+	end
+	for _, b in ipairs(t.blockedBy) do
+		local blocker = byId[b]
+		if blocker and blocker.state == "OPEN" then
+			return true
+		end
+	end
+	return false
+end
+
 --- 前沿：state==OPEN 且未被 OPEN 票阻塞且无人认领的票。
 --- 被 CLOSED 票阻塞不计入阻塞（阻塞者关闭即解除），仍视作可领。
 function M.computeFrontier(tickets: { Ticket }): { Ticket }
-	local byNumber: { [number]: Ticket } = {}
+	local byId: { [string]: Ticket } = {}
 	for _, t in ipairs(tickets) do
-		byNumber[t.number] = t
+		byId[t.id] = t
 	end
 	local out: { Ticket } = {}
 	for _, t in ipairs(tickets) do
 		if t.state ~= "OPEN" then
 			continue
 		end
-		if #t.assignees > 0 then
+		if M.isClaimed(t) then
 			continue
 		end
-		local blocked = false
-		for _, b in ipairs(t.blockedBy) do
-			local blocker = byNumber[b]
-			if blocker and blocker.state == "OPEN" then
-				blocked = true
-				break
-			end
-		end
+		local blocked = M.isBlocked(t, byId)
 		if not blocked then
 			table.insert(out, t)
 		end
@@ -257,9 +286,9 @@ end
 --- 与 computeFrontier 同一套判据，只是不再丢掉已认领 / 被阻塞 / 已关闭的票 ——
 --- 那些票在面板上看不到，用户就以为任务板是空的。
 function M.classify(tickets: { Ticket }): Buckets
-	local byNumber: { [number]: Ticket } = {}
+	local byId: { [string]: Ticket } = {}
 	for _, t in ipairs(tickets) do
-		byNumber[t.number] = t
+		byId[t.id] = t
 	end
 	local out: Buckets = { claimable = {}, assigned = {}, blocked = {}, closed = {} }
 	for _, t in ipairs(tickets) do
@@ -271,19 +300,11 @@ function M.classify(tickets: { Ticket }): Buckets
 			table.insert(out.closed, t)
 			continue
 		end
-		if #t.assignees > 0 then
+		if M.isClaimed(t) then
 			table.insert(out.assigned, t)
 			continue
 		end
-		local blocked = false
-		for _, b in ipairs(t.blockedBy) do
-			local blocker = byNumber[b]
-			if blocker and blocker.state == "OPEN" then
-				blocked = true
-				break
-			end
-		end
-		if blocked then
+		if M.isBlocked(t, byId) then
 			table.insert(out.blocked, t)
 		else
 			table.insert(out.claimable, t)
@@ -294,13 +315,24 @@ end
 
 --- 按创建时间排序。ISO8601 定长且同格式，字典序就是时间序，不必解日期。
 --- 缺 createdAt 的票排在最后 —— 它们不是"最旧"，是"不知道"，混进时间序里会骗人。
+--- 排序兜底：先比编号，再比身份（本地后端各工作单元的编号会重号）。
+local function localOrder(a: Ticket, b: Ticket): number
+	if a.number ~= b.number then
+		return a.number - b.number
+	end
+	if a.id == b.id then
+		return 0
+	end
+	return if a.id < b.id then -1 else 1
+end
+
 function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 	local out = table.clone(tickets)
 	table.sort(out, function(a, b)
 		local ka = a.createdAt
 		local kb = b.createdAt
 		if ka == nil and kb == nil then
-			return a.number < b.number
+			return localOrder(a, b) < 0
 		end
 		if ka == nil then
 			return false
@@ -309,7 +341,7 @@ function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 			return true
 		end
 		if ka == kb then
-			return a.number < b.number
+			return localOrder(a, b) < 0
 		end
 		if newestFirst then
 			return ka > kb
@@ -320,20 +352,34 @@ function M.sortByCreated(tickets: { Ticket }, newestFirst: boolean): { Ticket }
 end
 
 --- 把 spec 与它拆出的工单归组。
---- spec = 带 ready-for-agent 标签且没有父 issue 的 issue；工单 = 父 issue 指向该 spec 的子 issue。
+--- GitHub：spec = 带 ready-for-agent 标签且没有父 issue；工单 = 父 issue 指向它的子 issue。
+--- 本地：spec.md 与票同在一个工作单元目录下，没有 parent 关系 —— 按工作单元归组。
 --- 不递归：只看一层，够用且不会因为环状 parent 打转。
 function M.groupBySpec(tickets: { Ticket }): { { spec: Ticket, tickets: { Ticket } } }
 	local out: { { spec: Ticket, tickets: { Ticket } } } = {}
-	local index: { [number]: number } = {}
+	-- GitHub 按编号挂接，本地按工作单元挂接：编号在工作单元之间会重号，不能用。
+	local byNumber: { [number]: number } = {}
+	local byEffort: { [string]: number } = {}
 	for _, t in ipairs(tickets) do
+		-- 有父 issue 的 spec 是被别的 spec 拆出来的子项，不是顶层规格卡。
 		if t.isSpec and t.parent == nil then
 			table.insert(out, { spec = t, tickets = {} })
-			index[t.number] = #out
+			if t.effort then
+				byEffort[t.effort] = #out
+			else
+				byNumber[t.number] = #out
+			end
 		end
 	end
 	for _, t in ipairs(tickets) do
-		if t.parent ~= nil and index[t.parent] then
-			table.insert(out[index[t.parent]].tickets, t)
+		local at: number? = nil
+		if t.parent ~= nil then
+			at = byNumber[t.parent]
+		elseif t.parent == nil and t.effort and not t.isSpec then
+			at = byEffort[t.effort]
+		end
+		if at then
+			table.insert(out[at].tickets, t)
 		end
 	end
 	return out

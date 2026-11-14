@@ -41,13 +41,13 @@ local TEMPLATES: { Template } = {
 			FIRST,
 			ROLE,
 			"",
-			"需求链接：{url}",
+			"{ref}",
 			"",
 			"## 目标",
 			"一句话：把这次需求的隐藏假设与未拍板的决策问清楚，给出可执行的结论。",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读票正文、评论与依赖（gh issue view {url}），别只凭标题猜。",
+			"- [ ] {readTicket}",
 			"- [ ] 用 git status 看手上有没有半成品。",
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
@@ -72,13 +72,13 @@ local TEMPLATES: { Template } = {
 			FIRST,
 			ROLE,
 			"",
-			"需求链接：{url}",
+			"{ref}",
 			"",
 			"## 目标",
 			"一句话：用一个能跑起来的小原型验证这次需求的想法，把「行不行」变成看得见的证据。",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读票正文、评论与依赖（gh issue view {url}），别只凭标题猜。",
+			"- [ ] {readTicket}",
 			"- [ ] 用 git status 看手上有没有半成品，别重复造。",
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
@@ -103,13 +103,13 @@ local TEMPLATES: { Template } = {
 			FIRST,
 			ROLE,
 			"",
-			"需求链接：{url}",
+			"{ref}",
 			"",
 			"## 目标",
 			"一句话：把这次调研主题的事实查清楚，给出带一手来源的结论。",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读票正文、评论与依赖（gh issue view {url}），别只凭标题猜。",
+			"- [ ] {readTicket}",
 			"- [ ] 先查仓内既有笔记（查找与存放都循仓内习惯），复用时只记路径与一句结论。",
 			"- [ ] 用 git status 看手上有没有半成品。",
 			"",
@@ -135,14 +135,14 @@ local TEMPLATES: { Template } = {
 			ROLE,
 			"",
 			"任务标题：{title}",
-			"任务链接：{url}",
+			"{taskRef}",
 			"",
 			"## 目标",
 			"一句话：把这张任务票的事做完，并回报可复核的结论。",
 			"- [ ] 开工门槛：票面没有编号，或信息不足以定位要做的事时，按「反问」小节先问清，不直接开工、不要猜。",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读票正文、评论与依赖（gh issue view {url}），验收标准以票面为准。",
+			"- [ ] {readTicketStrict}",
 			"- [ ] 用 git status 看手上有没有半成品，别重复造。",
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
@@ -170,7 +170,7 @@ local CHECK_AND_TOOLS = table.concat({
 	"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
 	"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
 	"- [ ] 提问前用一句话说明已查阅范围。",
-	"- [ ] 票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
+	"- [ ] {ticketTools}",
 	"- [ ] 不确定该读哪条技能、分支怎么走、派哪个 agent 时，先读 /skill:forge-router 的选路表；读完立刻读对应技能正文，不凭记忆猜名字。",
 	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
 }, "\n")
@@ -227,7 +227,7 @@ M.NEW_BUG = {
 		"## 目标",
 		"一句话：为这个仓库建一张把现象说清楚的 BUG 票。",
 		"仓库：{repo}",
-		"新建的单必须带 bug 标签；还没诊断过就同时带 needs-triage。",
+		"{bugMark}",
 		"",
 		CHECK_AND_TOOLS,
 		"",
@@ -244,8 +244,7 @@ M.NEW_BUG = {
 		"- [ ] 相关日志或错误文本：报错原文，或关键片段。",
 		"",
 		"## 查重（建单前必做）",
-		"- [ ] 收齐现象描述后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",
-		"- [ ] 标题像的用 gh issue view 看正文；清单没取全就把这句写进查重记录。",
+		"{dedupe}",
 		"- [ ] 有命中时先别下结论：把最多 3 个候选（编号、标题、像在哪）列给报告人，问一句「这些是不是同一个问题」，等到回答再决定。",
 		"- [ ] 同一个问题且旧单开着：不建新单，在旧单下评论补齐缺的要素（现象、步骤、环境），旧单不关。",
 		"- [ ] 同一个问题且旧单已关闭：按回归处理，建新单并在正文写明「回归：原单 #编号」。",
@@ -284,14 +283,14 @@ M.HEALTH_CHECK = {
 		CHECK_AND_TOOLS,
 		"",
 		"## 边界",
-		"- [ ] 只做两种结构动作：建原生子议题边把票挂到合适的地图下；为人点过头的票开一张新地图。",
+		"- [ ] {healthActions}",
 		"- [ ] 其余一律写进建议，不自动往票上写评论。",
-		"- [ ] 一律不碰：已关闭的票、任何票的标题与正文、标签与认领状态、别的仓库；不关闭票、不删评论、不改源码、不发版、不提交。清单里要动其中任何一项的，都不做，改成写进建议等人处理。",
-		"- [ ] 当前后端是 GitHub：写边只用 gh 的 issue 依赖接口（建原生子议题边），其余写操作一概不做。",
+		"- [ ] 一律不碰：已关闭的票、任何票的标题与正文、{healthUntouched}、别的仓库；不关闭票、不删评论、不改源码、不发版、不提交。清单里要动其中任何一项的，都不做，改成写进建议等人处理。",
+		"- [ ] {writeEdge}",
 		"",
 		"## 什么算游离",
-		"三条同时成立才算：票未关闭、票自己不是地图、票没有父票（不在任何地图的子票里）。",
-		"不按标签排除：写着等人动手、写着不打算做的票同样算游离，标签只在报告里用来分区。",
+		"{healthOrphan}",
+		"{healthScope}",
 		"在此之上对每张游离票判一句「这张能不能单张票处理掉」：能的话也可以留在原地，只在报告里登记一行并写明理由。",
 		"",
 		"## 挑地图的判据",
@@ -338,8 +337,7 @@ M.WRAP_UP = {
 		"- [ ] 不确定就按末节「反问」问，不替用户猜。",
 		"",
 		"## 第 1 段 · 盘点现状",
-		"- [ ] 用 git log <固定点>..HEAD --oneline、git diff --stat、gh pr list 列清这轮改了什么。",
-		"- [ ] 每条改动对到票号（gh issue view 核状态）；对不上的单独列出来。",
+		"{wrapScan}",
 		"- [ ] 出口判定：改动清单能列全且对得上票 → 过；列不出或对不上 → 停。",
 		"",
 		"## 第 2 段 · 审 diff",
@@ -412,7 +410,7 @@ local ENTRIES: { Entry } = {
 			"仓库：{repo}",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读现有开放票与依赖（gh issue list --state open），别重复建票。",
+			"- [ ] {listOpen}",
 			"- [ ] 用 git status 看手上有没有半成品。",
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
@@ -445,7 +443,7 @@ local ENTRIES: { Entry } = {
 			"仓库：{repo}",
 			"",
 			"## 事实核验",
-			"- [ ] 用 gh 读现有开放票与依赖（gh issue list --state open），别把已做的事重做一遍。",
+			"- [ ] {listDone}",
 			"- [ ] 用 git status 看手上有没有半成品。",
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
@@ -476,11 +474,6 @@ function M.entryById(id: string): Entry?
 	return nil
 end
 
---- 替换入口模板里的占位符。
-function M.renderEntry(e: Entry, repo: string): string
-	return (e.body:gsub("{repo}", repo))
-end
-
 --- 按 id 取模板；找不到返回 nil。
 function M.byId(id: string): Template?
 	for _, t in ipairs(M.TEMPLATES) do
@@ -499,10 +492,74 @@ function M.byTicketType(kind: string?): Template?
 	return M.byId(kind)
 end
 
+export type BackendVars = { [string]: string }
+
+--- 后端相关句子的两套取值。模板体只有一份，按后端注入取值 —— 复制一整份模板
+--- 会让两套措辞慢慢漂开。GitHub 那套与改动前逐字一致（有断言护着）。
+function M.backendVars(backendName: string?, ctx: { url: string?, path: string? }): BackendVars
+	local url = ctx.url or ""
+	local path = ctx.path or ""
+	if backendName == "local" then
+		local where = "票文件：" .. path .. "（仓库相对路径）"
+		return {
+			ref = where,
+			taskRef = where,
+			readTicket = "读票文件（" .. path .. "），别只凭标题猜。",
+			readTicketStrict = "读票文件（" .. path .. "），验收标准以票面为准。",
+			listOpen = "扫一遍 .scratch/<工作单元>/issues/ 下的票文件与各 map.md，别重复建票。",
+			listDone = "扫一遍 .scratch/<工作单元>/issues/ 下的票文件与各 map.md，别把已做的事重做一遍。",
+			ticketTools = "票一律是盘上的 markdown 文件：读用读文件，建单在 .scratch/<工作单元>/issues/ 下新建 NN-<slug>.md，改状态改票文件顶部的 Status: 行。",
+			dedupe = table.concat({
+				"- [ ] 收齐现象描述后全扫一遍票目录（.scratch/*/issues/），不要用关键词搜索代替。",
+				"- [ ] 标题像的读票文件看正文；清单没取全就把这句写进查重记录。",
+			}, "\n"),
+			writeEdge = "当前后端是本地 markdown：归位 = 把票文件移到目标工作单元的 issues/ 下；没有原生依赖边可建，其余写操作一概不做。",
+			bugMark = "新建的票文件在顶部写 Status: needs-triage（还没诊断过），诊断后改 Status；类型写 Type: task。",
+			healthUntouched = "票文件的状态行",
+			healthActions = "只做两种结构动作：把票文件移到合适工作单元的 issues/ 下（这就是 local 后端的「挂到地图下」）；为人点过头的票新建一个工作单元目录（map.md + issues/）。",
+			healthOrphan = "三条同时成立才算：票未关闭、票自己不是地图、票所在的工作单元既没有 map.md 也没有 spec.md（那就是孤儿票）。",
+			healthScope = "不按状态排除：写着等人动手、写着不打算做的票同样算游离，状态只在报告里用来分区。",
+			wrapScan = table.concat({
+				"- [ ] 用 git log <固定点>..HEAD --oneline、git diff --stat 列清这轮改了什么（本地后端没有 PR）。",
+				"- [ ] 每条改动对到票文件与 Status 行；对不上的单独列出来。",
+			}, "\n"),
+		}
+	end
+	return {
+		ref = "需求链接：" .. url,
+		taskRef = "任务链接：" .. url,
+		readTicket = "用 gh 读票正文、评论与依赖（gh issue view " .. url .. "），别只凭标题猜。",
+		readTicketStrict = "用 gh 读票正文、评论与依赖（gh issue view " .. url .. "），验收标准以票面为准。",
+		listOpen = "用 gh 读现有开放票与依赖（gh issue list --state open），别重复建票。",
+		listDone = "用 gh 读现有开放票与依赖（gh issue list --state open），别把已做的事重做一遍。",
+		ticketTools = "票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
+		dedupe = table.concat({
+			"- [ ] 收齐现象描述后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",
+			"- [ ] 标题像的用 gh issue view 看正文；清单没取全就把这句写进查重记录。",
+		}, "\n"),
+		writeEdge = "当前后端是 GitHub：写边只用 gh 的 issue 依赖接口（建原生子议题边），其余写操作一概不做。",
+		bugMark = "新建的单必须带 bug 标签；还没诊断过就同时带 needs-triage。",
+		healthUntouched = "标签与认领状态",
+		healthActions = "只做两种结构动作：建原生子议题边把票挂到合适的地图下；为人点过头的票开一张新地图。",
+		healthOrphan = "三条同时成立才算：票未关闭、票自己不是地图、票没有父票（不在任何地图的子票里）。",
+		healthScope = "不按标签排除：写着等人动手、写着不打算做的票同样算游离，标签只在报告里用来分区。",
+		wrapScan = table.concat({
+			"- [ ] 用 git log <固定点>..HEAD --oneline、git diff --stat、gh pr list 列清这轮改了什么。",
+			"- [ ] 每条改动对到票号（gh issue view 核状态）；对不上的单独列出来。",
+		}, "\n"),
+	}
+end
+
 --- 替换模板里的 {占位符}。缺的占位符留原样（不静默吞掉，便于发现模板写错）。
 function M.render(tpl: Template, vars: { [string]: string }): string
+	-- 后端相关句子的默认取值先铺上，调用方显式给的覆盖它：
+	-- 漏传只会退到 GitHub 措辞，不会把 {readTicket} 这类占位符原样漏进提示词。
+	local merged = M.backendVars(vars.backend, { url = vars.url, path = vars.path })
+	for k, v in pairs(vars) do
+		merged[k] = v
+	end
 	return (tpl.body:gsub("{(%w+)}", function(key: string)
-		return vars[key] or ("{" .. key .. "}")
+		return merged[key] or ("{" .. key .. "}")
 	end))
 end
 

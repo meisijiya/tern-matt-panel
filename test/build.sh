@@ -38,11 +38,17 @@ runner="$here/run_tests.luau"
 out="$(cd "$here/../.." && pwd)/.tern-matt-panel.bundle.luau"
 trap 'rm -f "$out"' EXIT
 
+# shell 脚本的语法错只在有人手动跑 e2e 时才炸（e2e 要 GUI，CI 覆盖不到）。
+# 语法检查放这里：它是唯一每次都会跑的门禁，代价不到一秒。
+for f in "$repo"/test/*.sh; do
+	bash -n "$f" || { echo "shell 语法错：$f" >&2; exit 1; }
+done
+
 # 拼接会把所有模块先定义好，于是「host 里忘了 require 某个模块」这种错
 # 在单测里永远抓不到 —— 真机才炸（await failed / runtime error）。
 # 所以先静态查一遍：代码里用到的 lib 模块，宿主/窗口文件必须自己 require。
 # 顺序有依赖：被依赖的放前面（require 行会被剥掉，后声明的 local 在前文是 nil）。
-mods="util paths packs skills lanes tracker templates commands"
+mods="util paths packs skills lanes tracker backend localtracker templates commands"
 have="$(ls lib/*.luau 2>/dev/null | sed 's#.*/##; s#\.luau$##' | sort | tr '\n' ' ')"
 want="$(printf '%s\n' $mods | sort | tr '\n' ' ')"
 if [ "$have" != "$want" ]; then

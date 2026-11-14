@@ -5,7 +5,8 @@
 #
 # 选项：
 #   --unit-only   只跑单元测试
-#   --e2e-only    只跑 e2e
+#   --e2e-only    只跑 e2e（本仓，GitHub 模式）
+#   --e2e-local   只跑本地 markdown 后端的 e2e（自建夹具仓库）
 #   --keep        e2e 跑完不关窗口
 #
 # 依赖：luau CLI、tern（能起 --control 窗口）、gh（已登录）、本机已装中文技能包。
@@ -37,11 +38,13 @@ forward=("$@")
 
 run_unit=1
 run_e2e=1
+run_local=0
 keep=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--unit-only) run_e2e=0 ;;
 	--e2e-only) run_unit=0 ;;
+	--e2e-local) run_unit=0; run_e2e=0; run_local=1 ;;
 	--keep) keep="--keep" ;;
 	*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
@@ -105,6 +108,21 @@ if [ "$run_unit" -eq 1 ]; then
 			echo "unit: FAIL" >&2
 			fail=1
 		fi
+	fi
+fi
+
+if [ "$run_local" -eq 1 ]; then
+	echo "== 本地后端 e2e =="
+	rc=0
+	bash "$here/e2e-local.sh" $keep || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		echo "e2e-local: PASS"
+	elif [ "$rc" -eq 2 ]; then
+		echo "e2e-local: 环境不可用" >&2
+		envfail=1
+	else
+		echo "e2e-local: FAIL" >&2
+		fail=1
 	fi
 fi
 

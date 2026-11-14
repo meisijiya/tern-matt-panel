@@ -244,6 +244,30 @@ fi
 
 echo "e2e: 窗口已起，控制端口 $port"
 
+# ---- 核对活动 tab 的 cwd 就是本仓 ----
+# 用例是点在「活动 tab」上的，落在别的仓库就是在测别人的面板：
+# 断言等不到会报红，更糟的是可能恰好在错面板上全绿。
+focused_cwd="$(timeout 10 "$tern_bin" ctl --control "$port" state 2>/dev/null | python -c '
+import json, os, sys
+expected = sys.argv[1]
+try:
+    state = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+cwd = (state.get("focused") or {}).get("cwd") or ""
+if cwd and os.path.normcase(os.path.normpath(cwd)) != os.path.normcase(os.path.normpath(expected)):
+    print(cwd)
+' "$repo_win" 2>/dev/null || true)"
+if [ -n "$focused_cwd" ]; then
+	cat >&2 <<EOF
+SKIP: 受控窗口 $port 的活动 tab 在「$focused_cwd」，不是本仓（$repo_win）。
+  用例会点在活动 tab 上，落在别的仓库就是测错面板。
+  先切到本仓的 tab（tern ctl --control $port 后 tab <序号>），或在本仓目录重开窗口：
+    cd "$repo" && "$tern_bin" --control $port .
+EOF
+	exit 2
+fi
+
 # ---- 跑用例 ----
 cases="$here/e2e-cases.sh"
 if [ ! -f "$cases" ]; then

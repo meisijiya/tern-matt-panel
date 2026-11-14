@@ -322,6 +322,195 @@ end
 
 -- ---------------------------------------------------------------- tests ----
 
+-- ------------------------------------------------------------ 后端判定 ----
+
+test("backend.parseContract 只认高置信标题行", function()
+	eq(backend.parseContract("# Issue tracker: Local Markdown（本地 Markdown）\n正文"), "local", "英文标题 + 本地 markdown")
+	eq(backend.parseContract("# Issue 跟踪器：GitHub\n"), "github", "中文标题 + GitHub")
+	-- 正文里提一句别的后端不算声明：参考实现全文扫关键词时踩过这个坑。
+	eq(backend.parseContract("## 约定\n我们从 GitHub 迁过来，新票写进 .scratch。\n"), nil, "正文提及不算声明")
+	local b, declared = backend.parseContract("# Issue 跟踪器：GitLab\n")
+	eq(b, nil, "GitLab 不是支持的后端")
+	eq(declared, "GitLab", "仍带回声明原文，供界面说清原因")
+end)
+
+test("backend.decide 顺序：约定文件 > 识别", function()
+	local d = backend.decide({
+		contractText = "# Issue 跟踪器：GitHub\n", originUrl = "https://github.com/a/b.git", hasScratch = true,
+	})
+	eq(d.backend, "github", "约定文件优先")
+	eq(d.source, "contract")
+	eq(d.reason, backend.CONTRACT_PATH, "依据里就写约定文件路径（前缀由界面加）")
+
+	d = backend.decide({ contractText = "# Issue tracker: Local Markdown\n", originUrl = "https://github.com/a/b.git", hasScratch = false })
+	eq(d.backend, "local", "约定文件声明本地时即使有 origin 也用本地")
+
+	d = backend.decide({ contractText = nil, originUrl = "git@github.com:a/b.git", hasScratch = true })
+	eq(d.backend, "github", "无约定文件：origin 指向 GitHub 优先")
+	eq(d.source, "detected")
+
+	d = backend.decide({ contractText = nil, originUrl = "D:/26code/local-repo", hasScratch = true })
+	eq(d.backend, "local", "remote 是本地路径时按 .scratch 识别")
+	eq(d.source, "detected")
+
+	d = backend.decide({ contractText = nil, originUrl = "git@gitlab.com:a/b.git", hasScratch = false })
+	eq(d.backend, nil, "别的托管站不算 GitHub 证据")
+	eq(d.source, nil)
+	ok(string.find(d.reason, "约定文件", 1, true) ~= nil, "说清要跑 setup")
+end)
+
+-- ---------------------------------------------------------- 本地跟踪器 ----
+
+test("localtracker 状态归一表", function()
+	eq(localtracker.stateOf("resolved").state, "CLOSED", "resolved")
+	eq(localtracker.stateOf("done").state, "CLOSED", "done")
+	eq(localtracker.stateOf("wontfix").state, "CLOSED", "wontfix")
+	local claimed = localtracker.stateOf("claimed")
+	eq(claimed.state, "OPEN", "claimed 仍是打开")
+	eq(claimed.claimed, true, "claimed 标记已认领")
+	eq(localtracker.stateOf("needs-triage").state, "OPEN", "needs-triage")
+	eq(localtracker.stateOf("needs-triage").claimed, false, "needs-triage 不算认领")
+	eq(localtracker.stateOf(nil).state, "OPEN", "缺 Status 行")
+	eq(localtracker.stateOf(nil).claimed, false, "缺 Status 行不算认领")
+end)
+
+test("localtracker 解析票头与阻塞行", function()
+	local text = table.concat({
+		"# 03: 修 X",
+		"",
+		"**What to build:** 让 Y 生效。",
+		"",
+		"**Blocked by:** 01, 02",
+		"",
+		"**Status:** claimed",
+		"",
+		"- [ ] 验收",
+	}, "\n")
+	eq(localtracker.parseTitle(text), "修 X", "标题去掉编号前缀")
+	eq(localtracker.parseStatus(text), "claimed")
+	eq(localtracker.parseType(text), nil, "没有 Type 行")
+	local blocked = localtracker.parseBlockedBy(text)
+	eq(#blocked, 2)
+	eq(blocked[1], "01")
+	eq(blocked[2], "02")
+	eq(localtracker.parseBlockedBy("**Blocked by:** None (can start immediately)")[1], nil, "None 不是编号")
+
+	local typed = "# 04: 调研\n**Type:** research\n**Status:** ready-for-agent"
+	eq(localtracker.parseType(typed), "research")
+	eq(localtracker.parseType("# x\n**Type:** bogus"), nil, "不认识的类型不算")
+end)
+
+test("localtracker 阻塞行写 3 也能对上 03-x.md", function()
+	local root = "D:/fix-num"
+	local dir = root .. "/.scratch/gamma/issues"
+	fsDirs[root .. "/.scratch"] = true
+	fsDirs[root .. "/.scratch/gamma"] = true
+	fsDirs[dir] = true
+	fsFiles[dir .. "/03-third.md"] = "# 03: 第三张\n**Status:** resolved"
+	fsFiles[dir .. "/04-fourth.md"] = "# 04: 第四张\n**Blocked by:** 3\n**Status:** ready-for-agent"
+	local scan = localtracker.scan(root)
+	local byId: { [string]: any } = {}
+	for _, t in ipairs(scan.tickets) do
+		byId[t.id] = t
+	end
+	eq(#byId["gamma/04"].blockedBy, 1)
+	eq(byId["gamma/04"].blockedBy[1], "gamma/03", "数字写法与零填充编号对齐")
+	eq(byId["gamma/04"].unresolvedBlockers, nil, "不是悬空引用")
+end)
+
+test("localtracker 地图段：中英标题都认，笔记不显示", function()
+	local zh = table.concat({
+		"## 目的地", "到终点", "", "## 笔记", "领域信息", "",
+		"## 已有决策", "- 已定 A", "", "## 尚未明确", "- 迷雾 B", "", "## 范围外", "- 不做 C",
+	}, "\n")
+	local sec = localtracker.parseSections(zh)
+	eq(sec.fog, "- 迷雾 B")
+	eq(sec.decisions, "- 已定 A")
+	eq(sec.outOfScope, "- 不做 C")
+
+	local en = table.concat({
+		"## Destination", "d", "", "## Notes", "n", "",
+		"## Decisions-so-far", "- decided", "", "## Fog", "- foggy", "", "## Out-of-scope", "- nope",
+	}, "\n")
+	local sec2 = localtracker.parseSections(en)
+	eq(sec2.fog, "- foggy", "英文 Fog")
+	eq(sec2.decisions, "- decided", "英文 Decisions-so-far")
+	eq(sec2.outOfScope, "- nope", "英文 Out-of-scope")
+end)
+
+test("localtracker.scan 读目录：地图/规格/票、身份与阻塞", function()
+	local root = "D:/fixture"
+	local scratch = root .. "/.scratch"
+	fsDirs[scratch] = true
+	fsDirs[scratch .. "/alpha"] = true
+	fsDirs[scratch .. "/alpha/issues"] = true
+	fsDirs[scratch .. "/beta"] = true
+	fsDirs[scratch .. "/beta/issues"] = true
+	fsFiles[scratch .. "/alpha/map.md"] = "## 尚未明确\n- 迷雾 A\n\n## 已有决策\n- 决策 A"
+	fsFiles[scratch .. "/alpha/spec.md"] = "# 规格 A\n目标"
+	fsFiles[scratch .. "/alpha/issues/01-first.md"] =
+		"# 01: 第一张\n**Blocked by:** None (can start immediately)\n**Status:** resolved\n**Type:** task"
+	fsFiles[scratch .. "/alpha/issues/02-second.md"] =
+		"# 02: 第二张\n**Blocked by:** 01, 07\n**Status:** claimed\n**Type:** grilling"
+	fsFiles[scratch .. "/beta/issues/01-other.md"] = "# 01: 另一条线\n**Status:** needs-triage"
+
+	local scan = localtracker.scan(root)
+	eq(#scan.errors, 0, "没有读不动的文件")
+	eq(#scan.maps, 1, "只有 alpha 有 map.md")
+	eq(scan.maps[1].effort, "alpha")
+	eq(scan.maps[1].fog, "- 迷雾 A")
+	eq(scan.maps[1].decisions, "- 决策 A")
+	eq(#scan.maps[1].tickets, 2, "alpha 的两张票挂在它的地图下")
+
+	local byId: { [string]: any } = {}
+	for _, t in ipairs(scan.tickets) do
+		byId[t.id] = t
+	end
+	ok(byId["alpha/01"] ~= nil, "alpha/01 有身份")
+	ok(byId["beta/01"] ~= nil, "beta/01 有身份")
+	ok(byId["alpha/01"].id ~= byId["beta/01"].id, "同号票身份不同")
+	eq(byId["alpha/01"].number, 1, "编号仍是 1")
+	eq(byId["alpha/01"].state, "CLOSED", "resolved → 已关闭")
+	eq(byId["alpha/02"].claimed, true, "claimed → 已认领")
+	eq(byId["alpha/02"].type, "grilling")
+	eq(#byId["alpha/02"].blockedBy, 2)
+	eq(byId["alpha/02"].blockedBy[1], "alpha/01", "阻塞边带工作单元")
+	eq(byId["alpha/02"].unresolvedBlockers, true, "指向不存在的票 07")
+	eq(byId["alpha/spec"].isSpec, true, "spec.md 是顶层规格卡")
+	eq(byId["alpha/spec"].path, ".scratch/alpha/spec.md", "路径是仓库相对路径")
+	eq(byId["alpha/02"].state, "OPEN")
+end)
+
+test("localtracker.scan 没有 .scratch 时是空扫描", function()
+	local scan = localtracker.scan("D:/no-scratch")
+	eq(#scan.maps, 0)
+	eq(#scan.tickets, 0)
+	eq(#scan.errors, 0)
+end)
+
+test("localtracker.scan 读不动的票记进 errors，不静默少显示", function()
+	local root = "D:/fixture2"
+	local dir = root .. "/.scratch/only/issues"
+	fsDirs[root .. "/.scratch"] = true
+	fsDirs[root .. "/.scratch/only"] = true
+	fsDirs[dir] = true
+	-- 桩的 read 对不存在的文件抛错；让目录列出一个读不到的文件名。
+	local realList = ternStub.fs.list
+	ternStub.fs.list = function(path: string): { string }
+		if path == dir then
+			return { "01-broken.md", "02-ok.md" }
+		end
+		return realList(path)
+	end
+	fsFiles[dir .. "/02-ok.md"] = "# 02: 好票\n**Status:** ready-for-agent"
+	local scan = localtracker.scan(root)
+	ternStub.fs.list = realList
+	eq(#scan.errors, 1, "读不动的票报一条")
+	eq(scan.errors[1].path, ".scratch/only/issues/01-broken.md", "列出读不动的文件")
+	eq(#scan.tickets, 1, "能读的票照样显示")
+end)
+
+
 test("util.trim", function()
 	eq(util.trim("  hello  "), "hello")
 	eq(util.trim("\t\nx\r\n"), "x")
@@ -474,6 +663,7 @@ end)
 test("tracker.computeFrontier", function()
 	local mk = function(n, state, assignees, blockedBy)
 		return {
+			id = tostring(n),
 			number = n,
 			title = "t" .. tostring(n),
 			body = "",
@@ -486,8 +676,8 @@ test("tracker.computeFrontier", function()
 		}
 	end
 	local t1 = mk(1, "OPEN", {}, {})
-	local t2 = mk(2, "OPEN", {}, { 1 }) -- blocked by open t1
-	local t3 = mk(3, "OPEN", {}, { 4 }) -- blocked only by closed
+	local t2 = mk(2, "OPEN", {}, { "1" }) -- blocked by open t1
+	local t3 = mk(3, "OPEN", {}, { "4" }) -- blocked only by closed
 	local t4 = mk(4, "CLOSED", {}, {})
 	local t5 = mk(5, "OPEN", { "alice" }, {}) -- assigned
 	local t6 = mk(6, "CLOSED", {}, {}) -- closed
@@ -508,6 +698,7 @@ end)
 test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 	local mk = function(n, state, assignees, blockedBy)
 		return {
+			id = tostring(n),
 			number = n,
 			title = "t" .. tostring(n),
 			body = "",
@@ -522,7 +713,7 @@ test("tracker.classify 四组互斥且覆盖非 spec 票", function()
 		}
 	end
 	local t1 = mk(1, "OPEN", {}, {})
-	local t2 = mk(2, "OPEN", {}, { 1 })
+	local t2 = mk(2, "OPEN", {}, { "1" })
 	local t3 = mk(3, "OPEN", { "alice" }, {})
 	local t4 = mk(4, "CLOSED", {}, {})
 	-- 顶层 spec 有自己的卡片，不该在四组里再出现一遍
@@ -556,6 +747,12 @@ test("util.parseRemoteUrl 认各种 remote 地址", function()
 	eq(util.parseRemoteUrl("git@gitlab.com:group/sub/proj.git"), "sub/proj", "nested group takes last two")
 	eq(util.parseRemoteUrl(""), nil, "empty")
 	eq(util.parseRemoteUrl("not a url"), nil, "garbage")
+	-- 本地路径 remote 不是 owner/repo：以前会解成 x/y 这种假仓库去请求远端。
+	eq(util.parseRemoteUrl("D:/26code/other-repo"), nil, "windows drive path")
+	eq(util.parseRemoteUrl("D:\\26code\\other-repo"), nil, "windows drive path with backslash")
+	eq(util.parseRemoteUrl("/home/u/proj"), nil, "absolute posix path")
+	eq(util.parseRemoteUrl("../sibling"), nil, "relative parent path")
+	eq(util.parseRemoteUrl("file:///D:/26code/other-repo"), nil, "file url")
 end)
 
 test("tracker 认任意前缀的流程标签", function()
@@ -711,7 +908,7 @@ test("注入正文里的斜杠命令一律带 skill: 前缀", function()
 		{ "体检", templates.render(templates.HEALTH_CHECK, { repo = "o/r" }) },
 	}
 	for _, e in ipairs(templates.ENTRIES) do
-		table.insert(bodies, { e.title, templates.renderEntry(e, "o/r") })
+		table.insert(bodies, { e.title, templates.render(e, { repo = "o/r" }) })
 	end
 	for _, tpl in ipairs(templates.TEMPLATES) do
 		table.insert(bodies, { tpl.title, templates.render(tpl, { url = "u", title = "t" }) })
@@ -730,10 +927,10 @@ test("新增需求两条路、提 BUG、体检各调对技能", function()
 	local explore = templates.entryById("explore")
 	local implement = templates.entryById("implement")
 	ok(explore ~= nil and implement ~= nil, "两条路都在")
-	local e = templates.renderEntry(explore :: any, "me/repo")
+	local e = templates.render(explore :: any, { repo = "me/repo" })
 	ok(string.find(e, "/skill:wayfinder", 1, true) ~= nil, "探索走 wayfinder")
 	ok(string.find(e, "blockedBy", 1, true) ~= nil, "讲了并行与串行")
-	local i = templates.renderEntry(implement :: any, "me/repo")
+	local i = templates.render(implement :: any, { repo = "me/repo" })
 	ok(string.find(i, "/skill:grill-with-docs", 1, true) ~= nil, "实施走 grill-with-docs")
 	ok(string.find(i, "/skill:to-spec", 1, true) ~= nil, "收尾提醒 to-spec")
 
@@ -897,6 +1094,82 @@ test("剪贴板写不进去时不许谎报已复制", function()
 	ok(string.find(tostring(res.error), "正文已复制", 1, true) == nil, "does not claim success")
 end)
 
+test("窗口半边把 open-doc 交出去并回写回执", function()
+	local winPane = 42
+	local opened: { { path: string, how: any } } = {}
+	local said: { any } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function(...)
+			table.insert(said, { ... })
+		end,
+		docs = {
+			open = function(_self: any, path: string, opts: any)
+				table.insert(opened, { path = path, how = opts and opts.how })
+				return 77
+			end,
+		},
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = {
+		seq = 10,
+		kind = "open-doc",
+		pane = winPane,
+		body = "D:/fix/.scratch/alpha/issues/02-second.md",
+		name = ".scratch/alpha/issues/02-second.md",
+	}
+	pollTick(cx)
+
+	eq(#opened, 1, "调了一次文档视图")
+	eq(opened[1].path, "D:/fix/.scratch/alpha/issues/02-second.md", "路径原样传给平台")
+	eq(opened[1].how, "tab", "开在新 tab")
+	local res = kvStore["inject_result"]
+	eq(type(res), "table", "回执写回 kv")
+	eq(res.ok, true, "成功")
+	eq(res.seq, 10, "序号回传")
+	eq(said[1][2], "info", "成功提示")
+end)
+
+test("open-doc 失败时回执带原因，不报成功", function()
+	local winPane = 42
+	local said: { any } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function(...)
+			table.insert(said, { ... })
+		end,
+		docs = {
+			open = function()
+				error("no such file")
+			end,
+		},
+		session = {
+			pane = function(_self: any, id: number) return (if id == winPane then { id = id } else nil) end,
+			focused = function() return winPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+		},
+		agents = { list = function() return {} end, ask = function() end },
+	}
+	kvStore["action"] = { seq = 11, kind = "open-doc", pane = winPane, body = "D:/nope.md", name = "nope.md" }
+	pollTick(cx)
+
+	local res = kvStore["inject_result"]
+	eq(res.ok, false, "失败如实上报")
+	ok(string.find(tostring(res.error), "no such file", 1, true) ~= nil, "带回原因")
+	eq(said[1][2], "error", "错误提示")
+end)
+
 test("compose 复制失败不许报已复制", function()
 	local winPane = 42
 	local cx: any = {
@@ -1001,9 +1274,9 @@ end)
 local function nextStepState()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "", state = "OPEN", body = "", tickets = {} } }
 	st.tickets = {
-		{ number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
+		{ id = "12", number = 12, title = "修 X", body = "", state = "OPEN", url = "u12",
 			labels = { "wayfinder:task" }, assignees = { "me" }, blockedBy = {}, type = "task",
 			parent = 1, isSpec = false, createdAt = "2026-11-01T00:00:00Z" },
 	}
@@ -1244,7 +1517,7 @@ table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.r
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
 for _, e in ipairs(templates.ENTRIES) do
-	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.renderEntry(e, "me/repo") })
+	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.render(e, { repo = "me/repo" }) })
 end
 
 local ASK_MARK = "## 反问（信息不全时先问）"
@@ -1737,8 +2010,8 @@ test("tracker.parseIssuePage 解析一页与分页信息", function()
 end)
 
 test("tracker.mergeIssues 按票号去重且保留先到顺序", function()
-	local a = { { number = 2, title = "a" }, { number = 1, title = "b" } }
-	local b = { { number = 1, title = "dup" }, { number = 3, title = "c" } }
+	local a = { { id = "2", number = 2, title = "a" }, { number = 1, title = "b" } }
+	local b = { { id = "1", number = 1, title = "dup" }, { number = 3, title = "c" } }
 	local out = tracker.mergeIssues(a, b)
 	eq(#out, 3)
 	eq(out[1].number, 2)
@@ -1767,12 +2040,12 @@ test("open 侧必须全量：阻塞票在 201 位时仍判定阻塞", function()
 	local tickets = {}
 	for i = 1, 202 do
 		tickets[i] = {
-			number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
+			id = tostring(i), number = i, title = "t" .. i, body = "", state = "OPEN", url = "",
 			labels = {}, assignees = {}, blockedBy = {}, type = nil, parent = nil,
 			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
 		}
 	end
-	tickets[1].blockedBy = { 201 }
+	tickets[1].blockedBy = { "201" }
 	local full = tracker.computeFrontier(tickets)
 	for _, t in ipairs(full) do
 		ok(t.number ~= 1, "被 201 位 OPEN 票阻塞的票不能进可领")
@@ -1796,7 +2069,7 @@ local function pagedState(closedCount: number?): any
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.openIssues = { { number = 1, title = "open", state = "OPEN" } }
+	st.openIssues = { { id = "1", number = 1, title = "open", state = "OPEN" } }
 	st.closedIssues = {}
 	for i = 1, (closedCount or 1) do
 		table.insert(st.closedIssues, { number = 100 + i, title = "closed" .. i, state = "CLOSED" })
@@ -1827,7 +2100,7 @@ test("已关组有下一页时出现加载更多，点一次追加下一页", fu
 	ok(not hasLoadMore(buttonTexts(panel.view(st, mkCx(120)).main, {})), "刷新在途时不给续拉")
 	st.loading = false
 	jsonPayloads["PAGE2"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "PAGE2", stderr = "" } } }
@@ -1849,7 +2122,7 @@ end)
 test("续拉缺 endCursor 时不保留下一页游标", function()
 	local st = pagedState(1)
 	jsonPayloads["NO_CURSOR"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = nil },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "NO_CURSOR", stderr = "" } } }
@@ -1874,7 +2147,7 @@ end)
 test("续拉在途时重复点击只发一次请求", function()
 	local st = pagedState(1)
 	jsonPayloads["SLOW"] = { data = { repository = { issues = {
-		nodes = { { number = 200, title = "c200", state = "CLOSED" } },
+		nodes = { { id = "200", number = 200, title = "c200", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	processFixtures = { { match = "states:CLOSED", result = { status = 0, stdout = "SLOW", stderr = "" }, defer = true } }
@@ -1934,11 +2207,11 @@ end)
 test("切排序丢弃已关页并按新方向重拉", function()
 	local st = pagedState(2)
 	jsonPayloads["OPEN_ASC"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "open", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	jsonPayloads["PAGE_ASC"] = { data = { repository = { issues = {
-		nodes = { { number = 300, title = "oldest", state = "CLOSED" } },
+		nodes = { { id = "300", number = 300, title = "oldest", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = "a1" },
 	} } } }
 	processFixtures = {
@@ -1967,7 +2240,7 @@ end)
 test("续拉在途时切排序：旧回调作废，不把旧方向页混进新序列", function()
 	local st = pagedState(1)
 	jsonPayloads["PAGE_OLD"] = { data = { repository = { issues = {
-		nodes = { { number = 999, title = "stale", state = "CLOSED" } },
+		nodes = { { id = "999", number = 999, title = "stale", state = "CLOSED" } },
 		pageInfo = { hasNextPage = false, endCursor = "old" },
 	} } } }
 	processFixtures = {
@@ -1999,7 +2272,7 @@ end)
 test("切排序重拉失败：保留旧内容但不再用旧游标续拉", function()
 	local st = pagedState(2)
 	jsonPayloads["OPEN_FAIL"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "open", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "open", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	processFixtures = {
@@ -2092,15 +2365,331 @@ local function listFor(node: any, suffix: string): any?
 	return nil
 end
 
+test("票身份是字符串：同号票分属不同工作单元时互不覆盖", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	st.repo = "me/repo"
+	st.maps = {}
+	local mk = function(id, title)
+		return {
+			id = id, number = 1, title = title, body = "", state = "OPEN", url = "",
+			labels = {}, assignees = {}, blockedBy = {}, type = "task", parent = nil,
+			isSpec = false, createdAt = "2026-11-01T00:00:00Z",
+		}
+	end
+	st.tickets = { mk("alpha/01", "A 单元第一张"), mk("beta/01", "B 单元第一张") }
+	local list = listFor(panel.view(st, mkCx(120)).main, "_claimable")
+	eq(#list.c, 2, "同号的两张票都在列表里")
+	eq(list.c[1].p.key, "alpha/01", "行 key 带上工作单元")
+	eq(list.c[2].p.key, "beta/01")
+	eq(list.c[2].label, "B 单元第一张")
+	-- 点 B 的行只打开 B：键若只用编号，两张票会撞在一起。
+	panel.event(st, { ev = "select", item = "main.1.77.beta/01" }, mkCx(120))
+	eq(st.ticketSel, "beta/01", "选中态按身份记")
+	eq(st.ticket.title, "B 单元第一张", "点开的是 B")
+end)
+
+--- 造一个带 .scratch 的夹具仓库，走本地 markdown 后端。
+local function localFixture()
+	local root = "D:/fix"
+	local scratch = root .. "/.scratch"
+	fsFiles[root .. "/docs/agents/issue-tracker.md"] = "# Issue tracker: Local Markdown（本地 Markdown）\n本仓库的票放在 .scratch/。"
+	fsDirs[scratch] = true
+	fsDirs[scratch .. "/alpha"] = true
+	fsDirs[scratch .. "/alpha/issues"] = true
+	fsDirs[scratch .. "/beta"] = true
+	fsDirs[scratch .. "/beta/issues"] = true
+	fsFiles[scratch .. "/alpha/map.md"] = table.concat({
+		"## 目的地", "把 A 做完", "", "## 笔记", "笔记内容不显示", "",
+		"## 已有决策", "- 已定：先做 A", "", "## 尚未明确", "- 迷雾：B 怎么做",
+	}, "\n")
+	fsFiles[scratch .. "/alpha/spec.md"] = "# 规格 A\n目标是把 A 做完。"
+	fsFiles[scratch .. "/alpha/issues/01-first.md"] =
+		"# 01: 第一张\n**Blocked by:** None (can start immediately)\n**Status:** resolved\n**Type:** task\n\n- [ ] 验收一"
+	fsFiles[scratch .. "/alpha/issues/02-second.md"] =
+		"# 02: 第二张\n**Blocked by:** 01, 07\n**Status:** claimed\n**Type:** grilling\n\n- [ ] 验收二"
+	fsFiles[scratch .. "/beta/issues/01-other.md"] = "# 01: 另一条线\n**Status:** needs-triage\n**Type:** task"
+	processFixtures = {
+		{ match = "rev-parse", result = { status = 0, stdout = root .. "\n", stderr = "" } },
+		{ match = "get-url", result = { status = 1, stdout = "", stderr = "no origin" } },
+	}
+	processCalls = {}
+	return root
+end
+
+test("本地后端：约定文件声明本地时扫 .scratch，不发任何 gh 请求", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.backend, "local", "用本地后端")
+	eq(st.backendSource, "contract", "依据是约定文件")
+	eq(st.repo, nil, "本地后端没有 owner/repo")
+	eq(#st.maps, 1, "只有 alpha 有 map.md")
+	eq(#st.tickets, 4, "alpha 两张票 + alpha 规格 + beta 一张票")
+	st.view = "board"
+	for _, call in ipairs(processCalls) do
+		local joined = table.concat(call.argv, " ")
+		ok(string.find(joined, " gh", 1, true) == nil, "本地后端不该调 gh：" .. joined)
+	end
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "本地 markdown", 1, true) ~= nil, "顶部写明后端")
+	ok(string.find(text, "按约定文件", 1, true) ~= nil, "顶部写明依据来源")
+end)
+
+test("本地后端：四组分组与认领/关闭语义", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	local b = tracker.classify(st.tickets)
+	-- alpha/01 resolved → 已关闭；alpha/02 claimed → 已认领；beta/01 → 可领
+	eq(#b.closed, 1, "resolved 进已关闭")
+	eq(b.closed[1].id, "alpha/01")
+	eq(#b.assigned, 1, "claimed 进已认领而不是可领")
+	eq(b.assigned[1].id, "alpha/02")
+	eq(#b.claimable, 1, "beta/01 可领")
+	eq(b.claimable[1].id, "beta/01")
+	eq(#b.blocked, 0, "alpha/02 已认领，不重复进被阻塞")
+	-- 指向不存在的票 07 也不能把它判成可领：把 claimed 去掉再验一次。
+	b.assigned[1].claimed = false
+	local b2 = tracker.classify(st.tickets)
+	eq(#b2.blocked, 1, "有坏引用 + 已关闭阻塞票 → 被阻塞")
+	eq(b2.blocked[1].id, "alpha/02")
+end)
+
+test("本地后端：地图详情显示迷雾与已决、不显示笔记", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "map"
+	st.mapSel = "alpha/00"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "迷雾：B 怎么做", 1, true) ~= nil, "迷雾段")
+	ok(string.find(text, "已定：先做 A", 1, true) ~= nil, "已有决策段")
+	ok(string.find(text, "笔记内容不显示", 1, true) == nil, "笔记段不显示")
+	ok(string.find(text, "alpha/00", 1, true) ~= nil or string.find(text, "map.md", 1, true) ~= nil, "显示文件路径")
+end)
+
+test("本地后端：票详情原样显示票文件全文与结构化状态", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	panel.event(st, { ev = "select", item = "main.1.9.alpha/02" }, mkCx(120))
+	eq(st.view, "ticket", "点票进详情")
+	eq(st.ticket.id, "alpha/02")
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "第二张", 1, true) ~= nil, "标题")
+	ok(string.find(text, "验收二", 1, true) ~= nil, "验收清单原样在正文里")
+	ok(string.find(text, "状态：", 1, true) ~= nil, "状态另起一行")
+	ok(string.find(text, "已认领", 1, true) ~= nil, "状态里带认领")
+	ok(string.find(text, ".scratch/alpha/issues/02-second.md", 1, true) ~= nil, "显示票文件路径")
+	-- 本地后端不按需拉正文：扫描时已经读进内存。
+	for _, call in ipairs(processCalls) do
+		ok(string.find(table.concat(call.argv, " "), " gh", 1, true) == nil, "不调 gh 取正文")
+	end
+end)
+
+test("本地后端：注入正文出现仓库相对路径，且没有远端命令", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "ticket"
+	st.ticket = st.tickets[1]
+	for _, t in ipairs(st.tickets) do
+		if t.id == "alpha/02" then
+			st.ticket = t
+		end
+	end
+	panel.event(st, { ev = "action", act = "act:grilling" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	local body = action.body
+	ok(string.find(body, ".scratch/alpha/issues/02-second.md", 1, true) ~= nil, "正文带仓库相对路径")
+	ok(string.find(body, "gh issue view", 1, true) == nil, "不出现 gh issue view")
+	ok(string.find(body, "gh issue list", 1, true) == nil, "不出现 gh issue list")
+end)
+
+test("本地后端：票与地图都有「打开文档」，路径来自扫描结果", function()
+	local root = localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "ticket"
+	st.ticket = nil
+	for _, t in ipairs(st.tickets) do
+		if t.id == "alpha/02" then
+			st.ticket = t
+		end
+	end
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "打开文档", 1, true) ~= nil, "票详情有入口")
+	ok(string.find(text, "该文件 agent 也会写", 1, true) ~= nil, "提示人机同改")
+	panel.event(st, { ev = "action", act = "open-doc" }, mkCx(120))
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了窗口指令")
+	eq(action.kind, "open-doc")
+	eq(action.body, root .. "/.scratch/alpha/issues/02-second.md", "传绝对路径")
+
+	st.view = "map"
+	st.mapSel = "alpha/00"
+	local mapText = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(mapText, "打开文档", 1, true) ~= nil, "地图详情有入口")
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "open-doc" }, mkCx(120))
+	eq(kvStore["action"].body, root .. "/.scratch/alpha/map.md", "打开地图文件")
+	-- 回执认领：宿主写回后提示要变成「已打开」，不能停在「正在打开」。
+	eq(st.pendingSeq, kvStore["action"].seq, "记下待回执的序号")
+	kvStore["inject_result"] = { seq = st.pendingSeq, ok = true, name = ".scratch/alpha/map.md", error = "" }
+	panel.event(st, { ev = "action", act = "refresh" }, mkCx(120))
+	eq(st.message, "已打开：.scratch/alpha/map.md", "回执到了就改口成「已打开」，不是「已填入」")
+end)
+
+test("本地后端：读不动的文件在任务板上常驻列出", function()
+	local root = "D:/fix3"
+	local dir = root .. "/.scratch/only/issues"
+	fsFiles[root .. "/docs/agents/issue-tracker.md"] = "# Issue tracker: Local Markdown\n"
+	fsDirs[root .. "/.scratch"] = true
+	fsDirs[root .. "/.scratch/only"] = true
+	fsDirs[dir] = true
+	local realList = ternStub.fs.list
+	ternStub.fs.list = function(path: string): { string }
+		if path == dir then
+			return { "01-broken.md" }
+		end
+		return realList(path)
+	end
+	processFixtures = {
+		{ match = "rev-parse", result = { status = 0, stdout = root .. "\n", stderr = "" } },
+		{ match = "get-url", result = { status = 1, stdout = "", stderr = "no origin" } },
+	}
+	local st = panel.init(mkCx(120), {}, nil)
+	ternStub.fs.list = realList
+	st.view = "board"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "1 张票读不动", 1, true) ~= nil, "票文件读不动时按「张」报数")
+	ok(string.find(text, ".scratch/only/issues/01-broken.md", 1, true) ~= nil, "列出文件")
+end)
+
+test("本地后端：Spec 卡按工作单元归组，工单数读得出来", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "board"
+	local groups = tracker.groupBySpec(st.tickets)
+	eq(#groups, 1, "只有 alpha 有 spec.md")
+	eq(groups[1].spec.effort, "alpha")
+	eq(#groups[1].tickets, 2, "alpha 的两张票挂在它的规格下")
+	local specList = listFor(panel.view(st, mkCx(120)).main, "specs")
+	ok(specList ~= nil, "Spec 卡出现")
+	eq(#specList.c, 1, "一张规格卡")
+	eq(specList.c[1].label, "规格 · alpha", "规格卡标题")
+end)
+
+test("本地后端：复制与打开落到票文件路径，不是空链接", function()
+	local root = localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	st.view = "ticket"
+	for _, t in ipairs(st.tickets) do
+		if t.id == "alpha/02" then
+			st.ticket = t
+		end
+	end
+	local seen: { string } = {}
+	local cx: any = mkCx(120)
+	cx.copy = function(_self: any, text: string)
+		table.insert(seen, text)
+	end
+	panel.event(st, { ev = "action", act = "copy-ticket" }, cx)
+	eq(seen[1], "第二张\n.scratch/alpha/issues/02-second.md", "复制标题 + 仓库相对路径")
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "open-ticket" }, cx)
+	local action = kvStore["action"]
+	ok(type(action) == "table", "本地后端走文档视图")
+	eq(action.kind, "open-doc")
+	eq(action.body, root .. "/.scratch/alpha/issues/02-second.md")
+end)
+
+test("GitHub 后端不出现「打开文档」", function()
+	processFixtures = {
+		{ match = "rev-parse", result = { status = 0, stdout = "D:/repo\n", stderr = "" } },
+		{ match = "get-url", result = { status = 0, stdout = "https://github.com/me/repo.git", stderr = "" } },
+		{ match = "states:OPEN", result = { status = 0, stdout = "EMPTY", stderr = "" } },
+		{ match = "states:CLOSED", result = { status = 0, stdout = "EMPTY2", stderr = "" } },
+	}
+	jsonPayloads["EMPTY"] = { data = { repository = { issues = { nodes = {}, pageInfo = { hasNextPage = false } } } } }
+	jsonPayloads["EMPTY2"] = { data = { repository = { issues = { nodes = {}, pageInfo = { hasNextPage = false } } } } }
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.backend, "github", "GitHub 后端")
+	st.view = "ticket"
+	st.ticket = {
+		id = "5", number = 5, title = "远端票", body = "", state = "OPEN", url = "https://github.com/me/repo/issues/5",
+		labels = {}, assignees = {}, blockedBy = {}, type = "task", parent = nil, isSpec = false,
+	}
+	st.ticketBody = "正文"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "打开文档", 1, true) == nil, "GitHub 模式没有死按钮")
+	ok(string.find(text, "打开链接", 1, true) ~= nil, "仍是打开链接")
+end)
+
+test("本地后端下存着的旧手动仓库不改后端，也不显示换仓库按钮", function()
+	localFixture()
+	-- 之前在这个 pane 上手填过 owner/repo（本地仓库里不该再让它生效）
+	kvStore["repo"] = { repo = "me/stale", pane = 7 }
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.backend, "local", "约定文件说了算，手动值改不了后端")
+	eq(st.repo, nil, "不会显示成 GitHub 仓库")
+	st.view = "board"
+	local buttons = allText(panel.view(st, mkCx(120)).main, {})
+	local joined = table.concat(buttons, " | ")
+	ok(string.find(joined, "换仓库", 1, true) == nil, "本地后端没有换仓库")
+	ok(string.find(joined, "重置仓库", 1, true) == nil, "也没有重置仓库")
+	ok(string.find(joined, "最新在上", 1, true) == nil, "本地后端没有排序开关（票没有创建时间）")
+end)
+
+test("本地后端：提 BUG / 体检的措辞按本地契约，不提标签与原生边", function()
+	localFixture()
+	local st = panel.init(mkCx(120), {}, nil)
+	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	local bug = kvStore["action"].body
+	ok(string.find(bug, "Status: needs-triage", 1, true) ~= nil, "建单改成写状态行")
+	ok(string.find(bug, "带 bug 标签", 1, true) == nil, "不提 GitHub 标签")
+	ok(string.find(bug, "gh issue list", 1, true) == nil, "查重不提远端命令")
+	ok(string.find(bug, ".scratch/*/issues/", 1, true) ~= nil, "查重改成全扫票目录")
+
+	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	local health = kvStore["action"].body
+	ok(string.find(health, "移到目标工作单元", 1, true) ~= nil, "归位说成移动票文件")
+	ok(string.find(health, "gh 的 issue 依赖接口", 1, true) == nil, "不提原生依赖边")
+end)
+
+test("GitHub 后端的模板措辞逐字不变", function()
+	local vars = templates.backendVars("github", { url = "https://github.com/o/r/issues/1", path = "" })
+	eq(vars.readTicket, "用 gh 读票正文、评论与依赖（gh issue view https://github.com/o/r/issues/1），别只凭标题猜。")
+	eq(vars.ticketTools, "票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。")
+	eq(vars.listOpen, "用 gh 读现有开放票与依赖（gh issue list --state open），别重复建票。")
+	eq(vars.bugMark, "新建的单必须带 bug 标签；还没诊断过就同时带 needs-triage。")
+	eq(vars.healthUntouched, "标签与认领状态")
+end)
+
+test("本地后端：判不出后端时落到 setup 卡，不请求远端", function()
+	processFixtures = {
+		{ match = "rev-parse", result = { status = 0, stdout = "D:/plain\n", stderr = "" } },
+		{ match = "get-url", result = { status = 1, stdout = "", stderr = "no origin" } },
+	}
+	processCalls = {}
+	local st = panel.init(mkCx(120), {}, nil)
+	eq(st.backend, nil, "判不出后端")
+	ok(st.setupHint ~= nil, "给 setup 提示")
+	st.view = "board"
+	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
+	ok(string.find(text, "没识别到跟踪器", 1, true) ~= nil, "setup 卡")
+	ok(string.find(text, "setup-matt-pocock-skills", 1, true) ~= nil, "提示先跑 setup 技能")
+	for _, call in ipairs(processCalls) do
+		ok(string.find(table.concat(call.argv, " "), " gh", 1, true) == nil, "不请求远端")
+	end
+end)
+
 test("已关闭组保持上游顺序，open 组按创建时间本地排序", function()
 	local st = pagedState(0)
 	st.openIssues = {
-		{ number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
-		{ number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
+		{ id = "1", number = 1, title = "open-old", state = "OPEN", createdAt = "2026-01-01T00:00:00Z" },
+		{ id = "2", number = 2, title = "open-new", state = "OPEN", createdAt = "2026-02-01T00:00:00Z" },
 	}
 	st.closedIssues = {
-		{ number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
-		{ number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
+		{ id = "11", number = 11, title = "closed-old", state = "CLOSED", createdAt = "2026-01-01T00:00:00Z" },
+		{ id = "12", number = 12, title = "closed-new", state = "CLOSED", createdAt = "2026-02-01T00:00:00Z" },
 	}
 	st.tickets = tracker.parseIssues(tracker.mergeIssues(st.openIssues, st.closedIssues))
 	local main = panel.view(st, mkCx(120)).main
@@ -2113,15 +2702,15 @@ end)
 
 test("刷新按游标拉完 open 所有页，再拉已关首屏", function()
 	jsonPayloads["OPEN1"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
+		nodes = { { id = "1", number = 1, title = "a", state = "OPEN" }, { number = 2, title = "b", state = "OPEN" } },
 		pageInfo = { hasNextPage = true, endCursor = "c1" },
 	} } } }
 	jsonPayloads["OPEN2"] = { data = { repository = { issues = {
-		nodes = { { number = 3, title = "c", state = "OPEN" } },
+		nodes = { { id = "3", number = 3, title = "c", state = "OPEN" } },
 		pageInfo = { hasNextPage = false, endCursor = "c2" },
 	} } } }
 	jsonPayloads["CLOSED1"] = { data = { repository = { issues = {
-		nodes = { { number = 9, title = "z", state = "CLOSED" } },
+		nodes = { { id = "9", number = 9, title = "z", state = "CLOSED" } },
 		pageInfo = { hasNextPage = true, endCursor = "d1" },
 	} } } }
 	processFixtures = {
@@ -2152,7 +2741,7 @@ test("点地图行按需拉正文并解析迷雾/范围外", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "## 尚未明确\n- 先做 A\n\n## 范围外\n- 不做 B\n", stderr = "" },
@@ -2173,11 +2762,11 @@ end)
 test("刷新后仍在地图页：重建的 Map 会补拉正文", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "map"
-	st.mapSel = 1
+	st.mapSel = "1"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", bodyLoaded = true, tickets = {} } }
 	jsonPayloads["OPEN_MAP"] = { data = { repository = { issues = {
-		nodes = { { number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
+		nodes = { { id = "1", number = 1, title = "地图一", state = "OPEN", labels = { nodes = { { name = "wayfinder:map" } } } } },
 		pageInfo = { hasNextPage = false, endCursor = nil },
 	} } } }
 	jsonPayloads["CLOSED_EMPTY"] = { data = { repository = { issues = {
@@ -2232,7 +2821,9 @@ test("手动指定仓库优先于 cwd 的 remote", function()
 		end
 	end
 	ok(sawManual, "请求打到手动仓库")
-	ok(not sawRemote, "手动模式不再推断 cwd")
+	-- 后端由仓库契约（这里是缺失→按识别）决定，所以 cwd 的 remote 仍要读一次；
+	-- 手动选择只在 GitHub 后端下覆盖「哪个仓库」，改不了后端本身（ADR-0003）。
+	ok(sawRemote, "仍要读 cwd remote 才能判后端")
 	st.view = "board"
 	local text = table.concat(allText(panel.view(st, mkCx(120)).main, {}), " | ")
 	ok(string.find(text, "刷新仍用这个仓库", 1, true) ~= nil, "标出手动来源")
@@ -2272,13 +2863,13 @@ test("重置仓库清掉手动值并回到 cwd", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	eq(st.repo, "me/manual")
 	-- 造一点旧仓库状态：重置必须整份清掉，而不是只换标题。
-	st.tickets = { { number = 1, title = "old", body = "", state = "OPEN", url = "", labels = {}, assignees = {}, blockedBy = {}, isSpec = false } }
-	st.maps = { { number = 1, title = "old map", url = "", state = "OPEN", body = "", tickets = {} } }
+	st.tickets = { { id = "1", number = 1, title = "old", body = "", state = "OPEN", url = "", labels = {}, assignees = {}, blockedBy = {}, isSpec = false } }
+	st.maps = { { id = "1", number = 1, title = "old map", url = "", state = "OPEN", body = "", tickets = {} } }
 	st.openIssues = { { number = 1 } }
 	st.closedIssues = { { number = 2 } }
 	st.closedCursor = "old"
 	st.closedHasNext = true
-	st.mapSel = 1
+	st.mapSel = "1"
 	processCalls = {}
 	panel.event(st, { ev = "action", act = "reset-repo" }, mkCx(120))
 	eq(kvStore["repo"].repo, "", "手动值已清")
@@ -2305,7 +2896,7 @@ test("地图正文失败可重试且不留半截", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 1, stdout = "", stderr = "boom" },
@@ -2321,7 +2912,7 @@ test("地图正文没有两节时不伪造内容", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "普通正文，没有小节", stderr = "" },
@@ -2339,7 +2930,7 @@ test("地图正文在途时重复点击只发一次请求", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.view = "board"
 	st.repo = "me/repo"
-	st.maps = { { number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
+	st.maps = { { id = "1", number = 1, title = "地图一", url = "u1", state = "OPEN", body = "", tickets = {} } }
 	processFixtures = { {
 		match = "repos/me/repo/issues/1",
 		result = { status = 0, stdout = "## 尚未明确\n- 慢请求\n", stderr = "" },
@@ -2728,6 +3319,19 @@ test("模板口径：每个占位符都在行内带了说明", function()
 	for _, e in ipairs(templates.ENTRIES) do
 		table.insert(bodies, { name = e.injectAction, body = e.body })
 	end
+	-- 后端句子占位符的取值在 templates.backendVars 里集中定义，整句自带说明，
+	-- 不要求在模板正文里再写一行「说明：{占位符}」。两套后端的键必须一致：
+	-- 少一个键就会把 {xxx} 原样漏进提示词。
+	local BACKEND_KEYS: { [string]: boolean } = {}
+	local ghKeys = templates.backendVars("github", {})
+	local localKeys = templates.backendVars("local", {})
+	for k in pairs(ghKeys) do
+		BACKEND_KEYS[k] = true
+		ok(localKeys[k] ~= nil, "后端占位符 " .. k .. " 在本地后端也要有取值")
+	end
+	for k in pairs(localKeys) do
+		ok(ghKeys[k] ~= nil, "后端占位符 " .. k .. " 在 GitHub 后端也要有取值")
+	end
 	for _, b in ipairs(bodies) do
 		-- 每个占位符至少要有一行「说明：{占位符}」的独立写法；
 		-- 正文里顺带出现（比如 gh issue view {url}）不算说明。
@@ -2736,6 +3340,9 @@ test("模板口径：每个占位符都在行内带了说明", function()
 			keys[key] = true
 		end
 		for key in pairs(keys) do
+			if BACKEND_KEYS[key] then
+				continue
+			end
 			local labelled = false
 			for line in string.gmatch(b.body, "[^\n]+") do
 				local trimmed = (string.gsub(line, "%s+$", ""))
@@ -2788,7 +3395,7 @@ test("所有视图的按钮点击都挂在 actions.click 上", function()
 		local st = nextStepState()
 		st.view = v
 		if v == "map" then
-			st.mapSel = 1
+			st.mapSel = "1"
 		elseif v == "ticket" then
 			st.ticket = st.tickets[1]
 		end

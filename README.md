@@ -38,6 +38,7 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 | 看技能原文 | 点技能行 |
 | 注入到 agent | 技能视图点「注入技能」，票详情点动作按钮；正文**填进输入框**，不替你提交。模板注入套一层信封（开始行 → 正文 → 「下面是用户输入的内容」结束行 → 换行），你的需求从下一行开始写 |
 | 看票详情 | 点任务板里的票行（单击即开） |
+| 打开文档改票（仅本地 markdown 后端） | 票详情 / 地图详情点「打开文档」，调出 tern 的 Markdown 文档视图；平台自带撤销、自动保存、原子写。改完按 `r` 刷新。该文件 agent 也可能同时在写 |
 | 收起 / 展开分组 | 点卡片标题 |
 | 往更早的已关票翻 | 展开「已关闭」组，点末尾「加载更多（已 N 条）」；一次一页，最多累积 500 条 |
 | 排序（最新 / 最早在上） | 任务板顶部排序按钮 |
@@ -48,7 +49,7 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 | 收尾 | 工具条「收尾」：按七段（盘点 / 审 diff / 文档 / 清理 / 交付 / 复盘 / 报告交接）工程化收口；每段有出口判定，删除与合并等你点头，最后出一份可视化报告与交接文档 |
 | 看外部技能包 | 工具条「技能包」：三套外部包的版本、状态、仓库链接与安装指引；视图内「刷新版本」单独查上游更新，不动任务板 |
 | 刷新 | 点「刷新」或按 `r`；切回面板所在 tab 时会自动检查，但 5 分钟内最多一次（一次刷新要跑一趟 gh，约 2.8 秒） |
-| 换仓库 | 点「换仓库」，填 `owner/repo` 或 GitHub 链接；切换按窗口保存。点「重置仓库」回到当前目录的 git remote |
+| 换仓库（仅 GitHub 后端） | 点「换仓库」，填 `owner/repo` 或 GitHub 链接；切换按窗口保存。点「重置仓库」回到当前目录的 git remote |
 | 显示 / 隐藏实验技能 | 点「显示实验技能」 |
 | 返回任务板 | 点「返回任务板」 |
 
@@ -88,7 +89,13 @@ test/          luau CLI 桩测试
 
 ## 任务板数据源
 
-GitHub issue，通过 `gh api graphql`。仓库默认跟随面板所在目录的 git remote 推断；「换仓库」可按窗口覆盖（存插件 kv，不跨窗口），「重置仓库」回到当前目录。v1 只读，不写票。任务板的拉取、分页与失败退路以 [`docs/spec/v1.md`](docs/spec/v1.md) §7 为准。
+后端由**目标仓库自己的跟踪器契约**决定（ADR-0003），面板不提供切换：
+
+- 仓库里有 `docs/agents/issue-tracker.md` 且标题声明 GitHub 或本地 markdown → 按声明走；
+- 没有约定文件时按可观察证据识别（origin 指向 GitHub → GitHub；存在 `.scratch/` → 本地 markdown），界面写明「按约定文件」/「按识别」；
+- 判不出来时出 setup 卡，提示先跑 `/skill:setup-matt-pocock-skills`。
+
+GitHub 后端走 `gh api graphql`；本地 markdown 后端读 `.scratch/<工作单元>/` 下的 `map.md` / `spec.md` / `issues/NN-<slug>.md`。两种后端产出同一套地图 / 票 / 前沿结构，分组与注入共用。GitHub 模式下仓库仍可「换仓库」按窗口覆盖（存插件 kv），「重置仓库」回到当前目录的 git remote。面板只读，不写跟踪器数据。细节以 [`docs/spec/v1.md`](docs/spec/v1.md) §7 为准。
 
 ## 开发
 

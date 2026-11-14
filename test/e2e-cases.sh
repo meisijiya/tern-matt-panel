@@ -494,7 +494,7 @@ wait 100
 EOF
 case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
 	"click-btn-until:任务板:点行选中:20000" \
-	"skip-if:没识别到仓库" \
+	"skip-if:没识别到跟踪器" \
 	"click-btn-until:收尾:填入:15000" \
 	"has:收尾"
 
