@@ -1380,6 +1380,12 @@ local ACTION_CASES = {
 	{ act = "frontend-new", want = function(st: any, _b: any, kv: any)
 		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
 	end },
+	{ act = "frontend-iterate", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
+	{ act = "frontend-explain", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }
 
@@ -1521,6 +1527,8 @@ table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.r
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
 table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_NEW.title, body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_ITERATE.title, body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_EXPLAIN.title, body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.render(e, { repo = "me/repo" }) })
 end
@@ -1563,7 +1571,7 @@ local function findPlaceholder(body: string): string?
 end
 
 test("每条模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 11, "十一条模板都收进来了")
+	eq(#ALL_TEMPLATES, 13, "十三条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -3594,6 +3602,90 @@ test("前端新建设计：无仓库分支行为", function()
 	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
 	ok(kvStore["action"] == nil, "没有仓库就不注入")
 	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
+end)
+
+test("前端设计迭代 / 只解释术语：模板存在、id 与 title", function()
+	local it = templates.FRONTEND_ITERATE
+	ok(it ~= nil, "FRONTEND_ITERATE 模板存在")
+	eq(it.id, "frontend-iterate", "迭代 id")
+	eq(it.title, "设计迭代", "迭代 title")
+
+	local ex = templates.FRONTEND_EXPLAIN
+	ok(ex ~= nil, "FRONTEND_EXPLAIN 模板存在")
+	eq(ex.id, "frontend-explain", "解释 id")
+	eq(ex.title, "只解释术语", "解释 title")
+end)
+
+test("前端设计迭代 / 只解释术语：注入动作名写进信封首行", function()
+	local function headLine(body: string): string
+		return string.sub(body, 1, string.find(body, "\n", 1, true) or #body)
+	end
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-iterate" }, mkCx(120))
+	local body = kvStore["action"].body
+	ok(string.find(headLine(body), "前端·设计迭代", 1, true) ~= nil, "迭代信封首行是动作名")
+
+	st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	body = kvStore["action"].body
+	ok(string.find(headLine(body), "前端·只解释术语", 1, true) ~= nil, "解释信封首行是动作名")
+end)
+
+test("前端设计迭代：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	for _, mark in ipairs({ "DESIGN.md", "lint", "diff", "copy-lint", "/skill:answer-me-with-html", "/skill:grilling", "不自动建", "不覆盖", "不选边", "不写业务代码", "不建 PR" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端设计迭代：不含禁止标记与整门全链", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	for _, mark in ipairs({ "forge-router", "/skill:research", "gh ", "frontend-design", "impeccable", "gate.mjs", "anti-ai-flavor" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端设计迭代：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "用户没选改动", 1, true) ~= nil, "停点：没选改动")
+end)
+
+test("前端只解释术语：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	for _, mark in ipairs({ "vibehub", "answer-me-with-html", "不读仓库", "不改文件", "不写 DESIGN.md" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端只解释术语：不含禁止标记", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	for _, mark in ipairs({ "design-taste-frontend", "forge-router", "/skill:research", "frontend-design", "impeccable", "anti-ai-flavor" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端只解释术语：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "没有可靠匹配", 1, true) ~= nil, "停点：没有可靠匹配")
+end)
+
+test("前端路线：只解释术语无仓库照常注入，前两条无仓库不注入", function()
+	-- 无仓库：新建设计、设计迭代只提示
+	for _, act in ipairs({ "frontend-new", "frontend-iterate" }) do
+		local st = panel.init(mkCx(120), {}, nil)
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = act }, mkCx(120))
+		ok(kvStore["action"] == nil, act .. " 没有仓库就不注入")
+		ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, act .. " 说清缺什么")
+	end
+
+	-- 无仓库：只解释术语照常注入
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	ok(kvStore["action"] ~= nil and kvStore["action"].kind == "inject", "只解释术语无仓库也注入")
 end)
 
 -- -------------------------------------------------------------- report ----

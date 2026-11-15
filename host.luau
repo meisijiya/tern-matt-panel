@@ -1252,11 +1252,15 @@ local function entryChooser(): Node
 	return ui.col(col)
 end
 
---- 工具条「前端」的路线卡：本票只实现「新建设计」；后续两张卡留位。
+--- 工具条「前端」的路线卡：三条路线，选一条即注入并收起。
 local function frontendChooser(): Node
 	local col: { Node } = { ui.text(ui.span("前端 —— 先选一条路", "strong")) }
 	local row: { Node } = {}
-	local cards = { { title = "新建设计", click = "frontend-new" } }
+	local cards = {
+		{ title = "新建设计", click = "frontend-new", desc = "从 0 到 1 定视觉方向，写入 DESIGN.md" },
+		{ title = "设计迭代", click = "frontend-iterate", desc = "改已有页面，先读 DESIGN.md，只更新变更 token" },
+		{ title = "只解释术语", click = "frontend-explain", desc = "不读仓库、不改文件，把描述改写成准确需求" },
+	}
 	for _, c in ipairs(cards) do
 		table.insert(row, ui.button(c.title, {
 			icon = "sparkle",
@@ -1266,7 +1270,9 @@ local function frontendChooser(): Node
 		}))
 	end
 	table.insert(col, ui.row(row))
-	table.insert(col, ui.text({ ui.span("· 新建设计：", "muted"), ui.span("从 0 到 1 确定视觉方向，写入 DESIGN.md", "muted") }))
+	for _, c in ipairs(cards) do
+		table.insert(col, ui.text({ ui.span("· " .. c.title .. "：", "muted"), ui.span(c.desc, "muted") }))
+	end
 	return ui.col(col)
 end
 
@@ -2470,13 +2476,27 @@ tern.block.define(BLOCK_ID, {
 			state.message = nil
 			return
 		end
-		if act == "frontend-new" then
+		-- 两条设计路线要仓库：没识别到就只提示，不注入。
+		local function designRoute(label: string, tpl: any)
 			if not (state.repo or state.backend == "local") then
-				state.message = "先识别到仓库，再新建设计"
+				state.message = "先识别到仓库，再" .. label
 				state.frontend = false
 				return
 			end
-			inject(state, cx, commands.buildInjectionBody("前端·新建设计", templates.render(templates.FRONTEND_NEW, templateVars(state))), "新建设计")
+			inject(state, cx, commands.buildInjectionBody("前端·" .. label, templates.render(tpl, templateVars(state))), label)
+			state.frontend = false
+		end
+		if act == "frontend-new" then
+			designRoute("新建设计", templates.FRONTEND_NEW)
+			return
+		end
+		if act == "frontend-iterate" then
+			designRoute("设计迭代", templates.FRONTEND_ITERATE)
+			return
+		end
+		-- 只解释术语不读仓库，没有仓库也照常注入。
+		if act == "frontend-explain" then
+			inject(state, cx, commands.buildInjectionBody("前端·只解释术语", templates.render(templates.FRONTEND_EXPLAIN, templateVars(state))), "只解释术语")
 			state.frontend = false
 			return
 		end
