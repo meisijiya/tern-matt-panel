@@ -2974,8 +2974,8 @@ local function hasText(list: { string }, needle: string): boolean
 	return false
 end
 
-test("packs 清单：三套、id 唯一、都带仓库与安装指引", function()
-	eq(#packs.PACKS, 3)
+test("packs 清单：五套、id 唯一、都带仓库与安装指引", function()
+	eq(#packs.PACKS, 5)
 	local seen: { [string]: boolean } = {}
 	for _, p in ipairs(packs.PACKS) do
 		ok(not seen[p.id], "id 重复：" .. p.id)
@@ -2984,6 +2984,21 @@ test("packs 清单：三套、id 唯一、都带仓库与安装指引", function
 		ok(#p.install > 0, p.id .. " 缺安装指引")
 		ok(p.purpose ~= "", p.id .. " 缺用途")
 	end
+end)
+
+test("packs 清单：taste-skill 与 vibehub 两行带技能名", function()
+	local taste = packs.byId("taste-skill")
+	ok(taste ~= nil, "清单里有 taste-skill")
+	eq(taste.title, "taste-skill")
+	eq(taste.repo, "Leonxlnx/taste-skill")
+	eq(taste.skillName, "design-taste-frontend")
+	ok(#taste.install > 0, "taste-skill 有安装指引")
+	local vh = packs.byId("vibehub")
+	ok(vh ~= nil, "清单里有 vibehub")
+	eq(vh.title, "vibehub")
+	eq(vh.repo, "oil-oil/vibe-hub-skill")
+	eq(vh.skillName, "vibehub")
+	ok(#vh.install > 0, "vibehub 有安装指引")
 end)
 
 test("packs.versionLabel 缺版本不留空", function()
@@ -3023,7 +3038,7 @@ test("技能包：登记里的两套按 installPath 判已装，本地目录那�
 	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
 	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"name":"omp-skill-forge","version":"0.5.0"}'
 	local st = panel.init(mkCx(120), {}, nil)
-	eq(#st.packs, 3)
+	eq(#st.packs, 5)
 	local by: { [string]: any } = {}
 	for _, p in ipairs(st.packs) do
 		by[p.id] = p
@@ -3060,7 +3075,7 @@ test("技能包：登记有条目但目录不在 → 未装", function()
 	eq(by["mattpocock"].version, "1.3.5")
 end)
 
-test("技能包视图：三张卡露出标题、版本与安装指引，窄面板也有入口", function()
+test("技能包视图：五张卡露出标题、版本与安装指引，窄面板也有入口", function()
 	writeRegistry("1.3.5", "0.5.10")
 	fsDirs["C:/p/matt"] = true
 	fsDirs["C:/p/am"] = true
@@ -3072,12 +3087,156 @@ test("技能包视图：三张卡露出标题、版本与安装指引，窄面�
 	ok(util.contains(texts, "mattpocock 技能组"), "有主技能组卡")
 	ok(util.contains(texts, "answer-me-with-html"), "有可视化包卡")
 	ok(util.contains(texts, "omp-skill-forge"), "有选路包卡")
+	ok(util.contains(texts, "taste-skill"), "有 taste-skill 卡")
+	ok(util.contains(texts, "vibehub"), "有 vibehub 卡")
 	ok(hasText(texts, "1.3.5"), "露出主技能组版本")
 	ok(hasText(texts, "0.5.10"), "露出可视化包版本")
 	ok(hasText(texts, "0.5.0"), "露出选路包版本")
 	local tight = panel.init(mkCx(24), {}, nil)
 	local ttexts = buttonTexts(panel.view(tight, mkCx(24)).main, {})
 	ok(util.contains(ttexts, "技能包"), "窄面板也有技能包入口")
+end)
+
+--- 发现链的探针：home 固定成 C:/home，项目根 C:/proj。
+local function probe(name: string, extra: any?): any
+	local p: any = {
+		home = "C:/home",
+		name = name,
+		projectRoot = "C:/proj",
+		registryText = nil,
+		registryKey = nil,
+		cachePrefix = nil,
+	}
+	for k, v in pairs(extra or {}) do
+		p[k] = v
+	end
+	return p
+end
+
+test("发现链：登记优先于目录通道", function()
+	fsFiles["C:/home/.omp/plugins/installed_plugins.json"] =
+		'{"taste-skill@taste-skill":{"installPath":"C:/cache/taste","version":"2.5.1"}}'
+	fsDirs["C:/cache/taste"] = true
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	local hit = paths.findSkillDir(probe("design-taste-frontend", {
+		registryText = fsFiles["C:/home/.omp/plugins/installed_plugins.json"],
+		registryKey = "taste-skill@taste-skill",
+	}))
+	ok(type(hit) == "table", "命中")
+	eq(hit.root, "C:/cache/taste")
+	eq(hit.version, "2.5.1")
+	eq(hit.source, "登记")
+end)
+
+test("发现链：目录通道按 omp → skills CLI 全局 → 项目级 → Claude 取第一个命中", function()
+	-- 只有 skills CLI 全局有：应命中它。
+	fsDirs["C:/home/.agents/skills/vibehub"] = true
+	local hit = paths.findSkillDir(probe("vibehub"))
+	eq(hit.source, "skills CLI 全局")
+	eq(hit.root, "C:/home/.agents/skills/vibehub")
+	-- 加了 Claude 目录：优先级更高的那档仍然赢。
+	fsDirs["C:/home/.claude/skills/vibehub"] = true
+	local hit2 = paths.findSkillDir(probe("vibehub"))
+	eq(hit2.source, "skills CLI 全局")
+	-- 再加 omp 技能目录：它最靠前。
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	local hit3 = paths.findSkillDir(probe("vibehub"))
+	eq(hit3.source, "omp 技能目录")
+end)
+
+test("发现链：项目级通道只在项目根给定时探", function()
+	fsDirs["C:/proj/.agents/skills/vibehub"] = true
+	local withRoot = paths.findSkillDir(probe("vibehub"))
+	eq(withRoot.source, "skills CLI 项目级")
+	eq(withRoot.root, "C:/proj/.agents/skills/vibehub")
+	-- 没有项目根：这一档跳过，不该命中。
+	-- （不能靠 extra 传 nil：Lua 表不存 nil 值，pairs 遍历不到。）
+	local noRoot = paths.findSkillDir({
+		home = "C:/home",
+		name = "vibehub",
+		projectRoot = nil,
+		registryText = nil,
+		registryKey = nil,
+		cachePrefix = nil,
+	})
+	eq(noRoot, nil)
+end)
+
+test("发现链：多份副本只出一行，按优先级取版本", function()
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.omp/agent/skills/design-taste-frontend/package.json"] = '{"version":"9.9.9"}'
+	fsDirs["C:/home/.claude/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.claude/skills/design-taste-frontend/package.json"] = '{"version":"1.0.0"}'
+	local hit = paths.findSkillDir(probe("design-taste-frontend"))
+	eq(hit.source, "omp 技能目录")
+	eq(hit.version, "9.9.9")
+end)
+
+test("版本兜底：登记版本 → package.json → SKILL.md frontmatter → nil", function()
+	-- 只有 SKILL.md frontmatter 的 version：
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] =
+		"---\nname: vibehub\nversion: 0.1.0\n---\n正文"
+	local hit = paths.findSkillDir(probe("vibehub"))
+	eq(hit.version, "0.1.0")
+	-- package.json 优先于 frontmatter：
+	fsFiles["C:/home/.omp/agent/skills/vibehub/package.json"] = '{"version":"2.0.0"}'
+	local hit2 = paths.findSkillDir(probe("vibehub"))
+	eq(hit2.version, "2.0.0")
+	-- 都没有：版本为 nil，但仍是「已装」。
+	fsFiles["C:/home/.omp/agent/skills/vibehub/package.json"] = nil
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] = "---\nname: vibehub\n---\n正文"
+	local hit3 = paths.findSkillDir(probe("vibehub"))
+	eq(hit3.version, nil)
+	ok(hit3 ~= nil, "命中了，只是版本读不到")
+end)
+
+test("发现链：断链或目标不在 → 不命中，不崩", function()
+	-- 目录在桩里没有：软链目标不存在，当未命中处理。
+	local hit = paths.findSkillDir(probe("design-taste-frontend"))
+	eq(hit, nil)
+	-- 探针抛错也不能崩：桩里把登记文件读成非法内容。
+	local okHit = pcall(function()
+		return paths.findSkillDir(probe("vibehub", { registryText = "{坏 JSON", registryKey = "k" }))
+	end)
+	ok(okHit, "探测不抛错")
+end)
+
+test("技能包：「未知」不等于「未装」", function()
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] = "---\nname: vibehub\n---\n正文"
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["vibehub"].installed, true, "目录在就是已装")
+	eq(by["vibehub"].version, nil, "版本读不到")
+	eq(by["vibehub"].status, "已装", "状态不是未装")
+	eq(packs.versionLabel(by["vibehub"].version), "未知版本")
+end)
+
+test("技能包：软链目标存在即视为跟随，读目标里的版本", function()
+	-- 桩不支持符号链接：按「目标路径存在即视为跟随」处理。
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.omp/agent/skills/design-taste-frontend/package.json"] = '{"version":"2.5.1"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["taste-skill"].installed, true)
+	eq(by["taste-skill"].version, "2.5.1")
+end)
+
+test("技能包：外部技能没装 → 未装，不影响其它包", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["vibehub"].status, "未装")
+	eq(by["taste-skill"].status, "未装")
 end)
 
 test("技能包：复制仓库链接与安装指引", function()
