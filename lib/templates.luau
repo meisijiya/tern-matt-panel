@@ -395,7 +395,7 @@ M.FRONTEND_ITERATE = {
 		"- [ ] 用户选定后只更新变更的 token，不整份重写 DESIGN.md。",
 		"- [ ] 缺 DESIGN.md 先问、不自动建；已存在不覆盖；与代码实际 token 冲突时报告并列出假设，不选边。",
 		"- [ ] 尽量跑 DESIGN.md 的 lint 与 diff 校验；失败只报告，不阻塞主流程。",
-		"- [ ] 不跑 taste-skill 整门，只借 copy-lint 与局部检查。",
+		"- [ ] 不跑 /skill:design-taste-frontend 的整门，只借它的 copy-lint 与局部检查。",
 		"",
 		"## 边界",
 		"- [ ] 不写业务代码、不建 PR、不提交、不关票。",
