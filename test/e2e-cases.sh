@@ -522,6 +522,7 @@ case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
 	"toolbar-rows:2" \
 	"has:换仓库" \
 	"has:问下一步" \
+	"has:前端" \
 	"has:刷新"
 
 # 11. 收尾：常驻按钮能注入一条完整正文（消息从「填入中」走到结果）
@@ -534,15 +535,17 @@ case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
 	"click-btn-until:收尾:填入:15000" \
 	"has:收尾"
 
-# 12. 技能包视图：三套外部包的卡在，且有自己的刷新按钮
+# 12. 技能包视图：五套外部包的卡在，且有自己的刷新按钮
 cat > "$TMP/packs.sc" <<EOF
 wait 100
 EOF
-case_run "技能包视图列出三套外部包，刷新按钮能点" "$TMP/packs.sc" \
+case_run "技能包视图列出五套外部包，刷新按钮能点" "$TMP/packs.sc" \
 	"click-btn-until:技能包:外部技能包:15000" \
 	"has:mattpocock 技能组" \
 	"has:answer-me-with-html" \
 	"has:omp-skill-forge" \
+	"has:taste-skill" \
+	"has:vibehub" \
 	"has:刷新版本" \
 	"click-btn-until:刷新版本:版本检查:15000"
 
