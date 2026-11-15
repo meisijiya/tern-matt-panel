@@ -3190,7 +3190,7 @@ test("收尾模板：七段齐全、越权禁令、报告七段与降级路径",
 	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
 	local phases = {
 		"第 1 段 · 盘点现状", "第 2 段 · 审 diff", "第 3 段 · 文档更新",
-		"第 4 段 · 清理与收拢", "第 5 段 · 交付", "第 6 段 · 复盘", "第 7 段 · 报告与交接",
+		"第 4 段 · 清理与分支处理", "第 5 段 · 交付", "第 6 段 · 复盘", "第 7 段 · 报告与交接",
 	}
 	for _, t in ipairs(phases) do
 		ok(string.find(body, t, 1, true) ~= nil, "缺阶段：" .. t)
@@ -3245,6 +3245,57 @@ test("收尾：缺装外部包时仍注入并说明缺口", function()
 	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
 	ok(kvStore["action"] ~= nil, "缺装也照样注入")
 	ok(string.find(tostring(st.message), "未装", 1, true) ~= nil, "提示哪套没装")
+end)
+
+test("收尾模板：档位判定齐全，三档各写明跳过哪几段", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "## 档位判定", 1, true) ~= nil, "有档位判定小节")
+	for _, tier in ipairs({ "轻档", "中档", "重档" }) do
+		ok(string.find(body, tier, 1, true) ~= nil, "缺档位：" .. tier)
+	end
+	ok(string.find(body, "跳过第 2、5、6 段", 1, true) ~= nil, "轻档写明跳过哪几段")
+	ok(string.find(body, "用户输入优先", 1, true) ~= nil, "用户可越档要求全流程")
+	ok(string.find(body, "跳过 Y 段", 1, true) ~= nil, "报告开头写档位与跳过项")
+end)
+
+test("收尾模板：分支处理任何档都走，交接在分支收口之后", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "第 4 段的分支处理任何档都不跳过", 1, true) ~= nil, "分支处理不随档位跳过")
+	ok(string.find(body, "分支三选一：并入主线 / 保留并写明原因 / 删除", 1, true) ~= nil, "分支三选一写死")
+	ok(string.find(body, "没收口就先回第 4 段，不出报告与交接", 1, true) ~= nil, "交接以分支收口为前置")
+	ok(string.find(body, "分支状态", 1, true) ~= nil, "报告里写分支状态")
+end)
+
+test("收尾模板：方向数封顶三个", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "方向数封顶三个", 1, true) ~= nil, "方向数封顶")
+end)
+
+test("收尾模板：每条发现必须有答复，裁掉的留理由", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "每条发现必须有答复", 1, true) ~= nil, "发现必须有答复")
+	ok(string.find(body, "裁掉的发现不许直接消失", 1, true) ~= nil, "裁掉要留理由")
+end)
+
+test("收尾模板：复审有轮数上限", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "最多三轮", 1, true) ~= nil, "复审最多三轮")
+end)
+
+test("收尾模板：判定优先级写明，选路只查一次，发现格式固定", function()
+	local body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "## 判定优先级", 1, true) ~= nil, "有判定优先级小节")
+	ok(string.find(body, "用户输入 > 本模板 > 所引用技能的默认做法", 1, true) ~= nil, "冲突裁决顺序写明")
+	eq(countOf(body, "/skill:forge%-router"), 1, "选路提示只出现一次")
+	ok(string.find(body, "级别 · 文件与行号 · 依据 · 建议动作", 1, true) ~= nil, "发现格式固定成一行四段")
+	ok(string.find(body, "没有发现就写「无」", 1, true) ~= nil, "空结果要显式写无")
+	ok(string.find(body, "各方向互不通信、不读彼此结论", 1, true) ~= nil, "方向之间不互相污染")
+end)
+
+test("提 BUG 模板：现象落到文件与行号", function()
+	local body = templates.render(templates.NEW_BUG, { repo = "me/repo", root = "D:/repo" })
+	ok(string.find(body, "现象落到位置", 1, true) ~= nil, "要求把现象落到文件与行号")
+	ok(string.find(body, "未定位", 1, true) ~= nil, "定位不到也要写明")
 end)
 
 
