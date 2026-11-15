@@ -405,6 +405,7 @@ fi
 
 # 1. 面板能打开，技能按泳道列出
 case_run "面板打开并列出技能" "$TMP/noop.sc" \
+	"click-btn-until:技能:ask-matt:20000" \
 	"wait-for:ask-matt:20000" \
 	"has:ask-matt" \
 	"has:to-spec" \
@@ -525,6 +526,19 @@ case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
 	"has:前端" \
 	"has:刷新"
 
+# 10b. 把面板宽度复原：窄屏拖不回，后面用例（尤其相邻断言）会跟着抖。
+cat > "$TMP/wide.sc" <<EOF
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+wait 500
+EOF
+case_run "面板宽度复原" "$TMP/wide.sc" \
+	"has:刷新"
+
 # 11. 收尾：常驻按钮能注入一条完整正文（消息从「填入中」走到结果）
 cat > "$TMP/wrapup.sc" <<EOF
 wait 100
@@ -562,7 +576,8 @@ case_run "前端入口三条路线" "$TMP/frontend.sc" \
 	"has:只解释术语" \
 	"click-btn-until:新建设计:填入:20000" \
 	"lacks:前端 —— 先选一条路" \
-	"click-until:前端:前端 —— 先选一条路:15000" \
+	"click:前端" \
+	"has:前端 —— 先选一条路" \
 	"click-btn-until:只解释术语:填入:20000"
 
 # ---------------------------------------------------------------- 汇总 ----
