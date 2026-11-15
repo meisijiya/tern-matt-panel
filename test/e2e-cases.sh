@@ -392,10 +392,10 @@ trap 'rm -rf "$TMP"' EXIT
 if ctl tree '.sf-button' 2>/dev/null | grep -qF '刷新'; then
 	echo "e2e: 复用已开的面板"
 else
+	# 不能用 palette + return 开面板：调色板第一条是最近提交（Git 面板那条），
+	# 敲回车打开的是内置 Git 面板，断言就全落在错的面板上。走插件动作精确打开。
 	cat > "$TMP/open.sc" <<EOF
-palette "Matt 面板"
-wait 1500
-key return
+plugins run plugin.tern-matt-panel.panel
 wait 10000
 EOF
 	scen "$TMP/open.sc"
