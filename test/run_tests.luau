@@ -3763,6 +3763,14 @@ test("前端新建设计：无仓库分支行为", function()
 	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
 end)
 
+test("前端新建设计：注入动作名写进信封首行", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	local body = kvStore["action"].body
+	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 前端·新建设计 =====", 1, true) == 1, "首行是动作名")
+	eq(st.frontend, false, "注入后收起路线卡")
+end)
+
 test("前端设计迭代 / 只解释术语：模板存在、id 与 title", function()
 	local it = templates.FRONTEND_ITERATE
 	ok(it ~= nil, "FRONTEND_ITERATE 模板存在")

@@ -58,7 +58,7 @@ local COOLDOWN_SEC = 60
 local AUTO_REFRESH_SEC = 300
 
 --- 技能包查上游版本的最短间隔：手动刷新才查，且不能连点。
---- 三套包的检查要各跑一次 gh，配额是共享的。
+--- 五套包的检查要各跑一次 gh，配额是共享的。
 local PACK_CHECK_SEC = 300
 
 local ACTION_KEY = "action"
@@ -298,6 +298,7 @@ local function loadPacks(state: State, cx: BlockCx)
 				home = home,
 				name = pack.skillName,
 				registryText = regText,
+				registryKey = pack.registryKey,
 				projectRoot = projectRoot,
 				cachePrefix = pack.id .. "___",
 			})
@@ -1165,7 +1166,7 @@ local function packsView(state: State): Node
 		ui.span("外部技能包", "strong"),
 		ui.span("  面板引用它们，但不自带、不代装", "muted"),
 	}))
-	-- 自己的刷新：只查这三套包的上游版本，不碰任务板。
+	-- 自己的刷新：只查这五套包的上游版本，不碰任务板。
 	table.insert(main, ui.row({
 		ui.button("刷新版本", {
 			icon = "refresh",
