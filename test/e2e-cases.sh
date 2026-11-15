@@ -438,17 +438,17 @@ cat > "$TMP/board.sc" <<EOF
 wait 100
 EOF
 case_run "切到任务板" "$TMP/board.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"has:地图" \
-	"has:点行选中"
+	"has:可领"
 
 # 6. 点地图行进地图详情：子票 / 迷雾 / 范围外
 cat > "$TMP/map.sc" <<EOF
 wait 100
 EOF
 case_run "地图详情视图" "$TMP/map.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:1:子票:20000" \
 	"has:返回任务板"
@@ -460,7 +460,7 @@ cat > "$TMP/ticket_row.sc" <<EOF
 wait 100
 EOF
 case_run "票行单击进详情" "$TMP/ticket_row.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:2:打开链接:20000"
 
@@ -502,7 +502,7 @@ EOF
 # 断言只到「已刷新」为止 —— 不再要求有票：
 # 配额不足时刷新会拉取失败，分组自然是空的，那是有意跳过而非缺陷。
 case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-btn-until:刷新:已刷新:20000"
 
@@ -518,7 +518,7 @@ resize-pane left
 wait 500
 EOF
 case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"toolbar-rows:2" \
 	"has:换仓库" \
 	"has:问下一步" \
@@ -530,7 +530,7 @@ cat > "$TMP/wrapup.sc" <<EOF
 wait 100
 EOF
 case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没识别到跟踪器" \
 	"click-btn-until:收尾:填入:15000" \
 	"has:收尾"
@@ -555,7 +555,7 @@ cat > "$TMP/frontend.sc" <<EOF
 wait 100
 EOF
 case_run "前端入口三条路线" "$TMP/frontend.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"adjacent:新增需求:前端" \
 	"click-btn-until:前端:新建设计:15000" \
 	"has:设计迭代" \
