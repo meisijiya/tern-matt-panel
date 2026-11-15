@@ -97,6 +97,8 @@ type State = {
 	sortNewest: boolean,
 	-- 工具条「新增需求」把两条路叫出来，选完或再按一次收起
 	newDemand: boolean,
+	-- 工具条「前端」把路线卡叫出来，选完或再按一次收起
+	frontend: boolean,
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
@@ -145,6 +147,7 @@ local function blank(): State
 		view = "skills",
 		sortNewest = true,
 		newDemand = false,
+		frontend = false,
 		skills = {},
 		lanes = {},
 		skillSel = nil,
@@ -1249,6 +1252,24 @@ local function entryChooser(): Node
 	return ui.col(col)
 end
 
+--- 工具条「前端」的路线卡：本票只实现「新建设计」；后续两张卡留位。
+local function frontendChooser(): Node
+	local col: { Node } = { ui.text(ui.span("前端 —— 先选一条路", "strong")) }
+	local row: { Node } = {}
+	local cards = { { title = "新建设计", click = "frontend-new" } }
+	for _, c in ipairs(cards) do
+		table.insert(row, ui.button(c.title, {
+			icon = "sparkle",
+			size = "sm",
+			variant = "primary",
+			actions = { click = c.click },
+		}))
+	end
+	table.insert(col, ui.row(row))
+	table.insert(col, ui.text({ ui.span("· 新建设计：", "muted"), ui.span("从 0 到 1 确定视觉方向，写入 DESIGN.md", "muted") }))
+	return ui.col(col)
+end
+
 local function boardView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
@@ -1326,6 +1347,9 @@ local function boardView(state: State, cx: BlockCx): Node
 	-- 空仓库时直接把两条路摆出来；有票时靠工具条的「新增需求」按钮随时叫出来。
 	if (#state.tickets == 0 and (state.repo or state.backend == "local")) or state.newDemand then
 		table.insert(main, entryChooser())
+	end
+	if state.frontend then
+		table.insert(main, frontendChooser())
 	end
 
 	-- 地图
@@ -1854,6 +1878,7 @@ local function toolbar(state: State, cx: BlockCx): Node
 	local buttons: { ToolButton } = {
 		-- 常驻三条：参考实现里这两条路、提 BUG、体检是随时能按的
 		{ label = "新增需求", icon = "plus", click = "new-demand" },
+		{ label = "前端", icon = "sparkle", click = "frontend" },
 		{ label = "提 BUG", icon = "warning", click = "new-bug" },
 		{ label = "体检", icon = "check", click = "health-check" },
 		{ label = "收尾", icon = "pr", click = "wrap-up" },
@@ -2437,6 +2462,22 @@ tern.block.define(BLOCK_ID, {
 			state.view = "board"
 			state.newDemand = not state.newDemand
 			state.message = nil
+			return
+		end
+		if act == "frontend" then
+			state.view = "board"
+			state.frontend = not state.frontend
+			state.message = nil
+			return
+		end
+		if act == "frontend-new" then
+			if not (state.repo or state.backend == "local") then
+				state.message = "先识别到仓库，再新建设计"
+				state.frontend = false
+				return
+			end
+			inject(state, cx, commands.buildInjectionBody("前端·新建设计", templates.render(templates.FRONTEND_NEW, templateVars(state))), "新建设计")
+			state.frontend = false
 			return
 		end
 		if act == "new-bug" then
