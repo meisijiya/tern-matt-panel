@@ -251,6 +251,36 @@ print(rows)
 	return 1
 }
 
+# 断言：第二个按钮在同一行、且紧挨在第一个按钮的右边（工具条顺序）。
+assert_btn_right_of() {
+	local left="$1"
+	local right="$2"
+	local out
+	out="$(ctl tree '.sf-button' 2>/dev/null || true)"
+	if printf '%s' "$out" | python -c '
+import json, sys
+left, right = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+rect = {}
+for n in d.get("nodes", []):
+    r = n.get("rect")
+    if n.get("text") in (left, right) and r:
+        rect.setdefault(n["text"], r)
+a, b = rect.get(left), rect.get(right)
+if not a or not b:
+    sys.exit(1)
+same_row = abs(a[1] - b[1]) <= 3
+sys.exit(0 if same_row and b[0] > a[0] else 1)
+' "$left" "$right" 2>/dev/null; then
+		return 0
+	fi
+	echo "  FAIL 「$right」不在「$left」右边同一行"
+	return 1
+}
+
 # 一个用例：名字 + 场景文件 + 断言序列
 case_run() {
 	local name="$1"
@@ -277,6 +307,12 @@ case_run() {
 			fi
 			;;
 		has:*) assert_has "${a#has:}" "$name" || ok=0 ;;
+		adjacent:*)
+			# 格式：adjacent:<左按钮>:<右按钮>
+			rest="${a#adjacent:}"
+			local lt="${rest%%:*}"
+			assert_btn_right_of "$lt" "${rest#*:}" || ok=0
+			;;
 		toolbar-rows:*) assert_toolbar_rows "${a#toolbar-rows:}" || ok=0 ;;
 		lacks:*) assert_lacks "${a#lacks:}" "$name" || ok=0 ;;
 		click:*) click_text "${a#click:}" || ok=0 ;;
@@ -509,6 +545,22 @@ case_run "技能包视图列出三套外部包，刷新按钮能点" "$TMP/packs
 	"has:omp-skill-forge" \
 	"has:刷新版本" \
 	"click-btn-until:刷新版本:版本检查:15000"
+
+# 12b. 「前端」入口：三条路线卡、注入与收起
+# 用受控窗口所在仓库（本仓，GitHub 后端）—— 三条路线都可用，只看能否注入。
+cat > "$TMP/frontend.sc" <<EOF
+wait 100
+EOF
+case_run "前端入口三条路线" "$TMP/frontend.sc" \
+	"click-btn-until:任务板:点行选中:20000" \
+	"adjacent:新增需求:前端" \
+	"click-btn-until:前端:新建设计:15000" \
+	"has:设计迭代" \
+	"has:只解释术语" \
+	"click-btn-until:新建设计:填入:20000" \
+	"lacks:前端 —— 先选一条路" \
+	"click-until:前端:前端 —— 先选一条路:15000" \
+	"click-btn-until:只解释术语:填入:20000"
 
 # ---------------------------------------------------------------- 汇总 ----
 
