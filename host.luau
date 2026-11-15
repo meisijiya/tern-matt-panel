@@ -270,7 +270,10 @@ end
 
 --- 探外部技能包：登记里查得到就按 installPath 探；只有本地目录的按目录探。
 --- 只读，不联网：待更新检查由显式的刷新触发。
-local function loadPacks(state: State)
+local function loadPacks(state: State, cx: BlockCx)
+	-- 项目级通道用面板当前仓库根：state.root 是 git 顶层，cx.cwd 是面板所在目录。
+	-- 两者都没有就跳过这一档（取不到就不探）。
+	local projectRoot = state.root or cx.cwd
 	local out: { packs.PackState } = {}
 	local home = paths.home()
 	local regText: string? = nil
@@ -287,7 +290,22 @@ local function loadPacks(state: State)
 	for _, pack in ipairs(packs.PACKS) do
 		local installed = false
 		local version: string? = nil
-		if pack.registryKey then
+		if pack.skillName then
+			-- 外部技能：按发现链找本机副本（登记 → omp 技能目录 → skills CLI 全局
+			-- → skills CLI 项目级 → Claude 技能目录 → marketplace 缓存）。
+			-- 只读探测，不代装；版本读不到是「未知」，不等于「未装」。
+			local hit = paths.findSkillDir({
+				home = home,
+				name = pack.skillName,
+				registryText = regText,
+				projectRoot = projectRoot,
+				cachePrefix = pack.id .. "___",
+			})
+			if hit then
+				installed = true
+				version = hit.version
+			end
+		elseif pack.registryKey then
 			local entry = paths.parseRegistryEntry(regText, pack.registryKey)
 			if entry then
 				local exists = false
@@ -2048,7 +2066,7 @@ tern.block.define(BLOCK_ID, {
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
 		end
 		loadSkills(state)
-		loadPacks(state)
+		loadPacks(state, cx)
 		loadBoard(state, cx)
 		return state
 	end,
@@ -2107,7 +2125,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if key.name == "r" and not key.shift then
 			loadSkills(state)
-			loadPacks(state)
+			loadPacks(state, cx)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return true
@@ -2553,7 +2571,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "reload" then
 			loadSkills(state)
-			loadPacks(state)
+			loadPacks(state, cx)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return
