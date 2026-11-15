@@ -1376,6 +1376,10 @@ local ACTION_CASES = {
 	end },
 	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
+	{ act = "frontend", want = function(st: any) return st.frontend == true end },
+	{ act = "frontend-new", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }
 
@@ -1516,6 +1520,7 @@ table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates
 table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_NEW.title, body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.render(e, { repo = "me/repo" }) })
 end
@@ -1539,6 +1544,9 @@ local SKILL_WHITELIST = {
 	"/skill:answer-me-with-html",
 	"/skill:handoff",
 	"/skill:forge-router",
+	"/skill:design-taste-frontend",
+	"/skill:vibehub",
+	"/skill:lieflat-less-ai-tone",
 }
 -- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
 local function findPlaceholder(body: string): string?
@@ -1555,7 +1563,7 @@ local function findPlaceholder(body: string): string?
 end
 
 test("每条模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 10, "十条模板都收进来了")
+	eq(#ALL_TEMPLATES, 11, "十一条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -3550,6 +3558,42 @@ test("注入看门狗：回执先到就不再报错", function()
 	end
 	ok(string.find(tostring(st.message), "已填入", 1, true) ~= nil, "提示保持已填入")
 	ok(string.find(tostring(st.message), "没响应", 1, true) == nil, "不误报")
+end)
+
+--- 前端入口：新建设计模板结构断言（issue #70）
+test("前端新建设计：模板存在、title 与注入动作名", function()
+	local t = templates.FRONTEND_NEW
+	ok(t ~= nil, "FRONTEND_NEW 模板存在")
+	eq(t.id, "frontend-new", "id")
+	eq(t.title, "新建设计", "title")
+end)
+
+test("前端新建设计：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	for _, mark in ipairs({ "/skill:design-taste-frontend", "/skill:answer-me-with-html", "/skill:vibehub", "DESIGN.md", "gate.mjs", "copy-lint", "/skill:lieflat-less-ai-tone", "https://vibe-hub.org/anti-ai-flavor", "/skill:grilling" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端新建设计：不含禁止标记", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	for _, mark in ipairs({ "forge-router", "/skill:research", "frontend-design", "impeccable" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端新建设计：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "用户没选方向", 1, true) ~= nil, "停点：没选方向")
+end)
+
+test("前端新建设计：无仓库分支行为", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	ok(kvStore["action"] == nil, "没有仓库就不注入")
+	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
 end)
 
 -- -------------------------------------------------------------- report ----
