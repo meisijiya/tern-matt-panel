@@ -389,7 +389,14 @@ trap 'rm -rf "$TMP"' EXIT
 # 面板只开一次。窗口可能被复用，里面已经开着面板了 —— 那就别叠第二个：
 # 每个 panel 都是一块真 UI，叠起来 GPU 与内存一路涨。
 # 判据用工具条按钮（面板的标志性控件），别用说明文字：文案会改，按钮不会消失。
-if ctl tree '.sf-button' 2>/dev/null | grep -qF '刷新'; then
+# 一个窗口里同时开着两个面板时，按文字取坐标会命中另一个面板的按钮，
+# 断言就全落在错的树上。先数一遍，多了就让人先关掉。
+panels="$(ctl tree '.sf-button' 2>/dev/null | grep -o '"text": "刷新"' | wc -l | tr -d ' ')"
+if [ "${panels:-0}" -gt 1 ]; then
+	echo "FAIL 窗口里有 $panels 个面板，先关掉多余的再跑（tern ctl quit 后重开一个窗口）" >&2
+	exit 2
+fi
+if [ "${panels:-0}" -eq 1 ]; then
 	echo "e2e: 复用已开的面板"
 else
 	# 不能用 palette + return 开面板：调色板第一条是最近提交（Git 面板那条），
@@ -438,8 +445,10 @@ case_run "点技能行展开原文" "$TMP/open_doc.sc" \
 cat > "$TMP/board.sc" <<EOF
 wait 100
 EOF
+# 等「地图」出现再断言：数据是异步拉的，先断言会撞上「正在拉取」。
+# 点「任务板」是幂等的视图切换，重试安全。
 case_run "切到任务板" "$TMP/board.sc" \
-	"click-btn-until:任务板:可领:20000" \
+	"click-btn-until:任务板:地图:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"has:地图" \
 	"has:可领"
