@@ -3737,7 +3737,7 @@ end)
 
 test("前端新建设计：正文含必需标记", function()
 	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
-	for _, mark in ipairs({ "/skill:design-taste-frontend", "/skill:answer-me-with-html", "/skill:vibehub", "DESIGN.md", "gate.mjs", "copy-lint", "/skill:lieflat-less-ai-tone", "https://vibe-hub.org/anti-ai-flavor", "/skill:grilling" }) do
+	for _, mark in ipairs({ "/skill:design-taste-frontend", "/skill:answer-me-with-html", "/skill:vibehub", "DESIGN.md", "gate.mjs", "copy-lint", "/skill:lieflat-less-ai-tone", "https://vibe-hub.org/anti-ai-flavor", "/skill:grilling", "--start", "GATE: OFF", "npx @google/design.md lint", "Do's and Don'ts" }) do
 		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
 	end
 end)
@@ -3800,7 +3800,7 @@ end)
 
 test("前端设计迭代：正文含必需标记", function()
 	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
-	for _, mark in ipairs({ "DESIGN.md", "lint", "diff", "copy-lint", "/skill:answer-me-with-html", "/skill:grilling", "不自动建", "不覆盖", "不选边", "不写业务代码", "不建 PR" }) do
+	for _, mark in ipairs({ "DESIGN.md", "lint", "diff", "copy-lint", "/skill:answer-me-with-html", "/skill:grilling", "不自动建", "不覆盖", "不选边", "不改业务逻辑", "不建 PR", "反填", "npx @google/design.md diff" }) do
 		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
 	end
 end)
@@ -3820,14 +3820,14 @@ end)
 
 test("前端只解释术语：正文含必需标记", function()
 	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
-	for _, mark in ipairs({ "vibehub", "answer-me-with-html", "不读仓库", "不改文件", "不写 DESIGN.md" }) do
+	for _, mark in ipairs({ "vibehub", "answer-me-with-html", "不读仓库", "不改文件", "不写 DESIGN.md", "不给链接", "不伪造" }) do
 		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
 	end
 end)
 
 test("前端只解释术语：不含禁止标记", function()
 	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
-	for _, mark in ipairs({ "design-taste-frontend", "forge-router", "/skill:research", "frontend-design", "impeccable", "anti-ai-flavor" }) do
+	for _, mark in ipairs({ "design-taste-frontend", "forge-router", "/skill:research", "frontend-design", "impeccable", "anti-ai-flavor", "能自己查到的事实（gh", "git status" }) do
 		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
 	end
 end)
