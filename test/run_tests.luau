@@ -287,8 +287,14 @@ local pollTick: any = timers[1] and timers[1].fn
 
 local passed, failed = 0, 0
 local failures: { string } = {}
+-- 报告块之后追加的 test() 会照跑、照报错，但计数与退出码已经产出，
+-- 门禁显示绿、新断言其实没被计入。见了就炸，别让它静默装成通过。
+local reporting = false
 
 local function test(name: string, fn: () -> ())
+	if reporting then
+		error("测试必须写在 report 块之前：" .. name, 0)
+	end
 	reset()
 	local ok, err = pcall(fn)
 	if ok then
@@ -3857,6 +3863,7 @@ end)
 
 -- -------------------------------------------------------------- report ----
 
+reporting = true
 print(string.format("passed=%d failed=%d", passed, failed))
 if failed > 0 then
 	for _, f in ipairs(failures) do
