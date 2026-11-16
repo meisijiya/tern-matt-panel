@@ -275,17 +275,26 @@ if [ ! -f "$cases" ]; then
 	exit 1
 fi
 
-TERNS_E2E_PORT="$port" \
-	TERNS_E2E_REPO="$repo" \
-	TERNS_E2E_REPO_WIN="$repo_win" \
-	TERNS_E2E_SKILL_PKG="$skill_pkg" \
-	TERNS_BIN="$tern_bin" \
-	GH_BIN="$gh_bin" \
-	bash "$cases" &
+# 用例输出同时落盘：只看 tail 时，前面的失败会被切掉，排查等于盲猜。
+caseslog="$here/.e2e.cases.log"
+rcfile="$here/.e2e.cases.rc"
+: > "$caseslog"
+: > "$rcfile"
+(
+	TERNS_E2E_PORT="$port" \
+		TERNS_E2E_REPO="$repo" \
+		TERNS_E2E_REPO_WIN="$repo_win" \
+		TERNS_E2E_SKILL_PKG="$skill_pkg" \
+		TERNS_BIN="$tern_bin" \
+		GH_BIN="$gh_bin" \
+		bash "$cases"
+	echo $? > "$rcfile"
+) 2>&1 | tee -a "$caseslog" &
 cases_pid=$!
-cases_rc=0
-wait "$cases_pid" || cases_rc=$?
+wait "$cases_pid" || true
 cases_pid=""
+cases_rc="$(cat "$rcfile" 2>/dev/null || echo 1)"
+rm -f "$rcfile"
 
-echo "e2e: 全部用例结束"
+echo "e2e: 全部用例结束（完整输出：$caseslog）"
 exit "$cases_rc"

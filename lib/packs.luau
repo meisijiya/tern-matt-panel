@@ -16,6 +16,8 @@ export type Pack = {
 	registryKey: string?,
 	-- 相对 home 的安装根；registryKey 为 nil 时用。
 	localRel: string?,
+	-- 外部技能的技能名（面板用 /skill:名字 调用）。有它才走技能发现链。
+	skillName: string?,
 	-- 安装指引，逐行可复制。
 	install: { string },
 }
@@ -51,6 +53,27 @@ M.PACKS = {
 		install = {
 			"python tools/deploy.py",
 			"omp plugin link ~/.omp/agent/local/omp-skill-forge",
+		},
+	},
+	{
+		id = "taste-skill",
+		title = "taste-skill",
+		purpose = "反模板味的前端设计技能；「前端·新建设计」路线用它出整站规范与门禁",
+		repo = "Leonxlnx/taste-skill",
+		registryKey = "taste-skill@taste-skill",
+		skillName = "design-taste-frontend",
+		install = {
+			"npx skills add https://github.com/Leonxlnx/taste-skill --skill \"design-taste-frontend\"",
+		},
+	},
+	{
+		id = "vibehub",
+		title = "vibehub",
+		purpose = "术语对齐：把口语需求翻成准确术语；「前端·只解释术语」路线靠它",
+		repo = "oil-oil/vibe-hub-skill",
+		skillName = "vibehub",
+		install = {
+			"npx skills add oil-oil/vibe-hub-skill",
 		},
 	},
 }

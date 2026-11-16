@@ -2,3 +2,6 @@
 *.tmp
 test/.e2e.port
 test/.e2e.log
+target/
+test/.e2e.cases.log
+test/.e2e.cases.rc

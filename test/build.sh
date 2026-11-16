@@ -44,6 +44,22 @@ for f in "$repo"/test/*.sh; do
 	bash -n "$f" || { echo "shell 语法错：$f" >&2; exit 1; }
 done
 
+# .gitattributes 要求 LF，但工作区用 CRLF 写的文件经 commit 提交时不一定被规范化，
+# 之后每行都算改动（实测一次 1241 行的整文件 diff）。提交前先在这里拦住。
+crlf=""
+while IFS= read -r f; do
+	[ -n "$f" ] || continue
+	if grep -q $'\r' "$repo/$f" 2>/dev/null; then
+		crlf="$crlf$f
+"
+	fi
+done < <(git -C "$repo" ls-files -- '*.luau' '*.sh')
+if [ -n "$crlf" ]; then
+	echo "行尾不是 LF（.gitattributes 要求 LF），先归一化再提交：" >&2
+	printf '%s' "$crlf" >&2
+	exit 1
+fi
+
 # 拼接会把所有模块先定义好，于是「host 里忘了 require 某个模块」这种错
 # 在单测里永远抓不到 —— 真机才炸（await failed / runtime error）。
 # 所以先静态查一遍：代码里用到的 lib 模块，宿主/窗口文件必须自己 require。

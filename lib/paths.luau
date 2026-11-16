@@ -169,4 +169,132 @@ function M.packageVersion(root: string): string?
 	return ver
 end
 
+export type SkillProbe = {
+	-- home 目录；nil 时跳过所有 home 下的通道。
+	home: string?,
+	-- 技能名（面板用 /skill:名字 调用的那个）。
+	name: string,
+	-- 面板当前仓库根；nil 时跳过项目级通道。
+	projectRoot: string?,
+	-- omp 安装登记原文；nil 表示没有登记文件。
+	registryText: string?,
+	-- 登记里的键；nil 表示不查登记这条通道。
+	registryKey: string?,
+	-- marketplace 缓存目录名前缀（<id>___）；nil 表示不扫缓存。
+	cachePrefix: string?,
+}
+
+export type SkillHit = {
+	-- 副本根目录。
+	root: string,
+	-- 命中哪条通道（状态文案与排查用）。
+	source: string,
+	-- 版本；登记/package.json/frontmatter 都取不到时是 nil（不等于「未装」）。
+	version: string?,
+}
+
+--- 路径在不在。探针抛错按「不在」算：探测不能崩。
+function M.pathExists(path: string): boolean
+	if path == "" then
+		return false
+	end
+	local ok, v = pcall(tern.fs.exists, path)
+	return ok and v == true
+end
+
+--- 读 SKILL.md frontmatter 里的版本号；没有就 nil。
+--- 只看 frontmatter 段，正文里的 version: 不算数。
+function M.docVersion(path: string): string?
+	local ok, text = pcall(tern.fs.read, path)
+	if not ok or type(text) ~= "string" then
+		return nil
+	end
+	local head = text:match("^%-%-%-%s*\r?\n(.-)\r?\n%-%-%-")
+	if not head then
+		return nil
+	end
+	local v = head:match("version:%s*[\"']?([^\"'\r\n]+)")
+	if not v then
+		return nil
+	end
+	v = v:match("^%s*(.-)%s*$") or v
+	if v == "" then
+		return nil
+	end
+	return v
+end
+
+--- 版本兜底：package.json → 技能目录里的 SKILL.md → 插件包的 skills/<name>/SKILL.md。
+function M.versionFromDir(root: string, name: string): string?
+	local v = M.packageVersion(root)
+	if v and v ~= "" then
+		return v
+	end
+	local v2 = M.docVersion(root .. "/SKILL.md")
+	if v2 then
+		return v2
+	end
+	return M.docVersion(root .. "/skills/" .. name .. "/SKILL.md")
+end
+
+--- 找外部技能在本机的副本。
+--- 通道顺序固定：登记 → omp 技能目录 → skills CLI 全局 → skills CLI 项目级
+--- → Claude 技能目录 → marketplace 缓存兜底。同一技能多份副本只出一个：
+--- 第一个命中的通道说了算。
+--- 软链按「目标存在即跟随」处理；断链或目标不在 → 不命中，继续下一档。
+function M.findSkillDir(p: SkillProbe): SkillHit?
+	local name = p.name
+	if name == "" then
+		return nil
+	end
+	local home = p.home
+	local root0 = p.projectRoot
+	-- 1. 安装登记：登记里的版本优先于目录里的 package.json。
+	if p.registryKey and p.registryText then
+		local entry = M.parseRegistryEntry(p.registryText, p.registryKey)
+		if entry and entry.installPath and entry.installPath ~= "" then
+			local root = norm(entry.installPath)
+			if M.pathExists(root) then
+				local version = entry.version
+				if not version or version == "" then
+					version = M.versionFromDir(root, name)
+				end
+				return { root = root, source = "登记", version = version }
+			end
+		end
+	end
+	-- 2. 目录通道：按优先级第一个存在的就是它。
+	local dirs: { { path: string, label: string } } = {}
+	if home then
+		table.insert(dirs, { path = home .. "/.omp/agent/skills/" .. name, label = "omp 技能目录" })
+		table.insert(dirs, { path = home .. "/.agents/skills/" .. name, label = "skills CLI 全局" })
+	end
+	if root0 then
+		table.insert(dirs, { path = root0 .. "/.agents/skills/" .. name, label = "skills CLI 项目级" })
+	end
+	if home then
+		table.insert(dirs, { path = home .. "/.claude/skills/" .. name, label = "Claude 技能目录" })
+	end
+	for _, d in ipairs(dirs) do
+		local path = norm(d.path)
+		if M.pathExists(path) then
+			return { root = path, source = d.label, version = M.versionFromDir(path, name) }
+		end
+	end
+	-- 3. marketplace 缓存兜底：目录名形如 <前缀>___<来源>___<版本>。
+	if p.cachePrefix and home then
+		local dir = norm(home .. "/.omp/plugins/cache/plugins")
+		local ok, names = pcall(tern.fs.list, dir)
+		if ok and type(names) == "table" then
+			for _, n in ipairs(names) do
+				if string.sub(n, 1, #p.cachePrefix) == p.cachePrefix then
+					local root = dir .. "/" .. n
+					return { root = root, source = "marketplace 缓存", version = M.versionFromDir(root, name) }
+				end
+			end
+		end
+	end
+	return nil
+end
+
 return M

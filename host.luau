@@ -58,7 +58,7 @@ local COOLDOWN_SEC = 60
 local AUTO_REFRESH_SEC = 300
 
 --- 技能包查上游版本的最短间隔：手动刷新才查，且不能连点。
---- 三套包的检查要各跑一次 gh，配额是共享的。
+--- 五套包的检查要各跑一次 gh，配额是共享的。
 local PACK_CHECK_SEC = 300
 
 local ACTION_KEY = "action"
@@ -97,6 +97,8 @@ type State = {
 	sortNewest: boolean,
 	-- 工具条「新增需求」把两条路叫出来，选完或再按一次收起
 	newDemand: boolean,
+	-- 工具条「前端」把路线卡叫出来，选完或再按一次收起
+	frontend: boolean,
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
@@ -145,6 +147,7 @@ local function blank(): State
 		view = "skills",
 		sortNewest = true,
 		newDemand = false,
+		frontend = false,
 		skills = {},
 		lanes = {},
 		skillSel = nil,
@@ -267,7 +270,10 @@ end
 
 --- 探外部技能包：登记里查得到就按 installPath 探；只有本地目录的按目录探。
 --- 只读，不联网：待更新检查由显式的刷新触发。
-local function loadPacks(state: State)
+local function loadPacks(state: State, cx: BlockCx)
+	-- 项目级通道用面板当前仓库根：state.root 是 git 顶层，cx.cwd 是面板所在目录。
+	-- 两者都没有就跳过这一档（取不到就不探）。
+	local projectRoot = state.root or cx.cwd
 	local out: { packs.PackState } = {}
 	local home = paths.home()
 	local regText: string? = nil
@@ -284,7 +290,23 @@ local function loadPacks(state: State)
 	for _, pack in ipairs(packs.PACKS) do
 		local installed = false
 		local version: string? = nil
-		if pack.registryKey then
+		if pack.skillName then
+			-- 外部技能：按发现链找本机副本（登记 → omp 技能目录 → skills CLI 全局
+			-- → skills CLI 项目级 → Claude 技能目录 → marketplace 缓存）。
+			-- 只读探测，不代装；版本读不到是「未知」，不等于「未装」。
+			local hit = paths.findSkillDir({
+				home = home,
+				name = pack.skillName,
+				registryText = regText,
+				registryKey = pack.registryKey,
+				projectRoot = projectRoot,
+				cachePrefix = pack.id .. "___",
+			})
+			if hit then
+				installed = true
+				version = hit.version
+			end
+		elseif pack.registryKey then
 			local entry = paths.parseRegistryEntry(regText, pack.registryKey)
 			if entry then
 				local exists = false
@@ -1144,7 +1166,7 @@ local function packsView(state: State): Node
 		ui.span("外部技能包", "strong"),
 		ui.span("  面板引用它们，但不自带、不代装", "muted"),
 	}))
-	-- 自己的刷新：只查这三套包的上游版本，不碰任务板。
+	-- 自己的刷新：只查这五套包的上游版本，不碰任务板。
 	table.insert(main, ui.row({
 		ui.button("刷新版本", {
 			icon = "refresh",
@@ -1249,6 +1271,30 @@ local function entryChooser(): Node
 	return ui.col(col)
 end
 
+--- 工具条「前端」的路线卡：三条路线，选一条即注入并收起。
+local function frontendChooser(): Node
+	local col: { Node } = { ui.text(ui.span("前端 —— 先选一条路", "strong")) }
+	local row: { Node } = {}
+	local cards = {
+		{ title = "新建设计", click = "frontend-new", desc = "从 0 到 1 定视觉方向，写入 DESIGN.md" },
+		{ title = "设计迭代", click = "frontend-iterate", desc = "改已有页面，先读 DESIGN.md，只更新变更 token" },
+		{ title = "只解释术语", click = "frontend-explain", desc = "不读仓库、不改文件，把描述改写成准确需求" },
+	}
+	for _, c in ipairs(cards) do
+		table.insert(row, ui.button(c.title, {
+			icon = "sparkle",
+			size = "sm",
+			variant = "primary",
+			actions = { click = c.click },
+		}))
+	end
+	table.insert(col, ui.row(row))
+	for _, c in ipairs(cards) do
+		table.insert(col, ui.text({ ui.span("· " .. c.title .. "：", "muted"), ui.span(c.desc, "muted") }))
+	end
+	return ui.col(col)
+end
+
 local function boardView(state: State, cx: BlockCx): Node
 	local main: { Node } = {}
 
@@ -1327,6 +1373,9 @@ local function boardView(state: State, cx: BlockCx): Node
 	if (#state.tickets == 0 and (state.repo or state.backend == "local")) or state.newDemand then
 		table.insert(main, entryChooser())
 	end
+	if state.frontend then
+		table.insert(main, frontendChooser())
+	end
 
 	-- 地图
 	local mapItems: { any } = {}
@@ -1356,12 +1405,12 @@ local function boardView(state: State, cx: BlockCx): Node
 	mapList.p = mapLp
 	-- 和 Spec、四组票一样做成可折叠卡片：一张地图占一块地方，
 	-- 项目里有好几张地图时纯列表会把下面的票挤出屏幕。
-	table.insert(main, ui.card(ui.text({
-		ui.span("地图", "strong"),
-		ui.span(if state.backend == "local"
-			then "  .scratch/<工作单元>/map.md · 子票挂在它名下"
-			else "  wayfinder:map · 子票挂在它名下", "muted"),
-	}), { mapList }, {
+	table.insert(main, ui.card(ui.span("地图", "strong"), {
+		ui.text(ui.span(if state.backend == "local"
+			then ".scratch/<工作单元>/map.md · 子票挂在它名下"
+			else "wayfinder:map · 子票挂在它名下", "muted")),
+		mapList,
+	}, {
 		icon = "map",
 		meta = ui.span(string.format("%d 张", #state.maps), "muted"),
 		collapsible = true,
@@ -1854,6 +1903,7 @@ local function toolbar(state: State, cx: BlockCx): Node
 	local buttons: { ToolButton } = {
 		-- 常驻三条：参考实现里这两条路、提 BUG、体检是随时能按的
 		{ label = "新增需求", icon = "plus", click = "new-demand" },
+		{ label = "前端", icon = "sparkle", click = "frontend" },
 		{ label = "提 BUG", icon = "warning", click = "new-bug" },
 		{ label = "体检", icon = "check", click = "health-check" },
 		{ label = "收尾", icon = "pr", click = "wrap-up" },
@@ -2017,7 +2067,7 @@ tern.block.define(BLOCK_ID, {
 			state.skillSel = if type(saved.skillSel) == "string" then saved.skillSel else nil
 		end
 		loadSkills(state)
-		loadPacks(state)
+		loadPacks(state, cx)
 		loadBoard(state, cx)
 		return state
 	end,
@@ -2076,7 +2126,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if key.name == "r" and not key.shift then
 			loadSkills(state)
-			loadPacks(state)
+			loadPacks(state, cx)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return true
@@ -2439,6 +2489,36 @@ tern.block.define(BLOCK_ID, {
 			state.message = nil
 			return
 		end
+		if act == "frontend" then
+			state.view = "board"
+			state.frontend = not state.frontend
+			state.message = nil
+			return
+		end
+		-- 两条设计路线要仓库：没识别到就只提示，不注入。
+		local function designRoute(label: string, tpl: any)
+			if not (state.repo or state.backend == "local") then
+				state.message = "先识别到仓库，再" .. label
+				state.frontend = false
+				return
+			end
+			inject(state, cx, commands.buildInjectionBody("前端·" .. label, templates.render(tpl, templateVars(state))), label)
+			state.frontend = false
+		end
+		if act == "frontend-new" then
+			designRoute("新建设计", templates.FRONTEND_NEW)
+			return
+		end
+		if act == "frontend-iterate" then
+			designRoute("设计迭代", templates.FRONTEND_ITERATE)
+			return
+		end
+		-- 只解释术语不读仓库，没有仓库也照常注入。
+		if act == "frontend-explain" then
+			inject(state, cx, commands.buildInjectionBody("前端·只解释术语", templates.render(templates.FRONTEND_EXPLAIN, templateVars(state))), "只解释术语")
+			state.frontend = false
+			return
+		end
 		if act == "new-bug" then
 			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, templateVars(state))), "提 BUG")
 			return
@@ -2492,7 +2572,7 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "reload" then
 			loadSkills(state)
-			loadPacks(state)
+			loadPacks(state, cx)
 			loadBoard(state, cx)
 			state.message = "已刷新"
 			return

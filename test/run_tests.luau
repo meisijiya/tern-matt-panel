@@ -287,8 +287,14 @@ local pollTick: any = timers[1] and timers[1].fn
 
 local passed, failed = 0, 0
 local failures: { string } = {}
+-- 报告块之后追加的 test() 会照跑、照报错，但计数与退出码已经产出，
+-- 门禁显示绿、新断言其实没被计入。见了就炸，别让它静默装成通过。
+local reporting = false
 
 local function test(name: string, fn: () -> ())
+	if reporting then
+		error("测试必须写在 report 块之前：" .. name, 0)
+	end
 	reset()
 	local ok, err = pcall(fn)
 	if ok then
@@ -1376,6 +1382,16 @@ local ACTION_CASES = {
 	end },
 	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
+	{ act = "frontend", want = function(st: any) return st.frontend == true end },
+	{ act = "frontend-new", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
+	{ act = "frontend-iterate", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
+	{ act = "frontend-explain", want = function(st: any, _b: any, kv: any)
+		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
+	end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
 }
 
@@ -1516,6 +1532,9 @@ table.insert(ALL_TEMPLATES, { name = templates.NEXT_STEP.title, body = templates
 table.insert(ALL_TEMPLATES, { name = templates.NEW_BUG.title, body = templates.render(templates.NEW_BUG, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.HEALTH_CHECK.title, body = templates.render(templates.HEALTH_CHECK, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.render(templates.WRAP_UP, { repo = "me/repo", root = "D:/r" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_NEW.title, body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_ITERATE.title, body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_EXPLAIN.title, body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.render(e, { repo = "me/repo" }) })
 end
@@ -1539,6 +1558,9 @@ local SKILL_WHITELIST = {
 	"/skill:answer-me-with-html",
 	"/skill:handoff",
 	"/skill:forge-router",
+	"/skill:design-taste-frontend",
+	"/skill:vibehub",
+	"/skill:lieflat-less-ai-tone",
 }
 -- 待填空位：中文括号里带「填」，或以「：」结尾的空填写行。
 local function findPlaceholder(body: string): string?
@@ -1555,7 +1577,7 @@ local function findPlaceholder(body: string): string?
 end
 
 test("每条模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 10, "十条模板都收进来了")
+	eq(#ALL_TEMPLATES, 13, "十三条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -2958,8 +2980,8 @@ local function hasText(list: { string }, needle: string): boolean
 	return false
 end
 
-test("packs 清单：三套、id 唯一、都带仓库与安装指引", function()
-	eq(#packs.PACKS, 3)
+test("packs 清单：五套、id 唯一、都带仓库与安装指引", function()
+	eq(#packs.PACKS, 5)
 	local seen: { [string]: boolean } = {}
 	for _, p in ipairs(packs.PACKS) do
 		ok(not seen[p.id], "id 重复：" .. p.id)
@@ -2968,6 +2990,21 @@ test("packs 清单：三套、id 唯一、都带仓库与安装指引", function
 		ok(#p.install > 0, p.id .. " 缺安装指引")
 		ok(p.purpose ~= "", p.id .. " 缺用途")
 	end
+end)
+
+test("packs 清单：taste-skill 与 vibehub 两行带技能名", function()
+	local taste = packs.byId("taste-skill")
+	ok(taste ~= nil, "清单里有 taste-skill")
+	eq(taste.title, "taste-skill")
+	eq(taste.repo, "Leonxlnx/taste-skill")
+	eq(taste.skillName, "design-taste-frontend")
+	ok(#taste.install > 0, "taste-skill 有安装指引")
+	local vh = packs.byId("vibehub")
+	ok(vh ~= nil, "清单里有 vibehub")
+	eq(vh.title, "vibehub")
+	eq(vh.repo, "oil-oil/vibe-hub-skill")
+	eq(vh.skillName, "vibehub")
+	ok(#vh.install > 0, "vibehub 有安装指引")
 end)
 
 test("packs.versionLabel 缺版本不留空", function()
@@ -3007,7 +3044,7 @@ test("技能包：登记里的两套按 installPath 判已装，本地目录那�
 	fsDirs["C:/home/.omp/agent/local/omp-skill-forge"] = true
 	fsFiles["C:/home/.omp/agent/local/omp-skill-forge/package.json"] = '{"name":"omp-skill-forge","version":"0.5.0"}'
 	local st = panel.init(mkCx(120), {}, nil)
-	eq(#st.packs, 3)
+	eq(#st.packs, 5)
 	local by: { [string]: any } = {}
 	for _, p in ipairs(st.packs) do
 		by[p.id] = p
@@ -3044,7 +3081,7 @@ test("技能包：登记有条目但目录不在 → 未装", function()
 	eq(by["mattpocock"].version, "1.3.5")
 end)
 
-test("技能包视图：三张卡露出标题、版本与安装指引，窄面板也有入口", function()
+test("技能包视图：五张卡露出标题、版本与安装指引，窄面板也有入口", function()
 	writeRegistry("1.3.5", "0.5.10")
 	fsDirs["C:/p/matt"] = true
 	fsDirs["C:/p/am"] = true
@@ -3056,12 +3093,156 @@ test("技能包视图：三张卡露出标题、版本与安装指引，窄面�
 	ok(util.contains(texts, "mattpocock 技能组"), "有主技能组卡")
 	ok(util.contains(texts, "answer-me-with-html"), "有可视化包卡")
 	ok(util.contains(texts, "omp-skill-forge"), "有选路包卡")
+	ok(util.contains(texts, "taste-skill"), "有 taste-skill 卡")
+	ok(util.contains(texts, "vibehub"), "有 vibehub 卡")
 	ok(hasText(texts, "1.3.5"), "露出主技能组版本")
 	ok(hasText(texts, "0.5.10"), "露出可视化包版本")
 	ok(hasText(texts, "0.5.0"), "露出选路包版本")
 	local tight = panel.init(mkCx(24), {}, nil)
 	local ttexts = buttonTexts(panel.view(tight, mkCx(24)).main, {})
 	ok(util.contains(ttexts, "技能包"), "窄面板也有技能包入口")
+end)
+
+--- 发现链的探针：home 固定成 C:/home，项目根 C:/proj。
+local function probe(name: string, extra: any?): any
+	local p: any = {
+		home = "C:/home",
+		name = name,
+		projectRoot = "C:/proj",
+		registryText = nil,
+		registryKey = nil,
+		cachePrefix = nil,
+	}
+	for k, v in pairs(extra or {}) do
+		p[k] = v
+	end
+	return p
+end
+
+test("发现链：登记优先于目录通道", function()
+	fsFiles["C:/home/.omp/plugins/installed_plugins.json"] =
+		'{"taste-skill@taste-skill":{"installPath":"C:/cache/taste","version":"2.5.1"}}'
+	fsDirs["C:/cache/taste"] = true
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	local hit = paths.findSkillDir(probe("design-taste-frontend", {
+		registryText = fsFiles["C:/home/.omp/plugins/installed_plugins.json"],
+		registryKey = "taste-skill@taste-skill",
+	}))
+	ok(type(hit) == "table", "命中")
+	eq(hit.root, "C:/cache/taste")
+	eq(hit.version, "2.5.1")
+	eq(hit.source, "登记")
+end)
+
+test("发现链：目录通道按 omp → skills CLI 全局 → 项目级 → Claude 取第一个命中", function()
+	-- 只有 skills CLI 全局有：应命中它。
+	fsDirs["C:/home/.agents/skills/vibehub"] = true
+	local hit = paths.findSkillDir(probe("vibehub"))
+	eq(hit.source, "skills CLI 全局")
+	eq(hit.root, "C:/home/.agents/skills/vibehub")
+	-- 加了 Claude 目录：优先级更高的那档仍然赢。
+	fsDirs["C:/home/.claude/skills/vibehub"] = true
+	local hit2 = paths.findSkillDir(probe("vibehub"))
+	eq(hit2.source, "skills CLI 全局")
+	-- 再加 omp 技能目录：它最靠前。
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	local hit3 = paths.findSkillDir(probe("vibehub"))
+	eq(hit3.source, "omp 技能目录")
+end)
+
+test("发现链：项目级通道只在项目根给定时探", function()
+	fsDirs["C:/proj/.agents/skills/vibehub"] = true
+	local withRoot = paths.findSkillDir(probe("vibehub"))
+	eq(withRoot.source, "skills CLI 项目级")
+	eq(withRoot.root, "C:/proj/.agents/skills/vibehub")
+	-- 没有项目根：这一档跳过，不该命中。
+	-- （不能靠 extra 传 nil：Lua 表不存 nil 值，pairs 遍历不到。）
+	local noRoot = paths.findSkillDir({
+		home = "C:/home",
+		name = "vibehub",
+		projectRoot = nil,
+		registryText = nil,
+		registryKey = nil,
+		cachePrefix = nil,
+	})
+	eq(noRoot, nil)
+end)
+
+test("发现链：多份副本只出一行，按优先级取版本", function()
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.omp/agent/skills/design-taste-frontend/package.json"] = '{"version":"9.9.9"}'
+	fsDirs["C:/home/.claude/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.claude/skills/design-taste-frontend/package.json"] = '{"version":"1.0.0"}'
+	local hit = paths.findSkillDir(probe("design-taste-frontend"))
+	eq(hit.source, "omp 技能目录")
+	eq(hit.version, "9.9.9")
+end)
+
+test("版本兜底：登记版本 → package.json → SKILL.md frontmatter → nil", function()
+	-- 只有 SKILL.md frontmatter 的 version：
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] =
+		"---\nname: vibehub\nversion: 0.1.0\n---\n正文"
+	local hit = paths.findSkillDir(probe("vibehub"))
+	eq(hit.version, "0.1.0")
+	-- package.json 优先于 frontmatter：
+	fsFiles["C:/home/.omp/agent/skills/vibehub/package.json"] = '{"version":"2.0.0"}'
+	local hit2 = paths.findSkillDir(probe("vibehub"))
+	eq(hit2.version, "2.0.0")
+	-- 都没有：版本为 nil，但仍是「已装」。
+	fsFiles["C:/home/.omp/agent/skills/vibehub/package.json"] = nil
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] = "---\nname: vibehub\n---\n正文"
+	local hit3 = paths.findSkillDir(probe("vibehub"))
+	eq(hit3.version, nil)
+	ok(hit3 ~= nil, "命中了，只是版本读不到")
+end)
+
+test("发现链：断链或目标不在 → 不命中，不崩", function()
+	-- 目录在桩里没有：软链目标不存在，当未命中处理。
+	local hit = paths.findSkillDir(probe("design-taste-frontend"))
+	eq(hit, nil)
+	-- 探针抛错也不能崩：桩里把登记文件读成非法内容。
+	local okHit = pcall(function()
+		return paths.findSkillDir(probe("vibehub", { registryText = "{坏 JSON", registryKey = "k" }))
+	end)
+	ok(okHit, "探测不抛错")
+end)
+
+test("技能包：「未知」不等于「未装」", function()
+	fsDirs["C:/home/.omp/agent/skills/vibehub"] = true
+	fsFiles["C:/home/.omp/agent/skills/vibehub/SKILL.md"] = "---\nname: vibehub\n---\n正文"
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["vibehub"].installed, true, "目录在就是已装")
+	eq(by["vibehub"].version, nil, "版本读不到")
+	eq(by["vibehub"].status, "已装", "状态不是未装")
+	eq(packs.versionLabel(by["vibehub"].version), "未知版本")
+end)
+
+test("技能包：软链目标存在即视为跟随，读目标里的版本", function()
+	-- 桩不支持符号链接：按「目标路径存在即视为跟随」处理。
+	fsDirs["C:/home/.omp/agent/skills/design-taste-frontend"] = true
+	fsFiles["C:/home/.omp/agent/skills/design-taste-frontend/package.json"] = '{"version":"2.5.1"}'
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["taste-skill"].installed, true)
+	eq(by["taste-skill"].version, "2.5.1")
+end)
+
+test("技能包：外部技能没装 → 未装，不影响其它包", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	local by: { [string]: any } = {}
+	for _, p in ipairs(st.packs) do
+		by[p.id] = p
+	end
+	eq(by["vibehub"].status, "未装")
+	eq(by["taste-skill"].status, "未装")
 end)
 
 test("技能包：复制仓库链接与安装指引", function()
@@ -3552,8 +3733,137 @@ test("注入看门狗：回执先到就不再报错", function()
 	ok(string.find(tostring(st.message), "没响应", 1, true) == nil, "不误报")
 end)
 
+--- 前端入口：新建设计模板结构断言（issue #70）
+test("前端新建设计：模板存在、title 与注入动作名", function()
+	local t = templates.FRONTEND_NEW
+	ok(t ~= nil, "FRONTEND_NEW 模板存在")
+	eq(t.id, "frontend-new", "id")
+	eq(t.title, "新建设计", "title")
+end)
+
+test("前端新建设计：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	for _, mark in ipairs({ "/skill:design-taste-frontend", "/skill:answer-me-with-html", "/skill:vibehub", "DESIGN.md", "gate.mjs", "copy-lint", "/skill:lieflat-less-ai-tone", "https://vibe-hub.org/anti-ai-flavor", "/skill:grilling", "--start", "GATE: OFF", "npx @google/design.md lint", "Do's and Don'ts" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端新建设计：不含禁止标记", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	for _, mark in ipairs({ "forge-router", "/skill:research", "frontend-design", "impeccable" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端新建设计：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "用户没选方向", 1, true) ~= nil, "停点：没选方向")
+end)
+
+test("前端新建设计：无仓库分支行为", function()
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	ok(kvStore["action"] == nil, "没有仓库就不注入")
+	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
+end)
+
+test("前端新建设计：注入动作名写进信封首行", function()
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	local body = kvStore["action"].body
+	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 前端·新建设计 =====", 1, true) == 1, "首行是动作名")
+	eq(st.frontend, false, "注入后收起路线卡")
+end)
+
+test("前端设计迭代 / 只解释术语：模板存在、id 与 title", function()
+	local it = templates.FRONTEND_ITERATE
+	ok(it ~= nil, "FRONTEND_ITERATE 模板存在")
+	eq(it.id, "frontend-iterate", "迭代 id")
+	eq(it.title, "设计迭代", "迭代 title")
+
+	local ex = templates.FRONTEND_EXPLAIN
+	ok(ex ~= nil, "FRONTEND_EXPLAIN 模板存在")
+	eq(ex.id, "frontend-explain", "解释 id")
+	eq(ex.title, "只解释术语", "解释 title")
+end)
+
+test("前端设计迭代 / 只解释术语：注入动作名写进信封首行", function()
+	local function headLine(body: string): string
+		return string.sub(body, 1, string.find(body, "\n", 1, true) or #body)
+	end
+	local st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-iterate" }, mkCx(120))
+	local body = kvStore["action"].body
+	ok(string.find(headLine(body), "前端·设计迭代", 1, true) ~= nil, "迭代信封首行是动作名")
+
+	st = nextStepState()
+	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	body = kvStore["action"].body
+	ok(string.find(headLine(body), "前端·只解释术语", 1, true) ~= nil, "解释信封首行是动作名")
+end)
+
+test("前端设计迭代：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	for _, mark in ipairs({ "DESIGN.md", "lint", "diff", "copy-lint", "/skill:answer-me-with-html", "/skill:grilling", "不自动建", "不覆盖", "不选边", "不改业务逻辑", "不建 PR", "反填", "npx @google/design.md diff" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端设计迭代：不含禁止标记与整门全链", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	for _, mark in ipairs({ "forge-router", "/skill:research", "gh ", "frontend-design", "impeccable", "gate.mjs", "anti-ai-flavor" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端设计迭代：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "用户没选改动", 1, true) ~= nil, "停点：没选改动")
+end)
+
+test("前端只解释术语：正文含必需标记", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	for _, mark in ipairs({ "vibehub", "answer-me-with-html", "不读仓库", "不改文件", "不写 DESIGN.md", "不给链接", "不伪造" }) do
+		ok(string.find(body, mark, 1, true) ~= nil, "含 " .. mark)
+	end
+end)
+
+test("前端只解释术语：不含禁止标记", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	for _, mark in ipairs({ "design-taste-frontend", "forge-router", "/skill:research", "frontend-design", "impeccable", "anti-ai-flavor", "能自己查到的事实（gh", "git status" }) do
+		ok(string.find(body, mark, 1, true) == nil, "不含 " .. mark)
+	end
+end)
+
+test("前端只解释术语：出口判定存在", function()
+	local body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" })
+	ok(string.find(body, "出口判定", 1, true) ~= nil, "出口判定段")
+	ok(string.find(body, "没有可靠匹配", 1, true) ~= nil, "停点：没有可靠匹配")
+end)
+
+test("前端路线：只解释术语无仓库照常注入，前两条无仓库不注入", function()
+	-- 无仓库：新建设计、设计迭代只提示
+	for _, act in ipairs({ "frontend-new", "frontend-iterate" }) do
+		local st = panel.init(mkCx(120), {}, nil)
+		kvStore["action"] = nil
+		panel.event(st, { ev = "action", act = act }, mkCx(120))
+		ok(kvStore["action"] == nil, act .. " 没有仓库就不注入")
+		ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, act .. " 说清缺什么")
+	end
+
+	-- 无仓库：只解释术语照常注入
+	local st = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	ok(kvStore["action"] ~= nil and kvStore["action"].kind == "inject", "只解释术语无仓库也注入")
+end)
+
 -- -------------------------------------------------------------- report ----
 
+reporting = true
 print(string.format("passed=%d failed=%d", passed, failed))
 if failed > 0 then
 	for _, f in ipairs(failures) do

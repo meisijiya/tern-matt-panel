@@ -251,6 +251,36 @@ print(rows)
 	return 1
 }
 
+# 断言：第二个按钮在同一行、且紧挨在第一个按钮的右边（工具条顺序）。
+assert_btn_right_of() {
+	local left="$1"
+	local right="$2"
+	local out
+	out="$(ctl tree '.sf-button' 2>/dev/null || true)"
+	if printf '%s' "$out" | python -c '
+import json, sys
+left, right = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+rect = {}
+for n in d.get("nodes", []):
+    r = n.get("rect")
+    if n.get("text") in (left, right) and r:
+        rect.setdefault(n["text"], r)
+a, b = rect.get(left), rect.get(right)
+if not a or not b:
+    sys.exit(1)
+same_row = abs(a[1] - b[1]) <= 3
+sys.exit(0 if same_row and b[0] > a[0] else 1)
+' "$left" "$right" 2>/dev/null; then
+		return 0
+	fi
+	echo "  FAIL 「$right」不在「$left」右边同一行"
+	return 1
+}
+
 # 一个用例：名字 + 场景文件 + 断言序列
 case_run() {
 	local name="$1"
@@ -277,6 +307,12 @@ case_run() {
 			fi
 			;;
 		has:*) assert_has "${a#has:}" "$name" || ok=0 ;;
+		adjacent:*)
+			# 格式：adjacent:<左按钮>:<右按钮>
+			rest="${a#adjacent:}"
+			local lt="${rest%%:*}"
+			assert_btn_right_of "$lt" "${rest#*:}" || ok=0
+			;;
 		toolbar-rows:*) assert_toolbar_rows "${a#toolbar-rows:}" || ok=0 ;;
 		lacks:*) assert_lacks "${a#lacks:}" "$name" || ok=0 ;;
 		click:*) click_text "${a#click:}" || ok=0 ;;
@@ -353,13 +389,20 @@ trap 'rm -rf "$TMP"' EXIT
 # 面板只开一次。窗口可能被复用，里面已经开着面板了 —— 那就别叠第二个：
 # 每个 panel 都是一块真 UI，叠起来 GPU 与内存一路涨。
 # 判据用工具条按钮（面板的标志性控件），别用说明文字：文案会改，按钮不会消失。
-if ctl tree '.sf-button' 2>/dev/null | grep -qF '刷新'; then
+# 一个窗口里同时开着两个面板时，按文字取坐标会命中另一个面板的按钮，
+# 断言就全落在错的树上。先数一遍，多了就让人先关掉。
+panels="$(ctl tree '.sf-button' 2>/dev/null | grep -o '"text": "刷新"' | wc -l | tr -d ' ')"
+if [ "${panels:-0}" -gt 1 ]; then
+	echo "FAIL 窗口里有 $panels 个面板，先关掉多余的再跑（tern ctl quit 后重开一个窗口）" >&2
+	exit 2
+fi
+if [ "${panels:-0}" -eq 1 ]; then
 	echo "e2e: 复用已开的面板"
 else
+	# 不能用 palette + return 开面板：调色板第一条是最近提交（Git 面板那条），
+	# 敲回车打开的是内置 Git 面板，断言就全落在错的面板上。走插件动作精确打开。
 	cat > "$TMP/open.sc" <<EOF
-palette "Matt 面板"
-wait 1500
-key return
+plugins run plugin.tern-matt-panel.panel
 wait 10000
 EOF
 	scen "$TMP/open.sc"
@@ -369,6 +412,7 @@ fi
 
 # 1. 面板能打开，技能按泳道列出
 case_run "面板打开并列出技能" "$TMP/noop.sc" \
+	"click-btn-until:技能:ask-matt:20000" \
 	"wait-for:ask-matt:20000" \
 	"has:ask-matt" \
 	"has:to-spec" \
@@ -401,18 +445,20 @@ case_run "点技能行展开原文" "$TMP/open_doc.sc" \
 cat > "$TMP/board.sc" <<EOF
 wait 100
 EOF
+# 等「地图」出现再断言：数据是异步拉的，先断言会撞上「正在拉取」。
+# 点「任务板」是幂等的视图切换，重试安全。
 case_run "切到任务板" "$TMP/board.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:地图:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"has:地图" \
-	"has:点行选中"
+	"has:可领"
 
 # 6. 点地图行进地图详情：子票 / 迷雾 / 范围外
 cat > "$TMP/map.sc" <<EOF
 wait 100
 EOF
 case_run "地图详情视图" "$TMP/map.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:1:子票:20000" \
 	"has:返回任务板"
@@ -424,7 +470,7 @@ cat > "$TMP/ticket_row.sc" <<EOF
 wait 100
 EOF
 case_run "票行单击进详情" "$TMP/ticket_row.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-until:.sf-item:2:打开链接:20000"
 
@@ -466,7 +512,7 @@ EOF
 # 断言只到「已刷新」为止 —— 不再要求有票：
 # 配额不足时刷新会拉取失败，分组自然是空的，那是有意跳过而非缺陷。
 case_run "刷新按钮重新拉数据" "$TMP/reload.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没有 wayfinder:map 地图" \
 	"click-btn-until:刷新:已刷新:20000"
 
@@ -482,10 +528,24 @@ resize-pane left
 wait 500
 EOF
 case_run "窄面板工具条换行不丢按钮" "$TMP/narrow.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"toolbar-rows:2" \
 	"has:换仓库" \
 	"has:问下一步" \
+	"has:前端" \
+	"has:刷新"
+
+# 10b. 把面板宽度复原：窄屏拖不回，后面用例（尤其相邻断言）会跟着抖。
+cat > "$TMP/wide.sc" <<EOF
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+resize-pane right
+wait 500
+EOF
+case_run "面板宽度复原" "$TMP/wide.sc" \
 	"has:刷新"
 
 # 11. 收尾：常驻按钮能注入一条完整正文（消息从「填入中」走到结果）
@@ -493,22 +553,41 @@ cat > "$TMP/wrapup.sc" <<EOF
 wait 100
 EOF
 case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
-	"click-btn-until:任务板:点行选中:20000" \
+	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没识别到跟踪器" \
 	"click-btn-until:收尾:填入:15000" \
 	"has:收尾"
 
-# 12. 技能包视图：三套外部包的卡在，且有自己的刷新按钮
+# 12. 技能包视图：五套外部包的卡在，且有自己的刷新按钮
 cat > "$TMP/packs.sc" <<EOF
 wait 100
 EOF
-case_run "技能包视图列出三套外部包，刷新按钮能点" "$TMP/packs.sc" \
+case_run "技能包视图列出五套外部包，刷新按钮能点" "$TMP/packs.sc" \
 	"click-btn-until:技能包:外部技能包:15000" \
 	"has:mattpocock 技能组" \
 	"has:answer-me-with-html" \
 	"has:omp-skill-forge" \
+	"has:taste-skill" \
+	"has:vibehub" \
 	"has:刷新版本" \
 	"click-btn-until:刷新版本:版本检查:15000"
+
+# 12b. 「前端」入口：三条路线卡、注入与收起
+# 用受控窗口所在仓库（本仓，GitHub 后端）—— 三条路线都可用，只看能否注入。
+cat > "$TMP/frontend.sc" <<EOF
+wait 100
+EOF
+case_run "前端入口三条路线" "$TMP/frontend.sc" \
+	"click-btn-until:任务板:可领:20000" \
+	"adjacent:新增需求:前端" \
+	"click-btn-until:前端:新建设计:15000" \
+	"has:设计迭代" \
+	"has:只解释术语" \
+	"click-btn-until:新建设计:填入:20000" \
+	"lacks:前端 —— 先选一条路" \
+	"click:前端" \
+	"has:前端 —— 先选一条路" \
+	"click-btn-until:只解释术语:填入:20000"
 
 # ---------------------------------------------------------------- 汇总 ----
 

@@ -44,10 +44,11 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 | 排序（最新 / 最早在上） | 任务板顶部排序按钮 |
 | 问下一步该做什么 | 任务板顶部「问下一步」：注入 `/skill:ask-matt` 与一段「怎么核事实、怎么给结论」的提示 |
 | 新增需求 | 工具条「新增需求」：叫出两条路，没想清楚走 wayfinder 画地图，需求已明确走 grill-with-docs 收敛成 spec |
+| 前端 | 工具条「前端」：叫出路线卡，选一条即注入并收起。新建设计从 0 到 1 定视觉方向，选定后写目标仓库根的 `DESIGN.md`；设计迭代在已有页面上改，先读 `DESIGN.md` 与现有组件，只更新变更 token；只解释术语不读仓库、不改文件，把模糊描述改写成准确需求并给 1~3 个术语。三条都只填输入框，不写业务代码 |
 | 提 BUG | 工具条「提 BUG」：按 wayfinder 规则建 bug 票，带五项索取要素与建单前查重 |
 | 体检 | 工具条「体检」：把游离的开放票归位，先出建议清单，人点头才动手 |
 | 收尾 | 工具条「收尾」：先判档（轻 / 中 / 重）再按七段（盘点 / 审 diff / 文档 / 清理与分支处理 / 交付 / 复盘 / 报告交接）工程化收口，轻活自动跳过不必要阶段但分支处理照走；重档的审 diff 并联两到三个方向、方向数封顶三个；每段有出口判定，删除与合并等你点头，最后出一份可视化报告与交接文档 |
-| 看外部技能包 | 工具条「技能包」：三套外部包的版本、状态、仓库链接与安装指引；视图内「刷新版本」单独查上游更新，不动任务板 |
+| 看外部技能包 | 工具条「技能包」：五套外部包的版本、状态、仓库链接与安装指引；视图内「刷新版本」单独查上游更新，不动任务板 |
 | 刷新 | 点「刷新」或按 `r`；切回面板所在 tab 时会自动检查，但 5 分钟内最多一次（一次刷新要跑一趟 gh，约 2.8 秒） |
 | 换仓库（仅 GitHub 后端） | 点「换仓库」，填 `owner/repo` 或 GitHub 链接；切换按窗口保存。点「重置仓库」回到当前目录的 git remote |
 | 显示 / 隐藏实验技能 | 点「显示实验技能」 |
@@ -65,7 +66,22 @@ git clone https://github.com/devcxl/mattpocock-skills-zh
 
 「收尾」声明你已手工验收通过，但不代表没有问题：发现真问题时它会停下来，问你是回到开发还是开一张 BUG 票。两件未在真机验证过的事：报告需要 `answer-me-with-html` 的 `am`（Node ≥20），跑不起来就出 Markdown 报告；`retro` / `handoff` 的元数据禁止模型自动调用，模板内联了它们的规则摘要。
 
-「技能包」视图列三套外部包：mattpocock 技能组、answer-me-with-html、omp-skill-forge。前两套按 omp 安装登记找，第三套按本地安装根目录探测。缺装只提示、不代装；安装指引照抄上游原文。
+「技能包」视图列五套外部包：mattpocock 技能组、answer-me-with-html、omp-skill-forge、taste-skill、vibehub。mattpocock 与 answer-me-with-html 按 omp 安装登记找，omp-skill-forge 按本地安装根目录探测；taste-skill 与 vibehub 是外部技能，按发现链找本机副本（安装登记 → omp 技能目录 → skills CLI 全局目录 → skills CLI 项目目录 → Claude 技能目录 → marketplace 缓存兜底），同一技能多份副本只出一行，按上面顺序取版本。版本读登记的 version，没有就取 `package.json`，再没有取技能 frontmatter 的 `version:`，都没有显示「未知版本」——**「未知版本」不等于「未装」**。缺装只提示、不代装；安装指引照抄上游原文。面板只读探测，不代装、不代下载。
+
+## 致谢 / Attribution
+
+面板引用下面这些外部技能与技能包，**不内嵌任何技能正文**：只按 `/skill:名字` 调用并只读探测安装位置，正文、脚本与素材一律留在它们各自的仓库里。
+
+| 显示名 | 仓库 | 许可证 |
+| --- | --- | --- |
+| mattpocock 技能组 | [devcxl/mattpocock-skills-zh](https://github.com/devcxl/mattpocock-skills-zh) | MIT |
+| answer-me-with-html | [QingYunA/answer-me-with-html](https://github.com/QingYunA/answer-me-with-html) | MIT |
+| taste-skill | [Leonxlnx/taste-skill](https://github.com/Leonxlnx/taste-skill) | MIT |
+| vibehub | [oil-oil/vibe-hub-skill](https://github.com/oil-oil/vibe-hub-skill) | MIT |
+| lieflat-less-ai-tone | [larashero3-dotcom/lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) | CC BY-NC 4.0 |
+| omp-skill-forge | [meisijiya/omp-skill-forge](https://github.com/meisijiya/omp-skill-forge) | MIT |
+
+许可证取自各仓库的 LICENSE：前四项与 omp-skill-forge 为 MIT（`LICENSE` 首行 `MIT License`）；lieflat-less-ai-tone 为 `Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)`（`LICENSE` 首行，含非商业限制，故只引用不内联）。
 
 ## 与参考实现的关系
 
