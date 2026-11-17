@@ -565,6 +565,9 @@ case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
 	"click-btn-until:任务板:可领:20000" \
 	"skip-if:没识别到跟踪器" \
 	"click-btn-until:收尾:待注入 · 收尾:15000" \
+	"has:注入" \
+	"has:发送" \
+	"has:复制正文" \
 	"click-btn-until:注入:填入:20000" \
 	"lacks:待注入 · 收尾"
 

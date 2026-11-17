@@ -308,6 +308,39 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 
+	if action.kind == "ask" then
+		-- 「发送」通道：原生 omp 只认 ask，能真正进输入框并提交。
+		local target = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
+		if not target then
+			local copyErr = copyOrErr(cx, action.body)
+			local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
+			cx:toast("info", "没有可用的 agent", tail)
+			pcall(function()
+				tern.kv.set(INJECT_RESULT_KEY, { seq = seq, ok = false, name = tostring(action.name or ""), error = "没有可用的 agent（" .. tail .. "）" })
+				cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+			end)
+			return
+		end
+		local sent, sendErr = pcall(function()
+			cx.agents:ask(target, action.body)
+		end)
+		pcall(function()
+			tern.kv.set(INJECT_RESULT_KEY, {
+				seq = seq,
+				ok = sent,
+				name = tostring(action.name or ""),
+				error = if sent then "" else tostring(sendErr),
+			})
+			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+		end)
+		if sent then
+			cx:toast("success", "已发送：" .. tostring(action.name or ""), "正文已进 agent 输入框并提交。")
+		else
+			cx:toast("error", "发送失败：" .. tostring(action.name or ""), tostring(sendErr))
+		end
+		return
+	end
+
 	if action.kind ~= "inject" then
 		return
 	end

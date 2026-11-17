@@ -2002,6 +2002,11 @@ local function pendingCard(state: State): Node
 			size = "sm",
 			actions = { click = "inject-pending" },
 		}),
+		ui.button("发送", {
+			icon = "send",
+			size = "sm",
+			actions = { click = "send-pending" },
+		}),
 		ui.button("复制正文", {
 			icon = "copy",
 			size = "sm",
@@ -2545,6 +2550,20 @@ tern.block.define(BLOCK_ID, {
 			end
 			return
 		end
+		if act == "send-pending" then
+			local p = state.pending
+			if not p then
+				return
+			end
+			state.pending = nil
+			-- 「发送」走 ask 通道：能真正进 agent 输入框并提交。
+			local seq = sendAction(state, cx, "ask", p.body, p.name)
+			state.pendingSeq = seq
+			state.pendingKind = "ask"
+			state.message = "发送中：" .. p.name
+			watchInjection(state, cx, seq, p.name)
+			return
+		end
 		if act == "copy-preview" then
 			local p = state.pending
 			if not p then
@@ -2562,12 +2581,15 @@ tern.block.define(BLOCK_ID, {
 		if act == "new-demand" then
 			state.view = "board"
 			state.newDemand = not state.newDemand
+			-- 同一时刻只允许一组子按钮：点这个就把另一个收起。
+			state.frontend = false
 			state.message = nil
 			return
 		end
 		if act == "frontend" then
 			state.view = "board"
 			state.frontend = not state.frontend
+			state.newDemand = false
 			state.message = nil
 			return
 		end

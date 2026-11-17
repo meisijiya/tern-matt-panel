@@ -1393,6 +1393,25 @@ local ACTION_CASES = {
 	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
 	{ act = "frontend", want = function(st: any) return st.frontend == true end },
+	{
+		act = "new-demand",
+		want = function(st: any)
+			-- 点一个入口要把另一个收起
+			st.newDemand = true
+			st.frontend = true
+			panel.event(st, { ev = "action", act = "new-demand" }, mkCx(120))
+			return st.newDemand == false and st.frontend == false
+		end,
+	},
+	{
+		act = "frontend",
+		want = function(st: any)
+			st.newDemand = true
+			st.frontend = false
+			panel.event(st, { ev = "action", act = "frontend" }, mkCx(120))
+			return st.frontend == true and st.newDemand == false
+		end,
+	},
 	{ act = "frontend-new", want = function(st: any, _b: any, kv: any)
 		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
 	end },
@@ -1403,7 +1422,16 @@ local ACTION_CASES = {
 		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
 	end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
-	{ act = "close-preview", want = function(st: any) return st.preview == nil end },
+	{ act = "close-preview", want = function(st: any) return st.pending == nil end },
+	{
+		act = "send-pending",
+		want = function(st: any, _b: any, kv: any)
+			st.pending = { name = "发送", body = "正文" }
+			kvStore["action"] = nil
+			panel.event(st, { ev = "action", act = "send-pending" }, mkCx(120))
+			return st.pending == nil and kv["action"] ~= nil and kv["action"].kind == "ask"
+		end,
+	},
 }
 
 test("工具条每个按钮都接上了动作分支", function()
@@ -3897,6 +3925,54 @@ test("模板两步走：点动作先摊开正文，按注入才投递", function
 	st.pending = nil
 	fireInject(st, mkCx(120), "wrap-up")
 	ok(kvStore["action"] ~= nil, "确认路径照常能投递")
+end)
+
+test("发送通道：走 ask，正文原样送进 agent", function()
+	local winPane = 51
+	local asked: { { pane: number, text: string } } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function() end,
+		run = function()
+			error("发送不该走 cx:run")
+		end,
+		session = {
+			pane = function()
+				return { id = winPane }
+			end,
+			focused = function()
+				return winPane
+			end,
+			tab_of = function()
+				return 1
+			end,
+			layout = function()
+				return { root = { pane = winPane } }
+			end,
+			event = function() end,
+			view = function()
+				return nil
+			end,
+		},
+		agents = {
+			list = function()
+				return { { pane = winPane, state = "idle" } }
+			end,
+			ask = function(_self: any, pane: number, text: string)
+				table.insert(asked, { pane = pane, text = text })
+			end,
+		},
+	}
+	local body = "===== 注入开始 · tern-matt-panel · 发送 =====\n正文\n"
+	kvStore["action"] = { seq = 900, kind = "ask", pane = winPane, body = body, name = "发送" }
+	pollTick(cx)
+	eq(#asked, 1, "ask 被调用一次")
+	eq(asked[1].pane, winPane, "发给邻近 agent")
+	eq(asked[1].text, body, "正文原样发送")
+	local res = kvStore["inject_result"]
+	eq(res.ok, true, "回执报告成功")
+	eq(res.seq, 900, "回执对得上序号")
 end)
 
 -- -------------------------------------------------------------- report ----
