@@ -125,9 +125,51 @@ local function agentFor(cx: WindowCx, panelPane: number): number?
 	return nil
 end
 
+--- agent 输入框里是不是真有这段正文。
+--- Tern 0.9.26 的原生 omp 块不再接受 cx:run 打字（不报错、也不写进 composer），
+--- 所以「填进去了」不能靠 cx:run 没抛错来判定，只能读回界面树核对。
+--- 找不到可读的输入框时返回 nil（判不了），调用方按未填入处理。
+local function composerHas(cx: WindowCx, pane: number, marker: string): boolean?
+	local ok, view = pcall(function()
+		return cx.session:view(pane, { depth = 10 })
+	end)
+	if not ok or type(view) ~= "table" then
+		return nil
+	end
+	local found = false
+	local hit = false
+	local function walk(n: any)
+		if hit or type(n) ~= "table" then
+			return
+		end
+		if n.role == "MultilineTextInput" then
+			local readonly = false
+			for _, st in ipairs(n.states or {}) do
+				if st == "readonly" then
+					readonly = true
+				end
+			end
+			if not readonly then
+				found = true
+				if type(n.value) == "string" and string.find(n.value, marker, 1, true) then
+					hit = true
+				end
+			end
+		end
+		for _, kid in ipairs(n.children or {}) do
+			walk(kid)
+		end
+	end
+	walk(view)
+	if not found then
+		return nil
+	end
+	return hit
+end
+
 --- 把正文填进某个 agent 的输入框，不提交。
 --- 用 cx:run 逐字打进 pane（多行包成括号粘贴），用户看过、补完再自己按回车。
---- 出错时返回错误说明。
+--- 出错时返回错误说明；「写进去了但没有证据」也算失败，交给调用方退剪贴板。
 local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	local isAgent = false
 	for _, agent in ipairs(cx.agents:list()) do
@@ -147,6 +189,12 @@ local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	end)
 	if not ok then
 		return tostring(err)
+	end
+	-- 读回核对：正文第一段（去空白、截 24 字）出现在输入框里才算填进去。
+	local marker = string.sub((body:gsub("%s+", " ")), 1, 24)
+	local delivered = composerHas(cx, pane, marker)
+	if delivered == false then
+		return "输入框没收到正文（Tern 这版的 agent 输入框不接受程序填入）"
 	end
 	return nil
 end
