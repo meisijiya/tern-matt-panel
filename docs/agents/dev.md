@@ -45,7 +45,8 @@ tern --control 17311 .
 
 - **`tern shot` / `tern serve` 不加载插件**：palette 里搜不到「Matt 面板」，别用它们验面板。
 - **开面板别用 `palette "Matt 面板"` + `key return`**：调色板第一条是最近提交（Git 面板那条），回车打开的是内置 Git 面板，断言会全部落在错的面板上。用 `plugins run plugin.tern-matt-panel.panel` 精确打开。
-- **Tern 0.9.26 起原生 omp 块不吃 `cx:run`**：对 agent pane 打字不报错也不进 composer，`cx:agents:ask` 才能送达（但会提交）。面板靠读回界面树核对，判未填入就退剪贴板，别把「没抛错」当成「填进去了」。
+- **Tern 0.9.26 的两条送达通道**：`cx:run`（只填不提交）与 `cx.agents:ask`（填并提交）。面板的「注入」走前者、「发送」走后者。
+- **核对只在读得到时做**：`cx.session:view` 的原生 omp 输入框节点常常没有 `value`，读到空就判「看不懂」按成功算；只有真读到内容且不含正文才报失败。把「读不到」当成「没填进去」会把成功报成失败。
 - **两个命令入口互斥**：`new-demand` 与 `frontend` 各自翻转后要清掉另一个，否则两组子按钮同时落出。
 - **投递有两条通道**：`inject`（`cx:run`，只填不提交）与 `ask`（`cx.agents:ask`，填并提交）。原生 omp 只认后者。
 - **模板是两步投递**：点动作只写 `state.pending` 摊开正文，`inject-pending` 才写 kv。单测里要拿注入请求用 `fireInject`，别直接 `panel.event` 后断言 kv。

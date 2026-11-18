@@ -3975,6 +3975,41 @@ test("发送通道：走 ask，正文原样送进 agent", function()
 	eq(res.seq, 900, "回执对得上序号")
 end)
 
+test("读不到输入框内容时不当成失败（原生 omp 不给 value）", function()
+	local winPane = 61
+	local function cxWith(view: any)
+		return {
+			pane = winPane,
+			copy = function() end,
+			toast = function() end,
+			run = function() end,
+			session = {
+				pane = function() return { id = winPane } end,
+				focused = function() return winPane end,
+				tab_of = function() return 1 end,
+				layout = function() return { root = { pane = winPane } } end,
+				event = function() end,
+				view = function() return view end,
+			},
+			agents = {
+				list = function() return { { pane = winPane, state = "idle" } } end,
+				ask = function() end,
+			},
+		}
+	end
+	local body = "===== 注入开始 · tern-matt-panel · 测试 =====\n正文\n"
+
+	-- 节点在，但没有 value / text：读不出内容，判不了，按成功算。
+	kvStore["action"] = { seq = 901, kind = "inject", pane = winPane, body = body, name = "读不到" }
+	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {} } } }))
+	eq(kvStore["inject_result"].ok, true, "读不到内容不许报失败")
+
+	-- 读得到内容但里面没有正文：这是真的没填进去。
+	kvStore["action"] = { seq = 902, kind = "inject", pane = winPane, body = body, name = "空框" }
+	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {}, value = "别的东西" } } }))
+	eq(kvStore["inject_result"].ok, false, "读到空内容才算失败")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 reporting = true
