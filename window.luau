@@ -125,9 +125,73 @@ local function agentFor(cx: WindowCx, panelPane: number): number?
 	return nil
 end
 
+--- agent 输入框里是不是真有这段正文。
+--- Tern 0.9.26 的原生 omp 块不再接受 cx:run 打字时不会报错，所以「填进去了」要读回界面树核对；
+--- 但 tree 里的输入框节点常常没有 value 字段（文字在 text / 子节点里），读不到内容时
+--- 判「看不懂」，不能当成「没填进去」——那是把成功当失败。
+local function composerHas(cx: WindowCx, pane: number, marker: string): boolean?
+	local ok, view = pcall(function()
+		return cx.session:view(pane, { depth = 10 })
+	end)
+	if not ok or type(view) ~= "table" then
+		return nil
+	end
+	local found = false
+	local readable = false
+	local hit = false
+	local function collect(n: any, acc: { string })
+		if type(n) ~= "table" then
+			return
+		end
+		if type(n.value) == "string" and n.value ~= "" then
+			table.insert(acc, n.value)
+		end
+		if type(n.text) == "string" and n.text ~= "" then
+			table.insert(acc, n.text)
+		end
+		for _, kid in ipairs(n.children or {}) do
+			collect(kid, acc)
+		end
+	end
+	local function walk(n: any)
+		if hit or type(n) ~= "table" then
+			return
+		end
+		if n.role == "MultilineTextInput" then
+			local readonly = false
+			for _, st in ipairs(n.states or {}) do
+				if st == "readonly" then
+					readonly = true
+				end
+			end
+			if not readonly then
+				found = true
+				local parts: { string } = {}
+				collect(n, parts)
+				local text = table.concat(parts, "")
+				if text ~= "" then
+					readable = true
+					local flat = string.gsub(text, "%s+", "")
+					if string.find(flat, marker, 1, true) then
+						hit = true
+					end
+				end
+			end
+		end
+		for _, kid in ipairs(n.children or {}) do
+			walk(kid)
+		end
+	end
+	walk(view)
+	if not found or not readable then
+		return nil
+	end
+	return hit
+end
+
 --- 把正文填进某个 agent 的输入框，不提交。
 --- 用 cx:run 逐字打进 pane（多行包成括号粘贴），用户看过、补完再自己按回车。
---- 出错时返回错误说明。
+--- 出错时返回错误说明；「写进去了但没有证据」也算失败，交给调用方退剪贴板。
 local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	local isAgent = false
 	for _, agent in ipairs(cx.agents:list()) do
@@ -147,6 +211,14 @@ local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	end)
 	if not ok then
 		return tostring(err)
+	end
+	-- 读回核对：能读到输入框内容时才判；读到内容里没有正文才算没填进去。
+	-- 读不到内容（原生 omp 的 tree 不给 value）就当不知道，不把成功报成失败。
+	local flat = string.gsub(body, "%s+", "")
+	local marker = string.sub(flat, 1, math.min(24, #flat))
+	local delivered = composerHas(cx, pane, marker)
+	if delivered == false then
+		return "输入框没收到正文（Tern 这版的 agent 输入框不接受程序填入）"
 	end
 	return nil
 end
@@ -257,6 +329,39 @@ local function handleAction(cx: WindowCx)
 			return
 		end
 		cx:toast("info", "已复制：" .. tostring(action.name or ""), "粘到输入框再决定发不发。")
+		return
+	end
+
+	if action.kind == "ask" then
+		-- 「发送」通道：原生 omp 只认 ask，能真正进输入框并提交。
+		local target = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
+		if not target then
+			local copyErr = copyOrErr(cx, action.body)
+			local tail = if copyErr then "剪贴板也写不进去：" .. copyErr else "正文已复制到剪贴板。"
+			cx:toast("info", "没有可用的 agent", tail)
+			pcall(function()
+				tern.kv.set(INJECT_RESULT_KEY, { seq = seq, ok = false, name = tostring(action.name or ""), error = "没有可用的 agent（" .. tail .. "）" })
+				cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+			end)
+			return
+		end
+		local sent, sendErr = pcall(function()
+			cx.agents:ask(target, action.body)
+		end)
+		pcall(function()
+			tern.kv.set(INJECT_RESULT_KEY, {
+				seq = seq,
+				ok = sent,
+				name = tostring(action.name or ""),
+				error = if sent then "" else tostring(sendErr),
+			})
+			cx.session:event(pane, { ev = "action", id = "main.refresh", act = "refresh" })
+		end)
+		if sent then
+			cx:toast("success", "已发送：" .. tostring(action.name or ""), "正文已进 agent 输入框并提交。")
+		else
+			cx:toast("error", "发送失败：" .. tostring(action.name or ""), tostring(sendErr))
+		end
 		return
 	end
 

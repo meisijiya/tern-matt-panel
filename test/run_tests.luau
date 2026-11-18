@@ -1222,6 +1222,16 @@ end
 
 local panel = blockDefs["matt"]
 
+--- 模板走两步：点动作只摊开正文，按「注入」才真投递。
+--- 测试里要拿 kv 的注入请求时统一用它，避免每条用例都手写两步。
+local function fireInject(st: any, cx: any, act: string)
+	panel.event(st, { ev = "action", act = act }, cx)
+	if st.pending then
+		panel.event(st, { ev = "action", act = "inject-pending" }, cx)
+	end
+end
+
+
 test("聚焦只戳当前 tab 里的面板，不惊动别的 tab", function()
 	local panelA, panelB, term = 101, 202, 303
 	local events: { { pane: number, act: string? } } = {}
@@ -1291,7 +1301,7 @@ end
 
 test("问下一步只注入 ask-matt 提示词，不再派子代理", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	fireInject(st, mkCx(120), "next-step")
 
 	local action = kvStore["action"]
 	ok(type(action) == "table", "写了注入请求")
@@ -1383,6 +1393,25 @@ local ACTION_CASES = {
 	{ act = "copy-pack-repo:omp-skill-forge", want = function(st: any) return string.find(tostring(st.message), "已复制仓库链接", 1, true) ~= nil end },
 	{ act = "new-demand", want = function(st: any) return st.newDemand == true end },
 	{ act = "frontend", want = function(st: any) return st.frontend == true end },
+	{
+		act = "new-demand",
+		want = function(st: any)
+			-- 点一个入口要把另一个收起
+			st.newDemand = true
+			st.frontend = true
+			panel.event(st, { ev = "action", act = "new-demand" }, mkCx(120))
+			return st.newDemand == false and st.frontend == false
+		end,
+	},
+	{
+		act = "frontend",
+		want = function(st: any)
+			st.newDemand = true
+			st.frontend = false
+			panel.event(st, { ev = "action", act = "frontend" }, mkCx(120))
+			return st.frontend == true and st.newDemand == false
+		end,
+	},
 	{ act = "frontend-new", want = function(st: any, _b: any, kv: any)
 		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
 	end },
@@ -1393,6 +1422,16 @@ local ACTION_CASES = {
 		return st.frontend == false and kv["action"] ~= nil and kv["action"].kind == "inject"
 	end },
 	{ act = "back-board", want = function(st: any) return st.view == "board" end },
+	{ act = "close-preview", want = function(st: any) return st.pending == nil end },
+	{
+		act = "send-pending",
+		want = function(st: any, _b: any, kv: any)
+			st.pending = { name = "发送", body = "正文" }
+			kvStore["action"] = nil
+			panel.event(st, { ev = "action", act = "send-pending" }, mkCx(120))
+			return st.pending == nil and kv["action"] ~= nil and kv["action"].kind == "ask"
+		end,
+	},
 }
 
 test("工具条每个按钮都接上了动作分支", function()
@@ -1404,6 +1443,9 @@ test("工具条每个按钮都接上了动作分支", function()
 		local before = { sortNewest = st.sortNewest, showHidden = st.showHidden }
 		kvStore["action"] = nil
 		panel.event(st, { ev = "action", act = c.act }, mkCx(120))
+		if st.pending then
+			panel.event(st, { ev = "action", act = "inject-pending" }, mkCx(120))
+		end
 		ok(c.want(st, before, kvStore), "动作没反应：" .. c.act)
 	end
 end)
@@ -1498,18 +1540,18 @@ end)
 test("没识别到仓库时不给问下一步", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	kvStore["action"] = nil
-	panel.event(st, { ev = "action", act = "next-step" }, mkCx(120))
+	fireInject(st, mkCx(120), "next-step")
 	ok(kvStore["action"] == nil, "没有仓库就不注入")
 	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
 end)
 
 test("常驻三条：新增需求/提 BUG/体检", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	fireInject(st, mkCx(120), "new-bug")
 	eq(kvStore["action"].kind, "inject")
 	ok(string.find(kvStore["action"].body, "复现步骤", 1, true) ~= nil, "提 BUG 正文带索取要素")
 
-	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	fireInject(st, mkCx(120), "health-check")
 	ok(string.find(kvStore["action"].body, "游离", 1, true) ~= nil, "体检正文带游离判据")
 
 	kvStore["action"] = nil
@@ -1818,7 +1860,7 @@ test("票动作注入的正文套信封且带票号", function()
 	local st = nextStepState()
 	st.ticket = st.tickets[1]
 	kvStore["action"] = nil
-	panel.event(st, { ev = "action", act = "act:task" }, mkCx(120))
+	fireInject(st, mkCx(120), "act:task")
 	local action = kvStore["action"]
 	ok(type(action) == "table", "写了注入请求")
 	eq(action.kind, "inject", "走注入")
@@ -1832,7 +1874,7 @@ test("两个入口注入的正文套信封", function()
 	for _, case in ipairs({ { id = "explore", act = "入口·还没想清楚" }, { id = "implement", act = "入口·需求已明确" } }) do
 		local st = nextStepState()
 		kvStore["action"] = nil
-		panel.event(st, { ev = "action", act = "new:" .. case.id }, mkCx(120))
+		fireInject(st, mkCx(120), "new:" .. case.id)
 		local action = kvStore["action"]
 		ok(type(action) == "table", case.id .. " 写了注入请求")
 		eq(action.kind, "inject", case.id .. " 走注入")
@@ -1846,7 +1888,7 @@ test("没识别到仓库时入口正文不留空的仓库填写行", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	st.repo = nil
 	kvStore["action"] = nil
-	panel.event(st, { ev = "action", act = "new:explore" }, mkCx(120))
+	fireInject(st, mkCx(120), "new:explore")
 	local action = kvStore["action"]
 	ok(type(action) == "table", "写了注入请求")
 	ok(string.find(action.body, "仓库：\n", 1, true) == nil, "没有空的仓库行")
@@ -2663,14 +2705,14 @@ end)
 test("本地后端：提 BUG / 体检的措辞按本地契约，不提标签与原生边", function()
 	localFixture()
 	local st = panel.init(mkCx(120), {}, nil)
-	panel.event(st, { ev = "action", act = "new-bug" }, mkCx(120))
+	fireInject(st, mkCx(120), "new-bug")
 	local bug = kvStore["action"].body
 	ok(string.find(bug, "Status: needs-triage", 1, true) ~= nil, "建单改成写状态行")
 	ok(string.find(bug, "带 bug 标签", 1, true) == nil, "不提 GitHub 标签")
 	ok(string.find(bug, "gh issue list", 1, true) == nil, "查重不提远端命令")
 	ok(string.find(bug, ".scratch/*/issues/", 1, true) ~= nil, "查重改成全扫票目录")
 
-	panel.event(st, { ev = "action", act = "health-check" }, mkCx(120))
+	fireInject(st, mkCx(120), "health-check")
 	local health = kvStore["action"].body
 	ok(string.find(health, "移到目标工作单元", 1, true) ~= nil, "归位说成移动票文件")
 	ok(string.find(health, "gh 的 issue 依赖接口", 1, true) == nil, "不提原生依赖边")
@@ -3405,7 +3447,7 @@ end)
 
 test("收尾：注入套信封，未识别仓库不注入", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	fireInject(st, mkCx(120), "wrap-up")
 	local action = kvStore["action"]
 	ok(type(action) == "table", "写了注入请求")
 	eq(action.kind, "inject")
@@ -3423,7 +3465,7 @@ end)
 
 test("收尾：缺装外部包时仍注入并说明缺口", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	fireInject(st, mkCx(120), "wrap-up")
 	ok(kvStore["action"] ~= nil, "缺装也照样注入")
 	ok(string.find(tostring(st.message), "未装", 1, true) ~= nil, "提示哪套没装")
 end)
@@ -3695,7 +3737,7 @@ end)
 
 test("注入看门狗：窗口半边没回执时给出排障提示", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	fireInject(st, mkCx(120), "wrap-up")
 	eq(st.pendingSeq ~= nil, true, "先进入填入中")
 	local seq = st.pendingSeq
 	-- 找出看门狗挂的那个 4 秒定时器并放行
@@ -3718,7 +3760,7 @@ end)
 
 test("注入看门狗：回执先到就不再报错", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	fireInject(st, mkCx(120), "wrap-up")
 	local seq = st.pendingSeq
 	-- 窗口半边回写成功结果，宿主读一次
 	kvStore["inject_result"] = { seq = seq, ok = true, name = "收尾" }
@@ -3764,14 +3806,14 @@ end)
 test("前端新建设计：无仓库分支行为", function()
 	local st = panel.init(mkCx(120), {}, nil)
 	kvStore["action"] = nil
-	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	fireInject(st, mkCx(120), "frontend-new")
 	ok(kvStore["action"] == nil, "没有仓库就不注入")
 	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
 end)
 
 test("前端新建设计：注入动作名写进信封首行", function()
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "frontend-new" }, mkCx(120))
+	fireInject(st, mkCx(120), "frontend-new")
 	local body = kvStore["action"].body
 	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 前端·新建设计 =====", 1, true) == 1, "首行是动作名")
 	eq(st.frontend, false, "注入后收起路线卡")
@@ -3794,12 +3836,12 @@ test("前端设计迭代 / 只解释术语：注入动作名写进信封首行",
 		return string.sub(body, 1, string.find(body, "\n", 1, true) or #body)
 	end
 	local st = nextStepState()
-	panel.event(st, { ev = "action", act = "frontend-iterate" }, mkCx(120))
+	fireInject(st, mkCx(120), "frontend-iterate")
 	local body = kvStore["action"].body
 	ok(string.find(headLine(body), "前端·设计迭代", 1, true) ~= nil, "迭代信封首行是动作名")
 
 	st = nextStepState()
-	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	fireInject(st, mkCx(120), "frontend-explain")
 	body = kvStore["action"].body
 	ok(string.find(headLine(body), "前端·只解释术语", 1, true) ~= nil, "解释信封首行是动作名")
 end)
@@ -3857,8 +3899,115 @@ test("前端路线：只解释术语无仓库照常注入，前两条无仓库�
 	-- 无仓库：只解释术语照常注入
 	local st = panel.init(mkCx(120), {}, nil)
 	kvStore["action"] = nil
-	panel.event(st, { ev = "action", act = "frontend-explain" }, mkCx(120))
+	fireInject(st, mkCx(120), "frontend-explain")
 	ok(kvStore["action"] ~= nil and kvStore["action"].kind == "inject", "只解释术语无仓库也注入")
+end)
+
+test("模板两步走：点动作先摊开正文，按注入才投递", function()
+	local st = nextStepState()
+	st.view = "board"
+	kvStore["action"] = nil
+	panel.event(st, { ev = "action", act = "wrap-up" }, mkCx(120))
+	ok(st.pending ~= nil, "点动作先摊开正文")
+	eq(kvStore["action"], nil, "没确认前不投递")
+	eq(st.pending.name, "收尾", "摊开的是这次点的那份")
+
+	local body = st.pending.body
+	ok(string.find(body, "===== 注入开始 · tern-matt-panel · 收尾 =====", 1, true) == 1, "正文带信封开始行")
+
+	panel.event(st, { ev = "action", act = "inject-pending" }, mkCx(120))
+	eq(kvStore["action"].body, body, "注入的就是摊开的那一份")
+	eq(st.pending, nil, "注入后收起")
+	eq(st.pendingSeq, kvStore["action"].seq, "注入后等回执")
+
+	-- 单行技能命令没有正文可看，仍然一步投递。
+	kvStore["action"] = nil
+	st.pending = nil
+	fireInject(st, mkCx(120), "wrap-up")
+	ok(kvStore["action"] ~= nil, "确认路径照常能投递")
+end)
+
+test("发送通道：走 ask，正文原样送进 agent", function()
+	local winPane = 51
+	local asked: { { pane: number, text: string } } = {}
+	local cx: any = {
+		pane = winPane,
+		copy = function() end,
+		toast = function() end,
+		run = function()
+			error("发送不该走 cx:run")
+		end,
+		session = {
+			pane = function()
+				return { id = winPane }
+			end,
+			focused = function()
+				return winPane
+			end,
+			tab_of = function()
+				return 1
+			end,
+			layout = function()
+				return { root = { pane = winPane } }
+			end,
+			event = function() end,
+			view = function()
+				return nil
+			end,
+		},
+		agents = {
+			list = function()
+				return { { pane = winPane, state = "idle" } }
+			end,
+			ask = function(_self: any, pane: number, text: string)
+				table.insert(asked, { pane = pane, text = text })
+			end,
+		},
+	}
+	local body = "===== 注入开始 · tern-matt-panel · 发送 =====\n正文\n"
+	kvStore["action"] = { seq = 900, kind = "ask", pane = winPane, body = body, name = "发送" }
+	pollTick(cx)
+	eq(#asked, 1, "ask 被调用一次")
+	eq(asked[1].pane, winPane, "发给邻近 agent")
+	eq(asked[1].text, body, "正文原样发送")
+	local res = kvStore["inject_result"]
+	eq(res.ok, true, "回执报告成功")
+	eq(res.seq, 900, "回执对得上序号")
+end)
+
+test("读不到输入框内容时不当成失败（原生 omp 不给 value）", function()
+	local winPane = 61
+	local function cxWith(view: any)
+		return {
+			pane = winPane,
+			copy = function() end,
+			toast = function() end,
+			run = function() end,
+			session = {
+				pane = function() return { id = winPane } end,
+				focused = function() return winPane end,
+				tab_of = function() return 1 end,
+				layout = function() return { root = { pane = winPane } } end,
+				event = function() end,
+				view = function() return view end,
+			},
+			agents = {
+				list = function() return { { pane = winPane, state = "idle" } } end,
+				ask = function() end,
+			},
+		}
+	end
+	local body = "===== 注入开始 · tern-matt-panel · 测试 =====\n正文\n"
+
+	-- 节点在，但没有 value / text：读不出内容，判不了，按成功算。
+	kvStore["action"] = { seq = 901, kind = "inject", pane = winPane, body = body, name = "读不到" }
+	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {} } } }))
+	eq(kvStore["inject_result"].ok, true, "读不到内容不许报失败")
+
+	-- 读得到内容但里面没有正文：这是真的没填进去。
+	kvStore["action"] = { seq = 902, kind = "inject", pane = winPane, body = body, name = "空框" }
+	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {}, value = "别的东西" } } }))
+	eq(kvStore["inject_result"].ok, false, "读到空内容才算失败")
 end)
 
 -- -------------------------------------------------------------- report ----

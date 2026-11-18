@@ -45,6 +45,11 @@ tern --control 17311 .
 
 - **`tern shot` / `tern serve` 不加载插件**：palette 里搜不到「Matt 面板」，别用它们验面板。
 - **开面板别用 `palette "Matt 面板"` + `key return`**：调色板第一条是最近提交（Git 面板那条），回车打开的是内置 Git 面板，断言会全部落在错的面板上。用 `plugins run plugin.tern-matt-panel.panel` 精确打开。
+- **Tern 0.9.26 的两条送达通道**：`cx:run`（只填不提交）与 `cx.agents:ask`（填并提交）。面板的「注入」走前者、「发送」走后者。
+- **核对只在读得到时做**：`cx.session:view` 的原生 omp 输入框节点常常没有 `value`，读到空就判「看不懂」按成功算；只有真读到内容且不含正文才报失败。把「读不到」当成「没填进去」会把成功报成失败。
+- **两个命令入口互斥**：`new-demand` 与 `frontend` 各自翻转后要清掉另一个，否则两组子按钮同时落出。
+- **投递有两条通道**：`inject`（`cx:run`，只填不提交）与 `ask`（`cx.agents:ask`，填并提交）。原生 omp 只认后者。
+- **模板是两步投递**：点动作只写 `state.pending` 摊开正文，`inject-pending` 才写 kv。单测里要拿注入请求用 `fireInject`，别直接 `panel.event` 后断言 kv。
 - **一个窗口只开一个面板**：同一窗口里两个面板时，按文字取坐标会命中另一个面板的按钮，断言看似随机失败。开跑前数一遍 `tern ctl tree '.sf-button' | grep -c '"text": "刷新"'`，多于一个就先关窗口重开。
 - **`tern --control N --dir DIR` 会挂到已有 daemon**：显示的是你原有的所有 tab，`--dir` 不保证成为活动 tab。
 - **用例点在活动 tab 上**：先在目标目录里 `tern --control N .`，再核活动 tab 的 cwd；不对就 `tern new tab --cwd DIR` 然后 `tab <序号>` 切过去。

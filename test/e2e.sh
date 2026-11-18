@@ -293,7 +293,8 @@ rcfile="$here/.e2e.cases.rc"
 cases_pid=$!
 wait "$cases_pid" || true
 cases_pid=""
-cases_rc="$(cat "$rcfile" 2>/dev/null || echo 1)"
+cases_rc="$(cat "$rcfile" 2>/dev/null)"
+[ -n "$cases_rc" ] || cases_rc=1
 rm -f "$rcfile"
 
 echo "e2e: 全部用例结束（完整输出：$caseslog）"

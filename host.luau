@@ -102,6 +102,8 @@ type State = {
 	-- 票详情
 	ticket: tracker.Ticket?,
 	ticketBody: string?,
+	-- 待确认的模板正文：点按钮先摊开，用户看清、改完再按「注入」。
+	pending: { name: string, body: string, note: string? }?,
 	-- 正在用 REST 拉某张票的正文；view 里发请求必须靠它防重入
 	bodyLoading: number?,
 	-- 上次拉取失败后到这个时刻之前不再发请求
@@ -165,6 +167,7 @@ local function blank(): State
 		ticketSel = nil,
 		ticket = nil,
 		ticketBody = nil,
+		pending = nil,
 		bodyLoading = nil,
 		cooldownUntil = nil,
 		lastLoadAt = nil,
@@ -988,6 +991,20 @@ local function inject(state: State, cx: BlockCx, body: string, name: string)
 	state.pendingKind = "inject"
 	state.message = "填入中：" .. name
 	watchInjection(state, cx, seq, name)
+end
+
+--- 点按钮先摊开模板，由用户按「注入」确认；单行技能命令没有正文可看，直接投递。
+local function requestInject(state: State, cx: BlockCx, body: string, name: string, note: string?)
+	if body == "" then
+		state.message = "没有正文，不注入"
+		return
+	end
+	if not string.find(body, "\n", 1, true) then
+		inject(state, cx, body, name)
+		return
+	end
+	state.pending = { name = name, body = body, note = note }
+	state.message = nil
 end
 
 --- 读窗口半边写回的结果，更新提示。
@@ -1973,6 +1990,40 @@ local function toolbar(state: State, cx: BlockCx): Node
 	return ui.col(rows)
 end
 
+--- 待确认的模板：整段摊开，用户看清、改完再决定注入还是复制。
+local function pendingCard(state: State): Node
+	local p = state.pending
+	if not p then
+		return ui.col({})
+	end
+	local row: { Node } = {
+		ui.button("注入", {
+			icon = "send",
+			size = "sm",
+			actions = { click = "inject-pending" },
+		}),
+		ui.button("发送", {
+			icon = "send",
+			size = "sm",
+			actions = { click = "send-pending" },
+		}),
+		ui.button("复制正文", {
+			icon = "copy",
+			size = "sm",
+			actions = { click = "copy-preview" },
+		}),
+		ui.button("收起", {
+			icon = "back",
+			size = "sm",
+			actions = { click = "close-preview" },
+		}),
+	}
+	return ui.card(ui.span("待注入 · " .. p.name, "muted"), {
+		ui.row(row),
+		ui.md(p.body),
+	}, { icon = "send", collapsible = true })
+end
+
 --- 底部提示条：键位说明、数据时刻、最近一条提示。
 --- 自动刷新拉到 5 分钟后，光看面板分不清数据是刚拉的还是十分钟前的，
 --- 所以把拉取时刻直接摊在这里；要最新就按刷新。
@@ -2086,18 +2137,22 @@ tern.block.define(BLOCK_ID, {
 	view = function(state: State, cx: BlockCx): BlockView
 		-- 注入结果由窗口半边写回 kv，view 里读一次更新提示。
 		readResult(state)
-		local main: Node
+		local body: Node
 		if state.view == "skills" then
-			main = ui.col({ toolbar(state, cx), skillsView(state, cx) })
+			body = skillsView(state, cx)
 		elseif state.view == "board" then
-			main = ui.col({ toolbar(state, cx), boardView(state, cx) })
+			body = boardView(state, cx)
 		elseif state.view == "map" then
-			main = ui.col({ toolbar(state, cx), mapView(state, cx) })
+			body = mapView(state, cx)
 		elseif state.view == "packs" then
-			main = ui.col({ toolbar(state, cx), packsView(state) })
+			body = packsView(state)
 		else
-			main = ui.col({ toolbar(state, cx), ticketView(state, cx) })
+			body = ticketView(state, cx)
 		end
+		-- 待确认的模板贴在工具条下面：点按钮先看正文，再决定注入还是复制。
+		local main: Node = if state.pending
+			then ui.col({ toolbar(state, cx), pendingCard(state), body })
+			else ui.col({ toolbar(state, cx), body })
 		return { main = main, dock = dockView(state) }
 	end,
 
@@ -2454,7 +2509,7 @@ tern.block.define(BLOCK_ID, {
 		if string.sub(act, 1, 4) == "new:" then
 			local e = templates.entryById(string.sub(act, 5))
 			if e then
-				inject(state, cx, commands.buildInjectionBody(e.injectAction, templates.render(e, templateVars(state))), e.title)
+				requestInject(state, cx, commands.buildInjectionBody(e.injectAction, templates.render(e, templateVars(state))), e.title)
 			end
 			return
 		end
@@ -2480,18 +2535,61 @@ tern.block.define(BLOCK_ID, {
 				state.message = "先识别到仓库，再问下一步"
 				return
 			end
-			inject(state, cx, commands.buildInjectionBody("问下一步", templates.render(templates.NEXT_STEP, templateVars(state))), "问下一步")
+			requestInject(state, cx, commands.buildInjectionBody("问下一步", templates.render(templates.NEXT_STEP, templateVars(state))), "问下一步")
+			return
+		end
+		if act == "inject-pending" then
+			local p = state.pending
+			if not p then
+				return
+			end
+			state.pending = nil
+			inject(state, cx, p.body, p.name)
+			if p.note then
+				state.message = "填入中：" .. p.name .. p.note
+			end
+			return
+		end
+		if act == "send-pending" then
+			local p = state.pending
+			if not p then
+				return
+			end
+			state.pending = nil
+			-- 「发送」走 ask 通道：能真正进 agent 输入框并提交。
+			local seq = sendAction(state, cx, "ask", p.body, p.name)
+			state.pendingSeq = seq
+			state.pendingKind = "ask"
+			state.message = "发送中：" .. p.name
+			watchInjection(state, cx, seq, p.name)
+			return
+		end
+		if act == "copy-preview" then
+			local p = state.pending
+			if not p then
+				return
+			end
+			cx:copy(p.body)
+			state.message = "已复制正文：" .. p.name
+			return
+		end
+		if act == "close-preview" then
+			state.pending = nil
+			state.message = nil
 			return
 		end
 		if act == "new-demand" then
 			state.view = "board"
 			state.newDemand = not state.newDemand
+			-- 同一时刻只允许一组子按钮：点这个就把另一个收起。
+			state.frontend = false
 			state.message = nil
 			return
 		end
 		if act == "frontend" then
 			state.view = "board"
 			state.frontend = not state.frontend
+			state.newDemand = false
 			state.message = nil
 			return
 		end
@@ -2502,7 +2600,7 @@ tern.block.define(BLOCK_ID, {
 				state.frontend = false
 				return
 			end
-			inject(state, cx, commands.buildInjectionBody("前端·" .. label, templates.render(tpl, templateVars(state))), label)
+			requestInject(state, cx, commands.buildInjectionBody("前端·" .. label, templates.render(tpl, templateVars(state))), label)
 			state.frontend = false
 		end
 		if act == "frontend-new" then
@@ -2515,12 +2613,12 @@ tern.block.define(BLOCK_ID, {
 		end
 		-- 只解释术语不读仓库，没有仓库也照常注入。
 		if act == "frontend-explain" then
-			inject(state, cx, commands.buildInjectionBody("前端·只解释术语", templates.render(templates.FRONTEND_EXPLAIN, templateVars(state))), "只解释术语")
+			requestInject(state, cx, commands.buildInjectionBody("前端·只解释术语", templates.render(templates.FRONTEND_EXPLAIN, templateVars(state))), "只解释术语")
 			state.frontend = false
 			return
 		end
 		if act == "new-bug" then
-			inject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, templateVars(state))), "提 BUG")
+			requestInject(state, cx, commands.buildInjectionBody("提 BUG", templates.render(templates.NEW_BUG, templateVars(state))), "提 BUG")
 			return
 		end
 		if act == "wrap-up" then
@@ -2535,19 +2633,17 @@ tern.block.define(BLOCK_ID, {
 					table.insert(missing, p.title)
 				end
 			end
-			inject(
+			requestInject(
 				state,
 				cx,
 				commands.buildInjectionBody("收尾", templates.render(templates.WRAP_UP, templateVars(state))),
-				"收尾"
+				"收尾",
+				if #missing > 0 then "（未装 " .. table.concat(missing, "、") .. "，相关步骤走降级路径）" else nil
 			)
-			if #missing > 0 then
-				state.message = "填入中：收尾（未装 " .. table.concat(missing, "、") .. "，相关步骤走降级路径）"
-			end
 			return
 		end
 		if act == "health-check" then
-			inject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, templateVars(state))), "体检")
+			requestInject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, templateVars(state))), "体检")
 			return
 		end
 		if act == "auto-reload" then
