@@ -906,10 +906,13 @@ test("总览出一份可视化总览页，只读且按后端核进度", function
 	ok(string.find(out, "卡点", 1, true) ~= nil, "讲卡点")
 	ok(string.find(out, "只读", 1, true) ~= nil, "写明只读边界")
 	ok(string.find(out, "gh issue list --state all", 1, true) ~= nil, "GitHub 后端自己核进度")
+	ok(string.find(out, "gh issue create", 1, true) == nil, "总览不给建票权限")
+	ok(string.find(out, "不改标签", 1, true) ~= nil, "写明票只读")
 	ok(string.find(out, "{overviewTickets}", 1, true) == nil, "占位符都换掉了")
 	local localOut = templates.render(templates.OVERVIEW, { repo = "D:/r", backend = "local" })
 	ok(string.find(localOut, ".scratch/", 1, true) ~= nil, "本地后端扫票文件")
 	ok(string.find(localOut, "Status:", 1, true) ~= nil, "本地后端读 Status 行")
+	ok(string.find(localOut, "新建 NN-", 1, true) == nil, "本地总览不给建票权限")
 end)
 
 test("模板边界不自相矛盾：调研可写笔记、设计迭代冲突不选边、共享段不让人回填正文", function()
