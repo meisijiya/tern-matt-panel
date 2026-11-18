@@ -1918,12 +1918,13 @@ type ToolButton = {
 --- 面板宽度不一，按钮装不进一行就换行 —— 任何宽度下都不许把按钮裁掉。
 local function toolbar(state: State, cx: BlockCx): Node
 	local buttons: { ToolButton } = {
-		-- 常驻三条：参考实现里这两条路、提 BUG、体检是随时能按的
+		-- 常驻动作：参考实现的两条路、提 BUG、体检、收尾、总览，任何视图都能按
 		{ label = "新增需求", icon = "plus", click = "new-demand" },
 		{ label = "前端", icon = "sparkle", click = "frontend" },
 		{ label = "提 BUG", icon = "warning", click = "new-bug" },
 		{ label = "体检", icon = "check", click = "health-check" },
 		{ label = "收尾", icon = "pr", click = "wrap-up" },
+		{ label = "总览", icon = "eye", click = "overview" },
 		{ label = "技能", icon = "sparkle", click = "view-skills",
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
@@ -2644,6 +2645,14 @@ tern.block.define(BLOCK_ID, {
 		end
 		if act == "health-check" then
 			requestInject(state, cx, commands.buildInjectionBody("体检", templates.render(templates.HEALTH_CHECK, templateVars(state))), "体检")
+			return
+		end
+		if act == "overview" then
+			if not (state.repo or state.backend == "local") then
+				state.message = "先识别到仓库，再总览"
+				return
+			end
+			requestInject(state, cx, commands.buildInjectionBody("总览", templates.render(templates.OVERVIEW, templateVars(state))), "总览")
 			return
 		end
 		if act == "auto-reload" then

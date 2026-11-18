@@ -571,6 +571,18 @@ case_run "收尾注入有鼠标入口" "$TMP/wrapup.sc" \
 	"click-btn-until:注入:填入:20000" \
 	"lacks:待注入 · 收尾"
 
+# 11b. 总览：常驻按钮叫出待注入卡并能注入
+cat > "$TMP/overview.sc" <<EOF
+wait 100
+EOF
+case_run "总览注入有鼠标入口" "$TMP/overview.sc" \
+	"click-btn-until:任务板:可领:20000" \
+	"skip-if:没识别到跟踪器" \
+	"click-btn-until:总览:待注入 · 总览:15000" \
+	"has:复制正文" \
+	"click-btn-until:注入:填入:20000" \
+	"lacks:待注入 · 总览"
+
 # 12. 技能包视图：五套外部包的卡在，且有自己的刷新按钮
 cat > "$TMP/packs.sc" <<EOF
 wait 100
