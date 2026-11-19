@@ -94,7 +94,7 @@ local TEMPLATES: { Template } = {
 			"- [ ] 仓内这几处存在就先读，不存在就跳过：GLOSSARY.md、docs/adr/、docs/spec/。",
 			"",
 			"## 边界",
-			"- [ ] 原型只验证想法：不改仓库、不认领票、不关闭票、不建 PR、不提交。",
+			"- [ ] 原型只验证想法：原型文件放系统临时目录或仓内忽略路径（用户指定位置优先），不改源码与既有文件、不认领票、不关闭票、不建 PR、不提交。",
 			"",
 			"## 交付",
 			"- [ ] 原型 1 份：怎么跑起来（一条命令或一段操作）+ 它验证了哪一点 + 它暴露了哪些问题。",
@@ -125,7 +125,7 @@ local TEMPLATES: { Template } = {
 			"- [ ] 用 git status 看手上有没有半成品。",
 			"",
 			"## 边界",
-			"- [ ] 只做调研与记录：不改仓库、不认领票、不关闭票、不建 PR、不提交。",
+			"- [ ] 只做调研与记录：可以按仓内习惯新建或更新笔记文件；不改源码、不认领票、不关闭票、不建 PR、不提交。",
 			"",
 			"## 交付",
 			"- [ ] 结论 1~3 条，每条写：结论 + 依据（引用了哪个票号、哪个文件或哪个一手来源）。",
@@ -140,7 +140,7 @@ local TEMPLATES: { Template } = {
 		id = "task",
 		title = "执行",
 		body = table.concat({
-			"请认领并执行下面的任务，完成后回报结论。",
+			"请认领并执行下面的任务，完成后回报结论。{claimStep}",
 			"",
 			FIRST,
 			ROLE,
@@ -174,17 +174,24 @@ local TEMPLATES: { Template } = {
 M.TEMPLATES = TEMPLATES
 
 --- 合并后的公共段：调查（先查后问）与工具（gh、每轮收尾给可选做法）合成一段，
---- 同一要求只在这里写一遍，「问下一步」「提 BUG」「体检」各引用一次。
-local CHECK_AND_TOOLS = table.concat({
-	"## 事实核验与工具（先查后问）",
-	"- [ ] 先读票正文、评论与仓内相关内容，再提问。",
-	"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
-	"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用，把新笔记路径回填正文。",
-	"- [ ] 提问前用一句话说明已查阅范围。",
-	"- [ ] {ticketTools}",
-	"- [ ] 不确定该读哪条技能、分支怎么走、派哪个 agent 时，先读 /skill:forge-router 的选路表；读完立刻读对应技能正文，不凭记忆猜名字。",
-	"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
-}, "\n")
+--- 同一要求只在这里写一遍，「问下一步」「提 BUG」「体检」「总览」各引用一次。
+--- tools 只差一行：写票的模板给 {ticketTools}，只读模板（总览）给 {overviewTools}，
+--- 否则共享段会替只读模板授予建票、改状态的权限。
+local function checkAndTools(toolsLine: string): string
+	return table.concat({
+		"## 事实核验与工具（先查后问）",
+		"- [ ] 先读票正文、评论与仓内相关内容，再提问。",
+		"- [ ] 优先复用仓内既有笔记（查找与存放都循仓内习惯）；复用时只记路径与一句结论，不粘贴全文。",
+		"- [ ] 既有笔记答不了，再按 /skill:research 规则新查一次，一句话说明为什么不适用；结论与来源写进本轮回复。",
+		"- [ ] 提问前用一句话说明已查阅范围。",
+		"- [ ] " .. toolsLine,
+		"- [ ] 不确定该读哪条技能、分支怎么走、派哪个 agent 时，先读 /skill:forge-router 的选路表；读完立刻读对应技能正文，不凭记忆猜名字。",
+		"- [ ] 每轮回复收尾前先判断一次：用户接下来几乎一定会做什么？想得到就给 2~4 条可选做法并标出你推荐的那条；想不到就不写。",
+	}, "\n")
+end
+
+local CHECK_AND_TOOLS = checkAndTools("{ticketTools}")
+local CHECK_AND_TOOLS_READONLY = checkAndTools("{overviewTools}")
 
 --- 「问下一步」：只调 ask-matt 技能，外加一段写清怎么想、怎么给的提示。
 --- 面板不再搬运任务板快照：事实由会话自己用 gh 核，面板只给判断顺序与交付形状。
@@ -245,7 +252,7 @@ M.NEW_BUG = {
 		"## 边界",
 		"- [ ] 只建单与查重：不改源码、不关旧单、不发版、不提交。",
 		"- [ ] 有假设先用 grilling 澄清，不默认；已给的不重问。",
-		"- [ ] 不替报告人编：缺的要素标 needs-info，只答出一部分就照常建单。",
+		"- [ ] 不替报告人编：缺的要素先按反问小节问一次；答不全就照常建单并标 needs-info，不反复追问。",
 		"",
 		"## 索取要素（帮报告人把情况说清楚，知道多少写多少）",
 		"- [ ] 现象与影响范围：看到了什么，坏了哪条链路、影响了谁。",
@@ -319,6 +326,52 @@ M.HEALTH_CHECK = {
 	}, "\n"),
 }
 
+--- 「总览」：隔一段时间回来时，从全局视角重述项目蓝图与进度。
+--- 只读分析 + 一份可视化页；进度与卡点全部现查，不搬面板快照。
+M.OVERVIEW = {
+	id = "overview",
+	title = "总览",
+	body = table.concat({
+		"/skill:answer-me-with-html",
+		"请用 /skill:answer-me-with-html 出一份项目总览页：让人隔一段时间回来时，一屏看懂这个项目是做什么的、走到哪一步、卡在哪。",
+		"",
+		FIRST,
+		ROLE,
+		"",
+		"## 目标",
+		"一句话：从全局视角重述项目蓝图与当前进度，产出一份可直接打开的可视化总览页。",
+		"交付形状：一份单文件 HTML（走技能默认产出目录，不覆写 -o）+ 一段不超过十行的文字摘要。",
+		"仓库：{repo}",
+		"",
+		CHECK_AND_TOOLS_READONLY,
+		"",
+		"## 取数清单（只读，不许凭记忆）",
+		"- [ ] 蓝图来源：README、GLOSSARY.md、docs/spec/、docs/adr/、各地图的「目的地」与「笔记」两节；存在才读。",
+		"- [ ] 进度来源：{overviewTickets}",
+		"- [ ] 近期动向：git log --oneline -30 与 git status。",
+		"- [ ] 取不到的项在页面里标「未取到」与原因，不补猜。",
+		"",
+		"## 页面结构（按此顺序；缺数据的项标「未取到」与原因，不整段删）",
+		"1. 定位：一句话说清项目是什么、现在处于哪个阶段（规划 / 实施 / 收口）。",
+		"2. 蓝图：模块或地图到子票的层级，画成树或泳道，标出已完成、进行中、被阻塞。",
+		"3. 进度：开放与关闭的票数、按地图归组、最近一次实质推进的时间。",
+		"4. 卡点与风险：被阻塞的票、久未推进的票、写完还没验收的规格。",
+		"5. 下一步候选：2~4 条，标出推荐那条与一句依据。",
+		"",
+		"## 边界",
+		"- [ ] 只读：不改仓库、不认领票、不关闭票、不建 PR、不提交。",
+		"- [ ] 不美化进度：只写核到的事实；估算值标注「估算」。",
+		"",
+		"## 交付",
+		"- [ ] HTML 路径能直接打开；可视化跑不起来就出 Markdown 版并注明原因。",
+		"- [ ] 文字摘要不超过十行：项目一句、进度一句、卡点一句、下一步一句。",
+		"",
+		ASK_BACK,
+		"",
+		USER_INPUT_NOTE,
+	}, "\n"),
+}
+
 --- 「新建设计」：从 0 到 1 确定视觉方向，选定后写 DESIGN.md；不写业务代码。
 M.FRONTEND_NEW = {
 	id = "frontend-new",
@@ -338,6 +391,7 @@ M.FRONTEND_NEW = {
 		"",
 		"## 场景判定",
 		"- [ ] 先判是整站 / 落地页，还是单个组件；判不准就按反问小节问，不替用户猜。",
+		"- [ ] 用户用的视觉词（如「高级感」「呼吸感」）没有共识时，先用 /skill:vibehub 对齐 1~3 个术语再给方向；缺装或没有可靠匹配就跳过，不硬塞术语、不编链接。",
 		"- [ ] 问清业务、页面类型、主行动、目标用户再给方向；用户已经给全或明说别问时，直接给方向。",
 		"- [ ] 先读项目现有栈与样式入口（框架、组件目录、全局样式），按它适配，不预设 React / Vue / 静态 HTML。",
 		"",
@@ -351,9 +405,9 @@ M.FRONTEND_NEW = {
 		"",
 		"## 设计沉淀",
 		"- [ ] 用户选定方向后才写 DESIGN.md。写前问一句；已存在时问「更新还是另起」，不覆盖。",
-		"- [ ] DESIGN.md 内容：front matter 必填 `name` 与至少一个 `primary` 颜色，按需加 colors / typography / radius / spacing / components；正文按固定顺序八章（Overview / Colors / Typography / Layout / Elevation & Depth / Shapes / Components / Do's and Don'ts），可省略但顺序不能乱；写设计理由、组件规则与禁用项，不写实现细节；不做 changelog，不写「最后更新」行。",
-		"- [ ] 需要 Tailwind / CSS 变量时用 `npx @google/design.md export` 生成，不手写第二套；写完跑 `npx @google/design.md lint DESIGN.md`，失败只报告，不阻塞。",
-		"- [ ] 整站 / 落地页：按 /skill:design-taste-frontend 的要求落目标页面与 assets（可写页面骨架与样式，不写业务逻辑与接口）；跑门禁要两步 —— 先 `node <技能目录>/scripts/gate.mjs --start <页面> --kind <kind> --category <category> --primary <#hex>` 装门，再 `node <技能目录>/scripts/gate.mjs <页面>`，读末行 `GATE:` 与退出码；没装门就只跑会打印 `GATE: OFF`，等于没检查。首次 gate 算第 1 轮，每轮约 60 秒，最多 3 轮，3 轮还没过就报告并停。",
+		"- [ ] DESIGN.md 内容：front matter 必填 `name` 与至少一个 `primary` 颜色，按需加 colors / typography / rounded / spacing / components；正文按固定顺序八章（Overview / Colors / Typography / Layout / Elevation & Depth / Shapes / Components / Do's and Don'ts），可省略但顺序不能乱；写设计理由、组件规则与禁用项，不写实现细节；不做 changelog，不写「最后更新」行。",
+		"- [ ] 需要 Tailwind / CSS 变量时用 `npx @google/design.md export DESIGN.md --format css-tailwind`（或 `css-vars`）生成，不手写第二套；写完跑 `npx @google/design.md lint DESIGN.md`，失败只报告，不阻塞。",
+		"- [ ] 整站 / 落地页：按 /skill:design-taste-frontend 的要求落目标页面与 assets（可写页面骨架与样式，不写业务逻辑与接口）；跑门禁要两步 —— 先 `node <技能目录>/scripts/gate.mjs --start <页面> --kind <tech|software|gaming|product|place|service> --category \"<这个页面卖什么>\" --primary \"<主行动>\"` 装门，再 `node <技能目录>/scripts/gate.mjs <页面>`，读末行 `GATE:` 与退出码；没装门就只跑会打印 `GATE: OFF`，等于没检查。首次 gate 算第 1 轮，每轮数十秒到数分钟（CPU Chrome 更慢），最多 3 轮，3 轮还没过就报告并停。",
 		"- [ ] 单组件：只跑 `copy-lint` 与局部检查，不跑整门。`copy-lint` 只查英文文案，中文页面跳过它。",
 		"- [ ] 防 AI 味：中文成稿引用 /skill:lieflat-less-ai-tone（已装才用；它先出改前检测报告，等你点头才改写，不足 500 汉字不检测）；英文页面用 taste-skill 的 copy-lint；只给防 AI 味页面链接作人工参考，不内联条目：https://vibe-hub.org/anti-ai-flavor。检查过或明确跳过都要在交付里注明。",
 		"",
@@ -408,8 +462,8 @@ M.FRONTEND_ITERATE = {
 		"",
 		"## 变更落盘",
 		"- [ ] token 改动只改 DESIGN.md 里变更的那几个值，不整份重写；组件 / 结构改动才动代码。",
-		"- [ ] 代码与 DESIGN.md 冲突时以代码为准反填 DESIGN.md，只改变更项，不双写两份真源。",
-		"- [ ] 缺 DESIGN.md 先问、不自动建；已存在不覆盖整份；与代码实际 token 冲突时报告并列出假设，不选边。",
+		"- [ ] 代码与 DESIGN.md 冲突时不选边：先报告冲突与假设；用户点头后才以代码为准反填 DESIGN.md 的变更项，不双写两份真源。",
+		"- [ ] 缺 DESIGN.md 先问、不自动建；已存在不覆盖整份。",
 		"- [ ] 改 DESIGN.md 前复制一份临时 before，再跑 `npx @google/design.md diff <before> DESIGN.md`；另跑 `npx @google/design.md lint DESIGN.md`；两者失败只报告，不阻塞主流程。",
 		"- [ ] 不跑 /skill:design-taste-frontend 的整门，只借它的 copy-lint 与局部检查。copy-lint 只查英文文案，中文页面跳过它，改用 /skill:lieflat-less-ai-tone（已装才用：先出改前检测报告，等用户点头再改写，不足 500 汉字不检测）。",
 		"",
@@ -472,7 +526,7 @@ M.FRONTEND_EXPLAIN = {
 		"",
 		"## 交付",
 		"- [ ] 1~3 个术语，每个一行：术语名 + 一句解释 + 链接（有可靠来源才写）。",
-		"- [ ] 一段改写后的需求，可直接复制发给 agent。",
+		"- [ ] 一段改写后的需求，可直接复制发给 agent（用户只要解释、不要改写时不给）。",
 		"",
 		ASK_BACK_NO_REPO,
 		"",
@@ -538,7 +592,7 @@ M.WRAP_UP = {
 		"  - 规格方向真源是 docs/spec 与票面验收，只做需求到 diff 的映射，不判代码质量。",
 		"  - 错误路径与测试有效性方向真源是代码本身：失败路径、静默吞错、测试会不会在坏代码上真的变红。",
 		"- [ ] 方向数封顶三个：再加方向只增重叠，不增深度。",
-		"- [ ] 另派一路机械核对：只核每条发现引用的文件、行号、符号是否真存在，不判对错。",
+		"- [ ] 重档另派一路机械核对：只核每条发现引用的文件、行号、符号是否真存在，不判对错。",
 		"- [ ] 合拢三步：先核引用，再去重，最后定级。",
 		"- [ ] 每条发现写成一行：级别 · 文件与行号 · 依据 · 建议动作；级别只取「阻断 / 建议 / 既有问题」三值；没有发现就写「无」，不为了交差编发现。",
 		"- [ ] 每条发现必须有答复：修掉，或写一句理由关闭；裁掉的发现不许直接消失，理由留在报告里。",
@@ -654,6 +708,7 @@ local ENTRIES: { Entry } = {
 			"- [ ] 交付一份规格结论：目标、范围、验收标准各一段；每条结论写清依据（引用了哪个票号或哪个文件）。",
 			"- [ ] 收尾两步（下面两步由用户手动执行，不要替他做）：讨论结束、结论对齐后，提醒用户手动执行一次 /skill:to-spec，把结论生成规格 issue。",
 			"- [ ] 规格 issue 生成后，再提醒用户手动执行一次 /skill:to-tickets，把规格拆成实施 issue。",
+			"- [ ] 出口：规格结论对齐，或用户说先停 → 过；对不齐就停在反问，不硬推 to-spec。",
 			"",
 			ASK_BACK_BASE,
 			"",
@@ -705,8 +760,11 @@ function M.backendVars(backendName: string?, ctx: { url: string?, path: string? 
 			taskRef = where,
 			readTicket = "读票文件（" .. path .. "），别只凭标题猜。",
 			readTicketStrict = "读票文件（" .. path .. "），验收标准以票面为准。",
+			claimStep = " 认领 = 把票文件顶部 Status: 改成 claimed，做完改成 completed。",
 			listOpen = "扫一遍 .scratch/<工作单元>/issues/ 下的票文件与各 map.md，别重复建票。",
 			listDone = "扫一遍 .scratch/<工作单元>/issues/ 下的票文件与各 map.md，别把已做的事重做一遍。",
+			overviewTickets = "扫一遍 .scratch/<工作单元>/issues/ 下的票文件，读每张票顶部的 Status: 行，票文件的修改时间就是最近推进时间；工作单元的 map.md 就是蓝图来源。",
+			overviewTools = "票只读：读 .scratch/<工作单元>/issues/ 下的票文件与 map.md；不建票、不改 Status、不删文件。",
 			ticketTools = "票一律是盘上的 markdown 文件：读用读文件，建单在 .scratch/<工作单元>/issues/ 下新建 NN-<slug>.md，改状态改票文件顶部的 Status: 行。",
 			dedupe = table.concat({
 				"- [ ] 收齐现象描述后全扫一遍票目录（.scratch/*/issues/），不要用关键词搜索代替。",
@@ -729,8 +787,11 @@ function M.backendVars(backendName: string?, ctx: { url: string?, path: string? 
 		taskRef = "任务链接：" .. url,
 		readTicket = "用 gh 读票正文、评论与依赖（gh issue view " .. url .. "），别只凭标题猜。",
 		readTicketStrict = "用 gh 读票正文、评论与依赖（gh issue view " .. url .. "），验收标准以票面为准。",
+		claimStep = " 认领 = gh issue edit <票号> --add-assignee @me。",
 		listOpen = "用 gh 读现有开放票与依赖（gh issue list --state open），别重复建票。",
 		listDone = "用 gh 读现有开放票与依赖（gh issue list --state open），别把已做的事重做一遍。",
+		overviewTickets = "用 gh issue list --state all --limit 1000 看开放与已关的票，gh issue view 读正文与依赖；带 wayfinder:map 标签的是地图。条数到了上限就说可能没取全，在页面里标「未取全」。",
+		overviewTools = "票只读：gh issue list 与 gh issue view；不建票、不评论、不改标签、不认领。",
 		ticketTools = "票的读写一律走 gh（gh issue list / view / create / comment / edit --add-label）。",
 		dedupe = table.concat({
 			"- [ ] 收齐现象描述后全扫一遍，不要用关键词搜索代替：先 gh issue list --state open --label bug --limit 200，再 --state closed --label bug --limit 200。",

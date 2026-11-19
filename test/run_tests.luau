@@ -898,6 +898,39 @@ test("问下一步只调 ask-matt，不再搬任务板快照", function()
 	end
 end)
 
+test("总览出一份可视化总览页，只读且按后端核进度", function()
+	local out = templates.render(templates.OVERVIEW, { repo = "me/repo" })
+	ok(string.find(out, "/skill:answer-me-with-html", 1, true) == 1, "首行是可视化技能")
+	ok(string.find(out, "me/repo", 1, true) ~= nil, "带仓库")
+	ok(string.find(out, "蓝图", 1, true) ~= nil, "讲蓝图")
+	ok(string.find(out, "卡点", 1, true) ~= nil, "讲卡点")
+	ok(string.find(out, "只读", 1, true) ~= nil, "写明只读边界")
+	ok(string.find(out, "gh issue list --state all", 1, true) ~= nil, "GitHub 后端自己核进度")
+	ok(string.find(out, "gh issue create", 1, true) == nil, "总览不给建票权限")
+	ok(string.find(out, "不改标签", 1, true) ~= nil, "写明票只读")
+	ok(string.find(out, "{overviewTickets}", 1, true) == nil, "占位符都换掉了")
+	local localOut = templates.render(templates.OVERVIEW, { repo = "D:/r", backend = "local" })
+	ok(string.find(localOut, ".scratch/", 1, true) ~= nil, "本地后端扫票文件")
+	ok(string.find(localOut, "Status:", 1, true) ~= nil, "本地后端读 Status 行")
+	ok(string.find(localOut, "新建 NN-", 1, true) == nil, "本地总览不给建票权限")
+end)
+
+test("模板边界不自相矛盾：调研可写笔记、设计迭代冲突不选边、共享段不让人回填正文", function()
+	local research = templates.render(templates.TEMPLATES[3], { url = "http://x/1", title = "票标题" })
+	ok(string.find(research, "可以按仓内习惯新建或更新笔记文件", 1, true) ~= nil, "调研允许写笔记")
+	ok(string.find(research, "不改仓库", 1, true) == nil, "调研不再自相矛盾地说不改仓库")
+
+	local iterate = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" })
+	ok(string.find(iterate, "用户点头后才以代码为准反填", 1, true) ~= nil, "冲突先问再反填")
+	ok(string.find(iterate, "冲突时以代码为准反填", 1, true) == nil, "没有无条件反填")
+
+	for _, t in ipairs({ templates.NEXT_STEP, templates.NEW_BUG, templates.HEALTH_CHECK, templates.OVERVIEW }) do
+		local body = templates.render(t, { repo = "me/repo" })
+		ok(string.find(body, "回填正文", 1, true) == nil, t.title .. " 不再要求回填票正文")
+		ok(string.find(body, "结论与来源写进本轮回复", 1, true) ~= nil, t.title .. " 把结论写进回复")
+	end
+end)
+
 --- omp 只认 /skill: 前缀：注入正文里出现裸斜杠命令，会话就解析不到技能。
 local function outerSlashCmds(text: string): { string }
 	local out: { string } = {}
@@ -912,6 +945,7 @@ test("注入正文里的斜杠命令一律带 skill: 前缀", function()
 		{ "问下一步", templates.render(templates.NEXT_STEP, { repo = "o/r" }) },
 		{ "提 BUG", templates.render(templates.NEW_BUG, { repo = "o/r" }) },
 		{ "体检", templates.render(templates.HEALTH_CHECK, { repo = "o/r" }) },
+		{ "总览", templates.render(templates.OVERVIEW, { repo = "o/r" }) },
 	}
 	for _, e in ipairs(templates.ENTRIES) do
 		table.insert(bodies, { e.title, templates.render(e, { repo = "o/r" }) })
@@ -1386,6 +1420,7 @@ local ACTION_CASES = {
 	{ act = "new-bug", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "health-check", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "wrap-up", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
+	{ act = "overview", want = function(_st: any, _b: any, kv: any) return kv["action"] ~= nil and kv["action"].kind == "inject" end },
 	{ act = "packs-refresh", want = function(st: any)
 		-- 四种文案同前缀：进行中 / 刚查过 / 已查 N 套 / 没什么可查
 		return string.find(tostring(st.message), "版本检查", 1, true) ~= nil
@@ -1545,6 +1580,24 @@ test("没识别到仓库时不给问下一步", function()
 	ok(string.find(tostring(st.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
 end)
 
+test("总览按钮注入可视化总览，没仓库时不注入", function()
+	local st = nextStepState()
+	kvStore["action"] = nil
+	fireInject(st, mkCx(120), "overview")
+	local action = kvStore["action"]
+	ok(type(action) == "table", "写了注入请求")
+	eq(action.kind, "inject", "走普通注入")
+	ok(string.find(action.body, "===== 注入开始 · tern-matt-panel · 总览 =====", 1, true) == 1, "以开始行开头")
+	ok(string.find(action.body, "## 页面结构", 1, true) ~= nil, "正文带页面结构")
+	ok(string.find(action.body, "/skill:answer-me-with-html", 1, true) ~= nil, "调可视化技能")
+
+	local bare = panel.init(mkCx(120), {}, nil)
+	kvStore["action"] = nil
+	fireInject(bare, mkCx(120), "overview")
+	ok(kvStore["action"] == nil, "没有仓库就不注入")
+	ok(string.find(tostring(bare.message), "先识别到仓库", 1, true) ~= nil, "说清缺什么")
+end)
+
 test("常驻三条：新增需求/提 BUG/体检", function()
 	local st = nextStepState()
 	fireInject(st, mkCx(120), "new-bug")
@@ -1577,6 +1630,7 @@ table.insert(ALL_TEMPLATES, { name = templates.WRAP_UP.title, body = templates.r
 table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_NEW.title, body = templates.render(templates.FRONTEND_NEW, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_ITERATE.title, body = templates.render(templates.FRONTEND_ITERATE, { repo = "me/repo" }) })
 table.insert(ALL_TEMPLATES, { name = templates.FRONTEND_EXPLAIN.title, body = templates.render(templates.FRONTEND_EXPLAIN, { repo = "me/repo" }) })
+table.insert(ALL_TEMPLATES, { name = templates.OVERVIEW.title, body = templates.render(templates.OVERVIEW, { repo = "me/repo" }) })
 for _, e in ipairs(templates.ENTRIES) do
 	table.insert(ALL_TEMPLATES, { name = e.injectAction, body = templates.render(e, { repo = "me/repo" }) })
 end
@@ -1619,7 +1673,7 @@ local function findPlaceholder(body: string): string?
 end
 
 test("每条模板都挂反问小节且只挂一次", function()
-	eq(#ALL_TEMPLATES, 13, "十三条模板都收进来了")
+	eq(#ALL_TEMPLATES, 14, "十四条模板都收进来了")
 	for _, t in ipairs(ALL_TEMPLATES) do
 		local n = 0
 		for _ in string.gmatch(t.body, ASK_MARK) do
@@ -1729,6 +1783,10 @@ test("T4 六个模板的主技能命令正确", function()
 	ok(string.find(taskBody, "/skill:research", 1, true) == nil, "执行票不挂主技能")
 	ok(string.find(taskBody, "/skill:wayfinder", 1, true) == nil, "执行票不挂主技能")
 	ok(string.find(taskBody, "认领并执行", 1, true) ~= nil, "执行票保留认领并执行")
+	ok(string.find(taskBody, "认领 = gh issue edit", 1, true) ~= nil, "GitHub 后端写清认领命令")
+	local localTask = templates.render(task :: any, { url = "", title = "票标题", path = ".scratch/a/issues/01-x.md", backend = "local" })
+	ok(string.find(localTask, "Status: 改成 claimed", 1, true) ~= nil, "本地后端写清认领方式")
+	ok(string.find(localTask, "--add-assignee", 1, true) == nil, "本地后端不出现 gh 认领命令")
 	ok(string.find(taskBody, "回报", 1, true) ~= nil, "执行票保留回报结论")
 end)
 
