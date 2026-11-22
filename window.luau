@@ -17,6 +17,8 @@ local ACTION_KEY = "action"
 local INJECT_RESULT_KEY = "inject_result"
 local REPO_KEY = "repo"
 local POLL_MS = 300
+--- 注入后核对输入框的延迟：cx:run 之后 surface 要过几个帧才更新（实测 300ms 内）。
+local VERIFY_MS = 320
 
 -- 最近聚焦的 agent：面板没有绑定目标时的兜底。
 local lastAgent: number? = nil
@@ -125,10 +127,62 @@ local function agentFor(cx: WindowCx, panelPane: number): number?
 	return nil
 end
 
---- agent 输入框里是不是真有这段正文。
---- Tern 0.9.26 的原生 omp 块不再接受 cx:run 打字时不会报错，所以「填进去了」要读回界面树核对；
---- 但 tree 里的输入框节点常常没有 value 字段（文字在 text / 子节点里），读不到内容时
---- 判「看不懂」，不能当成「没填进去」——那是把成功当失败。
+--- 原生 omp 输入框的正文，从串流面读。
+--- 原生 omp 的 chat 面没有无障碍树（view 对 chat 返回 nil 或没有 value），
+--- 实时可读的只有 surface 里的 composer editor 节点。
+--- 优先认作 composer 的 editor：节点或祖先带 composer role，或 id 以 .line/input 结尾
+--- （omp 的输入框）。读不到就返回 nil：没有 editor、旧版 Tern 都不该当成「空框」。
+--- 注意：非焦点/隐藏 tab 的 chat 读到的 text 会是空串，判失败前调用方还要确认 pane 是焦点块。
+local function surfaceComposerText(cx: WindowCx, pane: number): string?
+	local ok, surface = pcall(function()
+		return cx.session:surface(pane, { depth = 60, nodes = 5000 })
+	end)
+	if not ok or type(surface) ~= "table" then
+		return nil
+	end
+	local marked: string? = nil
+	local anywhere: string? = nil
+	local function walk(n: any, inComposer: boolean)
+		if type(n) ~= "table" then
+			return
+		end
+		local p = n.p
+		local composer = inComposer
+		if type(p) == "table" and type(p.role) == "string" and string.find(p.role, "composer", 1, true) ~= nil then
+			composer = true
+		end
+		if n.k == "editor" and type(p) == "table" and type(p.text) == "string" then
+			if anywhere == nil then
+				anywhere = p.text
+			end
+			local byId = type(n.id) == "string" and string.find(n.id, "line/input", 1, true) ~= nil
+			if marked == nil and (composer or byId) then
+				marked = p.text
+			end
+		end
+		for _, kid in ipairs(n.c or {}) do
+			walk(kid, composer)
+		end
+	end
+	walk(surface.main, false)
+	walk(surface.dock, false)
+	return marked or anywhere
+end
+
+--- 空白的差别不算差别：正文比对一律去掉空白再比。
+local function textHas(text: string, marker: string): boolean
+	return string.find(string.gsub(text, "%s+", ""), marker, 1, true) ~= nil
+end
+
+--- 核对用的指纹：去掉空白后的前 24 字。
+local function markerOf(body: string): string
+	local flat = string.gsub(body, "%s+", "")
+	return string.sub(flat, 1, math.min(24, #flat))
+end
+
+--- 无障碍树里的输入框是不是真有这段正文。
+--- 只有终端/旧版 Tern 走到这里（原生 omp chat 走 surface）。
+--- 节点在但读不出内容时判「看不懂」，不能当成「没填进去」——那是把成功当失败。
 local function composerHas(cx: WindowCx, pane: number, marker: string): boolean?
 	local ok, view = pcall(function()
 		return cx.session:view(pane, { depth = 10 })
@@ -191,7 +245,7 @@ end
 
 --- 把正文填进某个 agent 的输入框，不提交。
 --- 用 cx:run 逐字打进 pane（多行包成括号粘贴），用户看过、补完再自己按回车。
---- 出错时返回错误说明；「写进去了但没有证据」也算失败，交给调用方退剪贴板。
+--- 只负责送；「填进去了没有」由调用方读回核对（surface 的输入框要下一拍才更新）。
 local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	local isAgent = false
 	for _, agent in ipairs(cx.agents:list()) do
@@ -211,14 +265,6 @@ local function fillAgent(cx: WindowCx, pane: number, body: string): string?
 	end)
 	if not ok then
 		return tostring(err)
-	end
-	-- 读回核对：能读到输入框内容时才判；读到内容里没有正文才算没填进去。
-	-- 读不到内容（原生 omp 的 tree 不给 value）就当不知道，不把成功报成失败。
-	local flat = string.gsub(body, "%s+", "")
-	local marker = string.sub(flat, 1, math.min(24, #flat))
-	local delivered = composerHas(cx, pane, marker)
-	if delivered == false then
-		return "输入框没收到正文（Tern 这版的 agent 输入框不接受程序填入）"
 	end
 	return nil
 end
@@ -268,7 +314,7 @@ local function handleAction(cx: WindowCx)
 	end
 	if action.kind == "pick-repo" then
 		-- cx:prompt 只有窗口半边有，所以仓库名在这里问、在这里写回 kv。
-		cx:prompt({ placeholder = "owner/repo", value = action.body, icon = "tasks" }):next(function(repo, _err, cx)
+		cx:prompt({ placeholder = "owner/repo", value = action.body, icon = "list" }):next(function(repo, _err, cx)
 			if not repo or not cx then
 				return
 			end
@@ -405,6 +451,40 @@ local function handleAction(cx: WindowCx)
 		report(false, err .. "（" .. tail .. "）")
 		return
 	end
+	local marker = markerOf(action.body)
+	-- 原生 omp 的输入框在 surface 里，且 cx:run 之后要下一拍才出现正文（实测 <= 300ms），
+	-- 立刻读必然是空框。所以先确认这条路可读，再隔一拍核对。
+	-- 非焦点 / 隐藏 tab 的 chat 读到的 text 是空串（composer 不在实时 surface 里），
+	-- 所以「读成空框」只有在它正是焦点块时才算真失败，否则判不了、按成功算。
+	if surfaceComposerText(cx, agent) ~= nil then
+		tern.timer(VERIFY_MS, function(nextCx)
+			local c: WindowCx = nextCx or cx
+			local text = surfaceComposerText(c, agent)
+			local focused = false
+			pcall(function()
+				focused = c.session:focused() == agent
+			end)
+			local live = text ~= nil and (text ~= "" or focused)
+			if text ~= nil and not textHas(text, marker) and live then
+				local copyErr = copyOrErr(c, action.body)
+				local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
+				c:toast("error", "填入失败：" .. tostring(action.name or ""), "输入框没收到正文（" .. tail .. "）")
+				report(false, "输入框没收到正文（" .. tail .. "）")
+				return
+			end
+			c:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
+			report(true, nil)
+		end)
+		return
+	end
+	local delivered = composerHas(cx, agent, marker)
+	if delivered == false then
+		local copyErr = copyOrErr(cx, action.body)
+		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
+		cx:toast("error", "填入失败：" .. tostring(action.name or ""), "输入框没收到正文（" .. tail .. "）")
+		report(false, "输入框没收到正文（" .. tail .. "）")
+		return
+	end
 	cx:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
 	report(true, nil)
 end
@@ -428,7 +508,7 @@ end
 tern.command({
 	id = "panel",
 	title = "Matt 面板",
-	icon = "tasks",
+	icon = "list",
 	run = openPanel,
 })
 
@@ -495,7 +575,7 @@ tern.chrome.status(function(_pane)
 	return {
 		{
 			text = text,
-			icon = "tasks",
+			icon = "list",
 			command = "plugin.tern-matt-panel.panel",
 		},
 	}

@@ -1225,7 +1225,7 @@ local function packsView(state: State): Node
 			table.insert(head, ui.span("  → 上游 " .. p.latest, "muted"))
 		end
 		table.insert(main, ui.card(head, kids, {
-			icon = "tasks",
+			icon = "list",
 			meta = ui.span(p.status, if p.installed then "muted" else "warning"),
 		}))
 	end
@@ -1929,7 +1929,7 @@ local function toolbar(state: State, cx: BlockCx): Node
 			variant = if state.view == "skills" then "primary" else "default" },
 		{ label = "任务板", icon = "map", click = "view-board",
 			variant = if state.view == "board" then "primary" else "default" },
-		{ label = "技能包", icon = "tasks", click = "view-packs",
+		{ label = "技能包", icon = "list", click = "view-packs",
 			variant = if state.view == "packs" then "primary" else "default" },
 		-- 窗口半边写完注入结果后要戳宿主重画，戳的就是这个按钮的节点 id
 		-- （区块.区域.按钮 key）。没有 key 就没人能戳到它。

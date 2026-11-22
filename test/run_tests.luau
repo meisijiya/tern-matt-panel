@@ -4068,6 +4068,79 @@ test("读不到输入框内容时不当成失败（原生 omp 不给 value）", 
 	eq(kvStore["inject_result"].ok, false, "读到空内容才算失败")
 end)
 
+test("原生 omp 的输入框从串流面核对：下一拍才判", function()
+	local winPane = 63
+	local surfaceText = ""
+	local copies = 0
+	local focusedPane: number? = winPane
+	local cx: any = {
+		pane = winPane,
+		copy = function(_self: any, _body: string)
+			copies += 1
+		end,
+		toast = function() end,
+		run = function() end,
+		session = {
+			pane = function() return { id = winPane } end,
+			focused = function() return focusedPane end,
+			tab_of = function() return 1 end,
+			layout = function() return { root = { pane = winPane } } end,
+			event = function() end,
+			view = function() return nil end,
+			surface = function()
+				return {
+					main = {
+						k = "col",
+						c = { { k = "editor", id = "j.line/input", p = { text = surfaceText, sendable = true } } },
+					},
+				}
+			end,
+		},
+		agents = { list = function() return { { pane = winPane, state = "idle" } } end, ask = function() end },
+	}
+	local function fireVerify()
+		local due = {}
+		for _, t in ipairs(timers) do
+			if t.ms == 320 then
+				table.insert(due, t)
+			end
+		end
+		for _, t in ipairs(due) do
+			t.fn(nil)
+		end
+	end
+	local body = "===== 注入开始 · tern-matt-panel · 测试 =====\n正文\n"
+
+	-- cx:run 刚返回时 surface 还是空框，不立刻判；放行 300ms 后才读到正文。
+	kvStore["action"] = { seq = 950, kind = "inject", pane = winPane, body = body, name = "延迟核" }
+	pollTick(cx)
+	eq(kvStore["inject_result"], nil, "立刻读是空框，不许当场判失败")
+	surfaceText = body
+	fireVerify()
+	eq(kvStore["inject_result"].ok, true, "下一拍读到正文算成功")
+	eq(copies, 0, "成功不碰剪贴板")
+	-- 桩里的 timers 只增不减；不清掉，第二个用例会把第一个的核对再放一遍。
+	timers = {}
+
+	-- 下一拍仍然读不到正文：真失败，退剪贴板并如实报。
+	surfaceText = ""
+	kvStore["action"] = { seq = 951, kind = "inject", pane = winPane, body = body, name = "真空框" }
+	pollTick(cx)
+	fireVerify()
+	eq(kvStore["inject_result"].ok, false, "空框如实报失败")
+	eq(copies, 1, "失败退到剪贴板")
+	timers = {}
+
+	-- 非焦点块的 surface 读成空串（composer 不在实时树里）：判不了，按成功算，不误报失败。
+	kvStore["action"] = { seq = 952, kind = "inject", pane = winPane, body = body, name = "非焦点空读" }
+	pollTick(cx)
+	-- 注入后焦点被别人拿走：surface 读成空串，不能判失败。
+	focusedPane = nil
+	fireVerify()
+	eq(kvStore["inject_result"].ok, true, "非焦点读到空串不判失败")
+	eq(copies, 1, "判不了时不碰剪贴板")
+end)
+
 -- -------------------------------------------------------------- report ----
 
 reporting = true

@@ -45,10 +45,10 @@ tern --control 17311 .
 
 - **`tern shot` / `tern serve` 不加载插件**：palette 里搜不到「Matt 面板」，别用它们验面板。
 - **开面板别用 `palette "Matt 面板"` + `key return`**：调色板第一条是最近提交（Git 面板那条），回车打开的是内置 Git 面板，断言会全部落在错的面板上。用 `plugins run plugin.tern-matt-panel.panel` 精确打开。
-- **Tern 0.9.26 的两条送达通道**：`cx:run`（只填不提交）与 `cx.agents:ask`（填并提交）。面板的「注入」走前者、「发送」走后者。
-- **核对只在读得到时做**：`cx.session:view` 的原生 omp 输入框节点常常没有 `value`，读到空就判「看不懂」按成功算；只有真读到内容且不含正文才报失败。把「读不到」当成「没填进去」会把成功报成失败。
+- **两条送达通道**：`cx:run`（只填不提交）与 `cx.agents:ask`（填并提交）。面板的「注入」走前者、「发送」走后者；0.9.30 实测 `cx:run` 对原生 omp chat 有效（含括号粘贴多行）。
+- **核对读 surface，不读 view**：`cx.session:view` 对原生 omp chat 返回 nil。输入框在 `cx.session:surface` 的 editor 节点里（`k="editor"`，`p.text`），且 `cx:run` 之后要下一拍才更新（实测 <= 300ms），所以核对延迟 320ms。读成空串只有在它是焦点块时才算真失败（非焦点 / 隐藏 tab 读到的就是空串）；没有 editor 可读（终端型 agent / 旧版 Tern）退回 `view`，仍读不到按成功算。
 - **两个命令入口互斥**：`new-demand` 与 `frontend` 各自翻转后要清掉另一个，否则两组子按钮同时落出。
-- **投递有两条通道**：`inject`（`cx:run`，只填不提交）与 `ask`（`cx.agents:ask`，填并提交）。原生 omp 只认后者。
+- **投递有两条通道**：`inject`（`cx:run`，只填不提交）与 `ask`（`cx.agents:ask`，填并提交）。两条在 0.9.30 上对原生 omp 都实测可用。
 - **模板是两步投递**：点动作只写 `state.pending` 摊开正文，`inject-pending` 才写 kv。单测里要拿注入请求用 `fireInject`，别直接 `panel.event` 后断言 kv。
 - **一个窗口只开一个面板**：同一窗口里两个面板时，按文字取坐标会命中另一个面板的按钮，断言看似随机失败。开跑前数一遍 `tern ctl tree '.sf-button' | grep -c '"text": "刷新"'`，多于一个就先关窗口重开。
 - **`tern --control N --dir DIR` 会挂到已有 daemon**：显示的是你原有的所有 tab，`--dir` 不保证成为活动 tab。
