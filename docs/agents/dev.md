@@ -46,6 +46,9 @@ tern --control 17311 .
 - **`tern shot` / `tern serve` 不加载插件**：palette 里搜不到「Matt 面板」，别用它们验面板。
 - **开面板别用 `palette "Matt 面板"` + `key return`**：调色板第一条是最近提交（Git 面板那条），回车打开的是内置 Git 面板，断言会全部落在错的面板上。用 `plugins run plugin.tern-matt-panel.panel` 精确打开。
 - **两条送达通道**：`cx:run`（只填不提交）与 `cx.agents:ask`（填并提交）。面板的「注入」走前者、「发送」走后者；0.9.30 实测 `cx:run` 对原生 omp chat 有效（含括号粘贴多行）。
+- **真机注入探针**：`test/probe-inject.sh [--pane ID]` 起探针插件（`test/probe/`），对第一个 agent 块做一次 `cx:run`（含括号粘贴多行）并读回 composer，报告 PASS/失败；结束删掉自己注入的文本并 unlink 插件。Tern 升级后先跑它，再信面板的「已填入」。
+- **窗口半边随窗口事件重载**：`tern plugin reload` 只保证宿主半边；窗口半边不跑新代码时，停止响应探针/请求。给一下焦点（`tern focus <块>`）或切窗口再读结果，别把它当成插件坏了。
+- **窗口半边运行时错误**：只有 `%LOCALAPPDATA%\Tern\Logs\tern-daemon.log`（`plugin handler failed ... hook=...`），面板本身不显示。
 - **核对读 surface，不读 view**：`cx.session:view` 对原生 omp chat 返回 nil。输入框在 `cx.session:surface` 的 editor 节点里（`k="editor"`，`p.text`），且 `cx:run` 之后要下一拍才更新（实测 <= 300ms），所以核对延迟 320ms。读成空串只有在它是焦点块时才算真失败（非焦点 / 隐藏 tab 读到的就是空串）；没有 editor 可读（终端型 agent / 旧版 Tern）退回 `view`，仍读不到按成功算。
 - **两个命令入口互斥**：`new-demand` 与 `frontend` 各自翻转后要清掉另一个，否则两组子按钮同时落出。
 - **投递有两条通道**：`inject`（`cx:run`，只填不提交）与 `ask`（`cx.agents:ask`，填并提交）。两条在 0.9.30 上对原生 omp 都实测可用。

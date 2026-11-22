@@ -326,6 +326,22 @@ local function ok(cond: boolean, what: string)
 	end
 end
 
+--- 放行 mark 之后新增的定时器（可只挑某个 ms）。
+--- 桩里的 timers 只增不减：整表重放会把上一个用例的核对再跑一遍，
+--- 同一个请求被二次判，表现为「剪贴板被多复制一次」这类假失败。
+local function fireTimersSince(mark: number, ms: number?)
+	local due = {}
+	for i = mark + 1, #timers do
+		local t = timers[i]
+		if ms == nil or t.ms == ms then
+			table.insert(due, t)
+		end
+	end
+	for _, t in ipairs(due) do
+		t.fn(nil)
+	end
+end
+
 -- ---------------------------------------------------------------- tests ----
 
 -- ------------------------------------------------------------ 后端判定 ----
@@ -4098,45 +4114,34 @@ test("原生 omp 的输入框从串流面核对：下一拍才判", function()
 		},
 		agents = { list = function() return { { pane = winPane, state = "idle" } } end, ask = function() end },
 	}
-	local function fireVerify()
-		local due = {}
-		for _, t in ipairs(timers) do
-			if t.ms == 320 then
-				table.insert(due, t)
-			end
-		end
-		for _, t in ipairs(due) do
-			t.fn(nil)
-		end
-	end
 	local body = "===== 注入开始 · tern-matt-panel · 测试 =====\n正文\n"
 
-	-- cx:run 刚返回时 surface 还是空框，不立刻判；放行 300ms 后才读到正文。
+	-- cx:run 刚返回时 surface 还是空框，不立刻判；放行 320ms 后才读到正文。
+	local mark = #timers
 	kvStore["action"] = { seq = 950, kind = "inject", pane = winPane, body = body, name = "延迟核" }
 	pollTick(cx)
 	eq(kvStore["inject_result"], nil, "立刻读是空框，不许当场判失败")
 	surfaceText = body
-	fireVerify()
+	fireTimersSince(mark, 320)
 	eq(kvStore["inject_result"].ok, true, "下一拍读到正文算成功")
 	eq(copies, 0, "成功不碰剪贴板")
-	-- 桩里的 timers 只增不减；不清掉，第二个用例会把第一个的核对再放一遍。
-	timers = {}
 
 	-- 下一拍仍然读不到正文：真失败，退剪贴板并如实报。
 	surfaceText = ""
+	mark = #timers
 	kvStore["action"] = { seq = 951, kind = "inject", pane = winPane, body = body, name = "真空框" }
 	pollTick(cx)
-	fireVerify()
+	fireTimersSince(mark, 320)
 	eq(kvStore["inject_result"].ok, false, "空框如实报失败")
 	eq(copies, 1, "失败退到剪贴板")
-	timers = {}
 
 	-- 非焦点块的 surface 读成空串（composer 不在实时树里）：判不了，按成功算，不误报失败。
+	mark = #timers
 	kvStore["action"] = { seq = 952, kind = "inject", pane = winPane, body = body, name = "非焦点空读" }
 	pollTick(cx)
 	-- 注入后焦点被别人拿走：surface 读成空串，不能判失败。
 	focusedPane = nil
-	fireVerify()
+	fireTimersSince(mark, 320)
 	eq(kvStore["inject_result"].ok, true, "非焦点读到空串不判失败")
 	eq(copies, 1, "判不了时不碰剪贴板")
 end)

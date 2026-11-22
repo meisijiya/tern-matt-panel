@@ -141,7 +141,6 @@ local function surfaceComposerText(cx: WindowCx, pane: number): string?
 		return nil
 	end
 	local marked: string? = nil
-	local anywhere: string? = nil
 	local function walk(n: any, inComposer: boolean)
 		if type(n) ~= "table" then
 			return
@@ -152,9 +151,6 @@ local function surfaceComposerText(cx: WindowCx, pane: number): string?
 			composer = true
 		end
 		if n.k == "editor" and type(p) == "table" and type(p.text) == "string" then
-			if anywhere == nil then
-				anywhere = p.text
-			end
 			local byId = type(n.id) == "string" and string.find(n.id, "line/input", 1, true) ~= nil
 			if marked == nil and (composer or byId) then
 				marked = p.text
@@ -166,7 +162,7 @@ local function surfaceComposerText(cx: WindowCx, pane: number): string?
 	end
 	walk(surface.main, false)
 	walk(surface.dock, false)
-	return marked or anywhere
+	return marked
 end
 
 --- 空白的差别不算差别：正文比对一律去掉空白再比。
@@ -379,7 +375,7 @@ local function handleAction(cx: WindowCx)
 	end
 
 	if action.kind == "ask" then
-		-- 「发送」通道：原生 omp 只认 ask，能真正进输入框并提交。
+		-- 「发送」通道：ask 能进输入框并提交；「注入」用的 cx:run 只填不提交。
 		local target = (if pane then agentFor(cx, pane) else nil) or lastAgent or agentPaneOf(cx)
 		if not target then
 			local copyErr = copyOrErr(cx, action.body)

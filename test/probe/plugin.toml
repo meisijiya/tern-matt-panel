@@ -1,0 +1,6 @@
+schema = 1
+id = "tern-matt-panel-probe"
+name = "Matt Probe"
+version = "0.0.1"
+description = "真机注入探针：验证 cx:run 能写进原生 omp 输入框、surface 能读回。只在 test/probe-inject.sh 放了请求时动作。"
+window = "window.luau"
