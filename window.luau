@@ -19,6 +19,8 @@ local REPO_KEY = "repo"
 local POLL_MS = 300
 --- 注入后核对输入框的延迟：cx:run 之后 surface 要过几个帧才更新（实测 300ms 内）。
 local VERIFY_MS = 320
+--- 疑似失败时的二次采样：单帧可能还没画完，不能拿它下「失败」结论。
+local VERIFY_RETRY_MS = 200
 
 -- 最近聚焦的 agent：面板没有绑定目标时的兜底。
 local lastAgent: number? = nil
@@ -448,41 +450,95 @@ local function handleAction(cx: WindowCx)
 		return
 	end
 	local marker = markerOf(action.body)
-	-- 原生 omp 的输入框在 surface 里，且 cx:run 之后要下一拍才出现正文（实测 <= 300ms），
-	-- 立刻读必然是空框。所以先确认这条路可读，再隔一拍核对。
-	-- 非焦点 / 隐藏 tab 的 chat 读到的 text 是空串（composer 不在实时 surface 里），
-	-- 所以「读成空框」只有在它正是焦点块时才算真失败，否则判不了、按成功算。
-	if surfaceComposerText(cx, agent) ~= nil then
-		tern.timer(VERIFY_MS, function(nextCx)
-			local c: WindowCx = nextCx or cx
-			local text = surfaceComposerText(c, agent)
-			local focused = false
-			pcall(function()
-				focused = c.session:focused() == agent
-			end)
-			local live = text ~= nil and (text ~= "" or focused)
-			if text ~= nil and not textHas(text, marker) and live then
-				local copyErr = copyOrErr(c, action.body)
-				local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
-				c:toast("error", "填入失败：" .. tostring(action.name or ""), "输入框没收到正文（" .. tail .. "）")
-				report(false, "输入框没收到正文（" .. tail .. "）")
+	-- 注入前先记一份输入框：模板共用同一个信封前缀，框里留着上次未提交的正文时，
+	-- 光看「含 marker」会判成功。所以核对要求文本确实变了。
+	local before = surfaceComposerText(cx, agent)
+
+	local function toastFilled(c: WindowCx, verified: boolean)
+		local name = tostring(action.name or "")
+		if verified then
+			c:toast("success", "已填入输入框：" .. name, "看过、补完自己提交。")
+		else
+			c:toast("info", "已填入（未核对）：" .. name, "agent 不在前台时读不到输入框，切过去看一眼再提交。")
+		end
+	end
+
+	local function fillFailed(c: WindowCx)
+		local copyErr = copyOrErr(c, action.body)
+		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
+		c:toast("error", "填入失败：" .. tostring(action.name or ""), "输入框没收到正文（" .. tail .. "）")
+		report(false, "输入框没收到正文（" .. tail .. "）")
+	end
+
+	local function focused(c: WindowCx): boolean
+		local ok, is = pcall(function()
+			return c.session:focused() == agent
+		end)
+		return ok and is
+	end
+
+	-- true = 确认写进去了；false = 看起来没写进去；nil = 没有可读的 surface。
+	local function surfaceVerdict(c: WindowCx): boolean?
+		local text = surfaceComposerText(c, agent)
+		if text == nil then
+			return nil
+		end
+
+		if string.find(text, "\27", 1, true)
+			or string.find(text, "200~", 1, true)
+			or string.find(text, "201~", 1, true)
+		then
+			return false -- 括号粘贴标记漏进来了：文本被写坏
+		end
+		if not textHas(text, marker) then
+			return false
+		end
+		if before ~= nil and text == before then
+			return false -- 文本没变：旧信封还躺在框里
+		end
+
+		return true
+	end
+
+	-- 720ms 后才结束：单次 320ms 采样可能撞上慢帧；失败前再采一次样。
+	local function settle(c: WindowCx)
+		local verdict = surfaceVerdict(c)
+		if verdict == true then
+			toastFilled(c, true)
+			report(true, nil)
+			return
+		end
+		if verdict == nil then
+			-- 没有 surface（终端型 agent / 旧版 Tern）：退回无障碍树，读不到按成功算。
+			if composerHas(c, agent, marker) == false then
+				fillFailed(c)
+			else
+				toastFilled(c, false)
+				report(true, nil)
+			end
+			return
+		end
+		-- 疑似失败：只有焦点块看到的是实时帧，retained 旧帧和非焦点空串都不可信。
+		if not focused(c) then
+			toastFilled(c, false)
+			report(true, nil)
+			return
+		end
+		tern.timer(VERIFY_RETRY_MS, function(retryCx)
+			local c2 = retryCx or c
+			if surfaceVerdict(c2) == true then
+				toastFilled(c2, true)
+				report(true, nil)
 				return
 			end
-			c:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
-			report(true, nil)
+			fillFailed(c2)
 		end)
-		return
 	end
-	local delivered = composerHas(cx, agent, marker)
-	if delivered == false then
-		local copyErr = copyOrErr(cx, action.body)
-		local tail = if copyErr then "剪贴板复制也失败：" .. copyErr else "正文已复制"
-		cx:toast("error", "填入失败：" .. tostring(action.name or ""), "输入框没收到正文（" .. tail .. "）")
-		report(false, "输入框没收到正文（" .. tail .. "）")
-		return
-	end
-	cx:toast("success", "已填入输入框：" .. tostring(action.name or ""), "看过、补完自己提交。")
-	report(true, nil)
+
+	-- 总是进 timer：T0 读不到 surface（刚开 tab、瞬时错误）不代表这条通道不存在。
+	tern.timer(VERIFY_MS, function(nextCx)
+		settle(nextCx or cx)
+	end)
 end
 
 local poll: (WindowCx?) -> ()

@@ -5,6 +5,7 @@
 -- 为什么不在脚本里直接调 cx:run：cx 只有窗口半边有，脚本够不到。
 
 local KEY = "request"
+local lastAgents = ""
 local DONE = "done_nonce"
 local VERIFY_MS = 320
 
@@ -52,7 +53,12 @@ local function poll(cx: any)
 		for _, a in ipairs(list) do
 			table.insert(panes, a.pane)
 		end
-		tern.kv.set("agents", { panes = panes })
+		-- 只在变化时写：每 700ms 全量 set 会和脚本写 request 抢同一个 kv 文件。
+		local key = table.concat(panes, ",")
+		if key ~= lastAgents then
+			lastAgents = key
+			tern.kv.set("agents", { panes = panes })
+		end
 	end)
 	pcall(function()
 		local req = tern.kv.get(KEY)

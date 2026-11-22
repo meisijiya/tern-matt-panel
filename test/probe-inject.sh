@@ -3,9 +3,9 @@
 #
 #   test/probe-inject.sh [--pane ID] [--keep]
 #
-# 依赖：Git Bash、Tern 在跑（有至少一个 omp agent 块）、python。
-# 只碰一个块：默认取第一个 omp agent，--pane 指定。
-# 结束会把自己注入的探针文本 backspace 掉，并 unlink 探针插件（--keep 保留插件）。
+# 依赖：Git Bash、Tern 在跑（有至少一个 agent 块）、python。
+# 只碰一个块：默认取第一个 agent，--pane 指定。
+# 任何退出路径都会撤请求、删自己注入的那段（只在读回文本确认存在时）、unlink 插件（--keep 保留）。
 #
 # 为什么要脚本：这套事实（cx:run 有效、surface 的 composer 可读、括号粘贴保留换行）
 # 会随 Tern 升级腐烂，人工探针每次重写都踩同样的坑。探针插件在 test/probe/。
@@ -30,6 +30,7 @@ repo="$(dirname "$here")"
 probe="$here/probe"
 out="$(cd "$repo/.." && pwd)/.tern-matt-panel.probe.json"
 tern_bin="${TERN_BIN:-tern}"
+plugin_id="tern-matt-panel-probe"
 
 pane=""
 keep=0
@@ -44,10 +45,108 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-rm -f "$out"
+marker="PROBE_$(date +%s)_$$"
+nonce="$marker"
 
+kv_path() {
+	python -c 'import os; print(os.path.join(os.environ["LOCALAPPDATA"], "Tern", "plugin-data", "tern-matt-panel-probe", "kv.json"))'
+}
+
+put_request() {
+	python - "$out" "$pane" "$marker" "$nonce" <<'PY'
+import io, json, os, sys
+
+out, pane, marker, nonce = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+path = os.path.join(os.environ["LOCALAPPDATA"], "Tern", "plugin-data", "tern-matt-panel-probe", "kv.json")
+data = {}
+if os.path.exists(path):
+    try:
+        with io.open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+data["request"] = {"pane": pane, "out": out, "marker": marker, "nonce": nonce}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with io.open(path, "w", encoding="utf-8") as f:
+    f.write(json.dumps(data, ensure_ascii=False))
+PY
+}
+
+clear_request() {
+	python -c '
+import io, json, os
+path = os.path.join(os.environ["LOCALAPPDATA"], "Tern", "plugin-data", "tern-matt-panel-probe", "kv.json")
+if os.path.exists(path):
+    try:
+        with io.open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data.pop("request", None)
+        with io.open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False))
+    except Exception:
+        pass
+'
+}
+
+# ---- 收尾（任何退出都走）：只删自己注入的那段，别碰用户草稿 ----
+# 删除长度按读回的 after 里从 marker 到结尾的实际字符数算；
+# 读回的尾部不是「marker + 换行 + PROBE_LINE2」就整段不删，避免吃掉用户后打的字。
+cleanup() {
+	del=0
+	if [ -n "$pane" ] && [ -f "$out" ]; then
+		del="$(python - "$out" "$marker" <<'PY'
+import io, json, re, sys
+
+with io.open(sys.argv[1], encoding="utf-8") as f:
+    r = json.load(f)
+after = r.get("after")
+marker = sys.argv[2]
+if not isinstance(after, str):
+    print(0)
+    raise SystemExit
+idx = after.rfind(marker)
+if idx < 0:
+    print(0)
+    raise SystemExit
+tail = after[idx:]
+plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z~]", "", tail).replace("\r", "")
+if plain == marker + "\nPROBE_LINE2":
+    print(len(tail))
+else:
+    print(0)
+PY
+)"
+	fi
+	if [ "$del" -gt 0 ]; then
+		total="$del"
+		while [ "$total" -gt 0 ]; do
+			step=30
+			if [ "$total" -lt "$step" ]; then
+				step="$total"
+			fi
+			keys=""
+			for _ in $(seq 1 "$step"); do
+				keys="$keys backspace"
+			done
+			# shellcheck disable=SC2086
+			"$tern_bin" send "$pane" keys $keys >/dev/null 2>&1 || true
+			total=$((total - step))
+			sleep 0.2
+		done
+	elif [ -n "$pane" ] && [ -f "$out" ]; then
+		echo "注意：读回的输入框尾部不是探针文本（可能你正在输入），没有回删。" >&2
+	fi
+	rm -f "$out"
+	clear_request || true
+	if [ "$keep" = "0" ]; then
+		"$tern_bin" plugin unlink "$plugin_id" >/dev/null 2>&1 || true
+	fi
+}
+trap cleanup EXIT
+
+rm -f "$out"
 "$tern_bin" plugin link "$probe" >/dev/null 2>&1 || true
-"$tern_bin" plugin reload tern-matt-panel-probe >/dev/null 2>&1 || true
+"$tern_bin" plugin reload "$plugin_id" >/dev/null 2>&1 || true
 
 # ---- 目标块：等探针公布 agent 列表（tern ls 不给 command，认不出 omp 块） ----
 # 窗口半边随窗口事件重载：先给一个焦点，别干等。
@@ -92,84 +191,12 @@ fi
 
 echo "目标块：$pane"
 
-marker="PROBE_$(date +%s)_$$"
-nonce="$marker"
-
-# ---- 放请求（kv 在插件数据目录，仓库外） ----
-python - "$out" "$pane" "$marker" "$nonce" <<'PY'
-import io, json, os, sys
-
-out, pane, marker, nonce = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
-path = os.path.join(os.environ["LOCALAPPDATA"], "Tern", "plugin-data", "tern-matt-panel-probe", "kv.json")
-data = {}
-if os.path.exists(path):
-    try:
-        with io.open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-data["request"] = {"pane": pane, "out": out, "marker": marker, "nonce": nonce}
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with io.open(path, "w", encoding="utf-8") as f:
-    f.write(json.dumps(data, ensure_ascii=False))
-PY
-
-# 窗口半边随窗口事件重载：给一下焦点，别干等。
+# 请求每 0.5 秒重写一次：探针的 kv.set 和脚本的文件写会互相覆盖。
 "$tern_bin" focus "$pane" >/dev/null 2>&1 || true
 
-# ---- 收尾（任何退出都走）：删掉自己注入的那段、撤请求、卸插件 ----
-# 注入文本 = marker + "\n" + PROBE_LINE2；多按一个都会吃掉用户原有草稿。
-# 只在「结果文件确实读到了这段文本」时才按 backspace；没读到就说明没写进去，不碰输入框。
-cleanup() {
-	if [ -f "$out" ] && python - "$out" "$marker" <<'PY'
-import io, json, sys
-
-with io.open(sys.argv[1], encoding="utf-8") as f:
-    r = json.load(f)
-after = r.get("after")
-sys.exit(0 if isinstance(after, str) and sys.argv[2] in after else 1)
-PY
-	then
-		total=$(python -c 'import sys; print(len(sys.argv[1]) + 1 + len("PROBE_LINE2"))' "$marker")
-		while [ "$total" -gt 0 ]; do
-			step=30
-			if [ "$total" -lt "$step" ]; then
-				step="$total"
-			fi
-			keys=""
-			for _ in $(seq 1 "$step"); do
-				keys="$keys backspace"
-			done
-			# shellcheck disable=SC2086
-			"$tern_bin" send "$pane" keys $keys >/dev/null 2>&1 || true
-			total=$((total - step))
-			sleep 0.3
-		done
-	fi
-	rm -f "$out"
-	python - <<'PY'
-import io, json, os
-
-path = os.path.join(os.environ["LOCALAPPDATA"], "Tern", "plugin-data", "tern-matt-panel-probe", "kv.json")
-if os.path.exists(path):
-    try:
-        with io.open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        data.pop("request", None)
-        with io.open(path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False))
-    except Exception:
-        pass
-PY
-	if [ "$keep" = "0" ]; then
-		"$tern_bin" plugin unlink tern-matt-panel-probe >/dev/null 2>&1 || true
-	fi
-}
-trap cleanup EXIT
-
-# ---- 等结果（窗口半边没重载时不会出现） ----
 found=0
 for _ in $(seq 1 40); do
+	put_request
 	if [ -f "$out" ]; then
 		found=1
 		break
@@ -181,7 +208,6 @@ if [ "$found" != "1" ]; then
 	exit 3
 fi
 
-# ---- 断言 ----
 verdict="$(python - "$out" "$marker" <<'PY'
 import io, json, sys
 
@@ -195,12 +221,10 @@ print("focused =", r.get("focused"))
 if not isinstance(after, str):
     print("verdict = read-miss")
 elif after == "" and not r.get("focused"):
-    # 非焦点/隐藏 tab 的 composer 读成空串：判不了，不是失败。
     print("verdict = unknown")
 elif marker + "\nPROBE_LINE2" not in after:
     print("verdict = fail")
 elif "\x1b" in after or "200~" in after or "201~" in after:
-    # 括号粘贴标记没被吃掉：cx:run 不支持粘贴，多行文本会被写坏。
     print("verdict = escape-leaked")
 else:
     print("verdict = pass")

@@ -1097,6 +1097,7 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 	-- 轮询回调在加载时就注册了，reset() 会清空 timers 表，所以用加载时抓的那一份
 	ok(pollTick ~= nil, "window registered a poll timer")
 	pollTick(cx)
+	fireTimersSince(0)
 
 	eq(#typed, 1, "正文打进 pane 一次")
 	eq(typed[1].pane, winPane)
@@ -1111,6 +1112,7 @@ test("窗口半边把 inject 填进空闲 agent 的输入框并回写成功", fu
 	local env = "===== 注入开始 · tern-matt-panel · 测试 =====\n第一行\n第二行\n===== 注入结束 · 下面是用户输入的内容 =====\n"
 	kvStore["action"] = { seq = 6, kind = "inject", pane = winPane, body = env, name = "多行" }
 	pollTick(cx)
+	fireTimersSince(0)
 	eq(#typed, 2, "多行正文也打进 pane")
 	ok(string.find(typed[2].text, "\27[200~", 1, true) == 1, "外层以括号粘贴开头")
 	ok(string.find(typed[2].text, "===== 注入结束 · 下面是用户输入的内容 =====\n\27[201~", 1, true) ~= nil, "结束行与换行都在括号粘贴内部")
@@ -4076,17 +4078,21 @@ test("读不到输入框内容时不当成失败（原生 omp 不给 value）", 
 	-- 节点在，但没有 value / text：读不出内容，判不了，按成功算。
 	kvStore["action"] = { seq = 901, kind = "inject", pane = winPane, body = body, name = "读不到" }
 	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {} } } }))
+	fireTimersSince(0)
 	eq(kvStore["inject_result"].ok, true, "读不到内容不许报失败")
 
 	-- 读得到内容但里面没有正文：这是真的没填进去。
 	kvStore["action"] = { seq = 902, kind = "inject", pane = winPane, body = body, name = "空框" }
 	pollTick(cxWith({ role = "col", children = { { role = "MultilineTextInput", states = {}, value = "别的东西" } } }))
+	fireTimersSince(0)
 	eq(kvStore["inject_result"].ok, false, "读到空内容才算失败")
 end)
 
 test("原生 omp 的输入框从串流面核对：下一拍才判", function()
 	local winPane = 63
 	local surfaceText = ""
+	local editorId: string? = "j.line/input"
+	local editorRole: string? = nil
 	local copies = 0
 	local focusedPane: number? = winPane
 	local cx: any = {
@@ -4107,7 +4113,7 @@ test("原生 omp 的输入框从串流面核对：下一拍才判", function()
 				return {
 					main = {
 						k = "col",
-						c = { { k = "editor", id = "j.line/input", p = { text = surfaceText, sendable = true } } },
+						c = { { k = "editor", id = editorId, p = { text = surfaceText, sendable = true, role = editorRole } } },
 					},
 				}
 			end,
@@ -4122,28 +4128,62 @@ test("原生 omp 的输入框从串流面核对：下一拍才判", function()
 	pollTick(cx)
 	eq(kvStore["inject_result"], nil, "立刻读是空框，不许当场判失败")
 	surfaceText = body
-	fireTimersSince(mark, 320)
+	fireTimersSince(mark)
 	eq(kvStore["inject_result"].ok, true, "下一拍读到正文算成功")
 	eq(copies, 0, "成功不碰剪贴板")
 
-	-- 下一拍仍然读不到正文：真失败，退剪贴板并如实报。
+	-- 焦点块上仍是空框：真失败。失败前会二次采样，两个 timer 都要放行。
 	surfaceText = ""
 	mark = #timers
 	kvStore["action"] = { seq = 951, kind = "inject", pane = winPane, body = body, name = "真空框" }
 	pollTick(cx)
-	fireTimersSince(mark, 320)
+	fireTimersSince(mark)
+	fireTimersSince(mark)
 	eq(kvStore["inject_result"].ok, false, "空框如实报失败")
 	eq(copies, 1, "失败退到剪贴板")
 
-	-- 非焦点块的 surface 读成空串（composer 不在实时树里）：判不了，按成功算，不误报失败。
+	-- 框里留着旧信封：文本没变，不能因为 marker 前缀相同就判成功。
+	surfaceText = body
 	mark = #timers
-	kvStore["action"] = { seq = 952, kind = "inject", pane = winPane, body = body, name = "非焦点空读" }
+	kvStore["action"] = { seq = 952, kind = "inject", pane = winPane, body = body, name = "旧信封" }
 	pollTick(cx)
-	-- 注入后焦点被别人拿走：surface 读成空串，不能判失败。
+	fireTimersSince(mark)
+	fireTimersSince(mark)
+	eq(kvStore["inject_result"].ok, false, "文本没变不算填进去")
+	eq(copies, 2, "旧信封也退剪贴板")
+
+	-- 括号粘贴标记漏进输入框：文本被写坏，不算成功。
+	-- 注入前必须是空框，否则「文本没变」会先一步判失败，测不到 ESC 这条。
+	surfaceText = ""
+	mark = #timers
+	kvStore["action"] = { seq = 953, kind = "inject", pane = winPane, body = body, name = "漏转义" }
+	pollTick(cx)
+	surfaceText = "\27[200~" .. body .. "\27[201~"
+	fireTimersSince(mark)
+	fireTimersSince(mark)
+	eq(kvStore["inject_result"].ok, false, "漏 ESC 不算成功")
+
+	-- 非焦点：空串或 retained 旧帧都不可信，判不了，按成功算，不碰剪贴板。
+	surfaceText = "别的东西"
+	mark = #timers
+	kvStore["action"] = { seq = 954, kind = "inject", pane = winPane, body = body, name = "非焦点" }
+	pollTick(cx)
 	focusedPane = nil
-	fireTimersSince(mark, 320)
-	eq(kvStore["inject_result"].ok, true, "非焦点读到空串不判失败")
-	eq(copies, 1, "判不了时不碰剪贴板")
+	fireTimersSince(mark)
+	eq(kvStore["inject_result"].ok, true, "非焦点读不懂不报失败")
+	eq(copies, 3, "判不了时不再复制")
+
+	-- composer 只靠 role 认（omp 换 id 形状时）：仍要能判定。
+	editorId = "x"
+	editorRole = "omp.composer.line"
+	surfaceText = ""
+	focusedPane = winPane
+	mark = #timers
+	kvStore["action"] = { seq = 955, kind = "inject", pane = winPane, body = body, name = "只有 role" }
+	pollTick(cx)
+	surfaceText = body
+	fireTimersSince(mark)
+	eq(kvStore["inject_result"].ok, true, "role 含 composer 也算输入框")
 end)
 
 -- -------------------------------------------------------------- report ----
